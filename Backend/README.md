@@ -85,7 +85,7 @@ erDiagram
     %% Relationships
     users ||--o| teams : "leads (1:1)"
     teams ||--|{ members : "has many (1:N)"
-    problem_statements ||--o| teams : "allocated to (1:1)"
+    problem_statements ||--|{ teams : "allocated to (1:N)"
     teams ||--|{ bids : "places (1:N)"
     problem_statements ||--|{ bids : "receives (1:N)"
 ```

@@ -86,20 +86,24 @@ async def end_round(db: Session = Depends(get_db), current_user = Depends(get_cu
     
     results = []
     for ps in visible_pss:
-        # Find highest bid for this PS in this round
-        highest_bid = db.query(Bid).filter(
+        # Find highest 5 bids for this PS in this round
+        top_bids = db.query(Bid).filter(
             Bid.ps_id == ps.id,
             Bid.round == config.current_round
-        ).order_by(Bid.amount.desc()).first()
+        ).order_by(Bid.amount.desc()).limit(5).all()
         
-        if highest_bid:
-            winner_team = db.query(Team).filter(Team.id == highest_bid.team_id).first()
-            if winner_team.coins >= highest_bid.amount and winner_team.ps_id is None:
+        winners = []
+        for bid in top_bids:
+            winner_team = db.query(Team).filter(Team.id == bid.team_id).first()
+            if winner_team.coins >= bid.amount and winner_team.ps_id is None:
                 # Deduct coins and assign PS
-                winner_team.coins -= highest_bid.amount
+                winner_team.coins -= bid.amount
                 winner_team.ps_id = ps.id
-                ps.status = "allocated"
-                results.append({"ps": ps.ps_number, "winner": winner_team.team_name, "amount": highest_bid.amount})
+                winners.append({"team": winner_team.team_name, "amount": bid.amount})
+                
+        if winners:
+            ps.status = "allocated"
+            results.append({"ps": ps.ps_number, "winners": winners})
                 
     config.current_round += 1
     db.commit()

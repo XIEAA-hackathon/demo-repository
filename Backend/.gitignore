@@ -15,3 +15,8 @@ __pycache__/
 # SQLite Database
 *.db
 *.sqlite3
+
+# Temporary Test Files
+test_*.py
+test_credentials.txt
+websocket_test.html
