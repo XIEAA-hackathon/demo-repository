@@ -30,7 +30,8 @@
         const messagesDiv = document.getElementById('messages');
         
         // Connect to our FastAPI WebSocket
-        const ws = new WebSocket("ws://127.0.0.1:8000/ws/auction");
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/auction`);
 
         ws.onopen = function() {
             statusDiv.textContent = "🟢 Connected to Auction Server!";

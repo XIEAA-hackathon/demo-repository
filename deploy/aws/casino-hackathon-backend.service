@@ -1,0 +1,19 @@
+[Unit]
+Description=Casino Hackathon FastAPI service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_GROUP__
+WorkingDirectory=/opt/casino_hackathon/current/Backend
+EnvironmentFile=/etc/casino-hackathon/backend.env
+EnvironmentFile=-/opt/casino_hackathon/current/deploy.env
+ExecStart=/opt/casino_hackathon/current/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log --log-level warning
+Restart=on-failure
+RestartSec=3
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

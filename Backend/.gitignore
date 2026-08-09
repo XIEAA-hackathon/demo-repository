@@ -16,7 +16,21 @@ __pycache__/
 *.db
 *.sqlite3
 
-# Temporary Test Files
-test_*.py
+# Temporary local credential files
 test_credentials.txt
 websocket_test.html
+
+ Backend/.env.example
+        Backend/app/api/admin.py
+        Backend/app/api/participant.py
+        Backend/app/services/
+        Backend/requirements-dev.txt
+        Backend/run.py
+        Backend/tests/
+        README.md
+        demo.txt
+        deploy/
+        frontend-website/
+        frontend/.env.example
+        frontend/src/config.js
+        frontenend-particpant/

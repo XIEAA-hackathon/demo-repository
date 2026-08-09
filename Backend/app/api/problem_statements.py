@@ -5,6 +5,7 @@ from app.core.database import get_db
 from app.models.models import ProblemStatement
 from app.schemas.schemas import PSCreate, PSResponse
 from app.api.auth import get_current_user, get_current_active_admin
+from app.api.websockets import manager
 
 router = APIRouter()
 
@@ -37,7 +38,7 @@ def get_pss(db: Session = Depends(get_db), current_user = Depends(get_current_us
     return pss
 
 @router.put("/problem-statement/{ps_id}/visibility")
-def toggle_visibility(ps_id: int, status: str, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
+async def toggle_visibility(ps_id: int, status: str, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     if status not in ["visible", "hidden", "allocated"]:
         raise HTTPException(status_code=400, detail="Invalid status")
     ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
@@ -45,4 +46,5 @@ def toggle_visibility(ps_id: int, status: str, db: Session = Depends(get_db), cu
         raise HTTPException(status_code=404, detail="PS not found")
     ps.status = status
     db.commit()
+    await manager.broadcast_event("problem_visibility_updated", {"problem_id": ps.id, "status": status})
     return {"message": f"PS {ps.ps_number} status updated to {status}"}

@@ -1,0 +1,153 @@
+name: Deploy main to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit SHA or tag to deploy (use a previous main SHA to roll back)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-aws
+  cancel-in-progress: false
+
+jobs:
+  test-build-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out deployment source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Record exact deployment SHA
+        id: version
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "Ref is not contained in origin/main; refusing production deployment." >&2
+            exit 1
+          fi
+          if [[ "${{ github.event_name }}" == "push" && "$sha" != "${{ github.sha }}" ]]; then
+            echo "Checkout SHA does not match the pushed main SHA." >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: Backend/requirements-dev.txt
+
+      - name: Test backend
+        shell: bash
+        working-directory: Backend
+        env:
+          DEPLOYED_COMMIT: ${{ steps.version.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pytest -q
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            frontend-website/package-lock.json
+            frontend-participant/package-lock.json
+            frontend-admin/package-lock.json
+
+      - name: Build public website
+        working-directory: frontend-website
+        env:
+          VITE_PARTICIPANT_URL: /participant
+        run: npm ci --no-audit --no-fund && npm run build
+
+      - name: Build participant application
+        working-directory: frontend-participant
+        env:
+          VITE_API_URL: /api
+        run: npm ci --no-audit --no-fund && npm run build
+
+      - name: Build admin application
+        working-directory: frontend-admin
+        env:
+          VITE_API_URL: /api
+        run: npm ci --no-audit --no-fund && npm run build
+
+      - name: Package tested release
+        id: package
+        shell: bash
+        env:
+          DEPLOY_SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          stage="$RUNNER_TEMP/casino-release"
+          archive="$RUNNER_TEMP/casino-hackathon-$DEPLOY_SHA.tar.gz"
+          mkdir -p "$stage/Backend" "$stage/static/public" "$stage/static/participant" "$stage/static/admin" "$stage/deploy/aws"
+          cp -a Backend/app Backend/scripts Backend/requirements.txt Backend/run.py "$stage/Backend/"
+          cp -a frontend-website/dist/. "$stage/static/public/"
+          cp -a frontend-participant/dist/. "$stage/static/participant/"
+          cp -a frontend-admin/dist/. "$stage/static/admin/"
+          cp -a deploy/aws/deploy-release.sh deploy/aws/nginx.conf deploy/aws/casino-hackathon-backend.service "$stage/deploy/aws/"
+          printf 'DEPLOYED_COMMIT=%s\n' "$DEPLOY_SHA" > "$stage/deploy.env"
+          tar -C "$stage" -czf "$archive" .
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Install SSH identity
+        shell: bash
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$EC2_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keyscan -H "$EC2_HOST" >> "$HOME/.ssh/known_hosts"
+
+      - name: Transfer and deploy release
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          DEPLOY_SHA: ${{ steps.version.outputs.sha }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: |
+          set -Eeuo pipefail
+          ssh_args=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes)
+          remote_dir="$(ssh "${ssh_args[@]}" "$EC2_USER@$EC2_HOST" 'mktemp -d /tmp/casino-deploy.XXXXXX')"
+          case "$remote_dir" in /tmp/casino-deploy.*) ;; *) echo "Unsafe remote staging path" >&2; exit 1;; esac
+          scp "${ssh_args[@]}" "$ARCHIVE" "$EC2_USER@$EC2_HOST:$remote_dir/release.tar.gz"
+          ssh "${ssh_args[@]}" "$EC2_USER@$EC2_HOST" \
+            "tar -xzf '$remote_dir/release.tar.gz' -C '$remote_dir' && bash '$remote_dir/deploy/aws/deploy-release.sh' '$remote_dir/release.tar.gz' '$DEPLOY_SHA'"
+
+      - name: Verify public deployment
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          DEPLOY_SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          base="http://$EC2_HOST"
+          curl --fail --silent --show-error "$base/" | grep -qi '<div id="root"></div>'
+          curl --fail --silent --show-error "$base/participant/" | grep -qi '<div id="root"></div>'
+          curl --fail --silent --show-error "$base/admin/" | grep -qi '<div id="root"></div>'
+          test "$(curl --fail --silent --show-error "$base/api/health")" = '{"status":"ok"}'
+          test "$(curl --fail --silent --show-error "$base/api/version")" = "{\"commit\":\"$DEPLOY_SHA\"}"

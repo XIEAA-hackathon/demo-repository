@@ -5,6 +5,7 @@ from app.core.database import get_db
 from app.models.models import Team, User
 from app.schemas.schemas import TeamResponse
 from app.api.auth import get_current_user, get_current_active_admin
+from app.api.websockets import manager
 
 router = APIRouter()
 
@@ -25,17 +26,18 @@ def get_all_teams(db: Session = Depends(get_db), current_user: User = Depends(ge
     return teams
 
 @router.put("/team/{team_id}/approve")
-def approve_team(team_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
+async def approve_team(team_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     team = db.query(Team).filter(Team.id == team_id).first()
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     
     team.is_approved = True
     db.commit()
+    await manager.broadcast_event("team_updated", {"action": "approved", "team_id": team.id, "team_name": team.team_name})
     return {"message": f"Team {team.team_name} approved successfully"}
 
 @router.delete("/team/{team_id}")
-def delete_team(team_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
+async def delete_team(team_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     team = db.query(Team).filter(Team.id == team_id).first()
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -43,8 +45,10 @@ def delete_team(team_id: int, db: Session = Depends(get_db), current_user: User 
     # Due to cascade delete, this will remove members, bids, user, etc based on how it's configured.
     # Actually, we should probably delete the leader user as well, or just delete the team.
     leader = db.query(User).filter(User.id == team.leader_id).first()
+    team_name = team.team_name
     db.delete(team)
     if leader:
         db.delete(leader)
     db.commit()
+    await manager.broadcast_event("team_updated", {"action": "deleted", "team_id": team_id, "team_name": team_name})
     return {"message": "Team deleted successfully"}

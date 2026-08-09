@@ -41,7 +41,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 def get_current_active_admin(current_user: User = Depends(get_current_user)):
     if current_user.role != "admin":
-        raise HTTPException(status_code=400, detail="Not enough permissions")
+        raise HTTPException(status_code=403, detail="Administrator access required")
     return current_user
 
 @router.post("/register")
@@ -87,8 +87,11 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    if user.role == "leader":
-        team = db.query(Team).filter(Team.leader_id == user.id).first()
+    if user.role in ("leader", "member"):
+        if user.team_id:
+            team = db.query(Team).filter(Team.id == user.team_id).first()
+        else:
+            team = db.query(Team).filter(Team.leader_id == user.id).first()
         if not team or not team.is_approved:
             raise HTTPException(status_code=403, detail="Team is not approved by admin yet.")
             

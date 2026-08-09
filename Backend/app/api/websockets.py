@@ -1,41 +1,109 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from typing import List, Dict
+from fastapi.encoders import jsonable_encoder
+from jose import JWTError, jwt
+
+from app.core.config import settings
+from app.core.database import SessionLocal
+from app.models.models import User
+from app.services.event_service import event_snapshot, get_team_for_user
 
 router = APIRouter()
 
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
 
-    async def connect(self, websocket: WebSocket):
+def make_event(event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    return jsonable_encoder({
+        "type": event_type,
+        "timestamp": timestamp,
+        "server_time": timestamp,
+        "payload": payload or {},
+    })
+
+
+class ConnectionManager:
+    """In-memory fan-out for the single-instance hackathon deployment."""
+
+    def __init__(self):
+        self.active_connections: dict[WebSocket, dict[str, Any]] = {}
+
+    async def connect(self, websocket: WebSocket, identity: dict[str, Any]):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections[websocket] = identity
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        self.active_connections.pop(websocket, None)
 
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
-            
+    async def send_event(self, websocket: WebSocket, event_type: str, payload: dict[str, Any] | None = None):
+        await websocket.send_json(make_event(event_type, payload))
+
+    async def broadcast_event(self, event_type: str, payload: dict[str, Any] | None = None):
+        message = make_event(event_type, payload)
+        dead: list[WebSocket] = []
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                dead.append(connection)
+        for connection in dead:
+            self.disconnect(connection)
+
     async def broadcast_json(self, data: dict):
-        for connection in self.active_connections:
-            await connection.send_json(data)
+        """Compatibility adapter for existing REST routes while keeping one envelope."""
+        event_type = str(data.get("type", "event_updated"))
+        payload = {key: value for key, value in data.items() if key != "type"}
+        await self.broadcast_event(event_type, payload)
+
 
 manager = ConnectionManager()
 
+
+def _authenticate_socket(token: str | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not token:
+        return None, None
+    db = SessionLocal()
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        email = payload.get("sub")
+        session_id = payload.get("session_id")
+        user = db.query(User).filter(User.email == email).first()
+        if not user or (user.session_id and user.session_id != session_id):
+            return None, None
+        team = get_team_for_user(db, user) if user.role != "admin" else None
+        identity = {
+            "user_id": user.id,
+            "email": user.email,
+            "role": user.role,
+            "team_id": team.id if team else None,
+        }
+        snapshot = event_snapshot(db)
+        snapshot["identity"] = {"role": user.role, "team_id": team.id if team else None}
+        return identity, snapshot
+    except JWTError:
+        return None, None
+    finally:
+        db.close()
+
+
 @router.websocket("/ws/auction")
 async def websocket_auction(websocket: WebSocket):
-    await manager.connect(websocket)
+    identity, snapshot = _authenticate_socket(websocket.query_params.get("token"))
+    if not identity or not snapshot:
+        await websocket.close(code=4401, reason="Valid access token required")
+        return
+
+    await manager.connect(websocket, identity)
+    await manager.send_event(websocket, "event_snapshot", snapshot)
     try:
         while True:
-            # Client might send their bids through WS, but typically they will use REST API 
-            # and the server will broadcast updates over WS.
-            data = await websocket.receive_text()
-            # Echo for now, or handle specific commands if needed
-            # await manager.broadcast(f"Update: {data}")
+            # Mutations are deliberately REST-only. Incoming frames are only
+            # accepted as keep-alives and never rebroadcast.
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        
-# For broadcasting updates from REST routes, you can import `manager` in your `auction.py` 
-# and call `await manager.broadcast_json(...)` whenever a bid is placed or round starts/ends.
+    except Exception:
+        manager.disconnect(websocket)

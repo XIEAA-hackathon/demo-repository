@@ -1,0 +1,14 @@
+Bid to Build production demo accounts
+
+Public URL: http://YOUR_HOST/
+Participant URL: http://YOUR_HOST/participant/login
+Admin URL: http://YOUR_HOST/admin/
+
+Team: Demo Team
+Leader login: leader@example.com
+Leader password: replace-with-demo-password
+
+Admin login: admin@example.com
+Admin password: replace-with-demo-password
+
+Working credentials belong only in the ignored local demo.txt and the server environment.
