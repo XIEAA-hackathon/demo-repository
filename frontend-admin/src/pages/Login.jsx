@@ -24,18 +24,11 @@ export default function Login({ onLogin }) {
           <span className="eyebrow">Authorized access</span><h2>Welcome, Admin</h2>
           <p className="login-description">Authenticate through the event server to control the live auction.</p>
           <form onSubmit={submit}>
-            <label htmlFor="admin-email">Email address</label><input id="admin-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required />
+            <label htmlFor="admin-email">Email / Username</label><input id="admin-email" type="text" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required />
             <label htmlFor="admin-password">Password</label><div className="password-wrapper"><input id="admin-password" type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /><button className="show-password" type="button" onClick={() => setShowPassword((value) => !value)}>{showPassword ? "Hide" : "Show"}</button></div>
             {error && <div className="login-error" role="alert">{error}</div>}
             <button className="login-button" disabled={loading} type="submit">{loading ? "AUTHENTICATING…" : "ENTER CONTROL CENTER"}<span>→</span></button>
           </form>
-          <div className="admin-demo-credentials">
-            <strong>DEMO / DEVELOPMENT CREDENTIALS</strong>
-            <code>admin.demo@bidtobuild.example.com</code>
-            <code>DemoAdmin@123</code>
-            <button type="button" onClick={() => { setEmail("admin.demo@bidtobuild.example.com"); setPassword("DemoAdmin@123"); }}>USE ADMIN DEMO</button>
-            <a href="/participant/login">Leader and teammate demo accounts →</a>
-          </div>
           <div className="system-status"><span className="status-dot online" />Backend authentication required</div>
         </section>
         <p className="login-footer">XIE · ALUMNI COMMITTEE · BID TO BUILD</p>

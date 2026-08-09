@@ -8,7 +8,7 @@ from app.schemas.schemas import (
     DashboardSubmission, DashboardGameConfig, SubmissionCreate, SubmissionUpdate,
     EventTiming, LeaderboardEntry,
 )
-from app.api.auth import get_current_user
+from app.api.auth import get_current_active_participant
 from app.services.event_service import (
     get_team_for_user, get_or_create_game_config, get_or_create_event_config,
     current_user_is_team_leader,
@@ -19,7 +19,7 @@ from app.api.websockets import manager
 router = APIRouter()
 
 @router.get("/participant/dashboard", response_model=ParticipantDashboardResponse)
-def get_participant_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_participant_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
     team = get_team_for_user(db, current_user)
     if not team:
         raise HTTPException(status_code=404, detail="No team linked to this account")
@@ -112,7 +112,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
 @router.get("/event/snapshot")
 def get_event_snapshot(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_participant),
 ):
     return event_snapshot(db)
 
@@ -120,7 +120,7 @@ def get_event_snapshot(
 def get_participant_problems(
     round: int = 1,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_participant),
 ):
     """Visible problems for the auction UI, with EventConfig-driven starting bids."""
     config = get_or_create_game_config(db)
@@ -150,7 +150,7 @@ def get_participant_problems(
     ]
 
 @router.get("/participant/leaderboard", response_model=list[LeaderboardEntry])
-def get_leaderboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_leaderboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
     config = get_or_create_game_config(db)
     if config.state not in ("ROUND1_BIDDING", "ROUND1_RESULT", "ROUND1_PREVIEW", "WILDCARD_APPLICATION", "WILDCARD_BIDDING", "WILDCARD_SELECTION"):
         # still show the current standings
@@ -195,7 +195,7 @@ def get_leaderboard(db: Session = Depends(get_db), current_user: User = Depends(
 async def create_submission(
     submission: SubmissionCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_participant),
 ):
     team = ensure_leader(db, current_user)
     if not team.ps_id:
@@ -230,7 +230,7 @@ async def create_submission(
 async def update_submission(
     submission: SubmissionUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_participant),
 ):
     team = ensure_leader(db, current_user)
     if not submission.repository_url.startswith("https://github.com/"):
@@ -261,7 +261,7 @@ async def update_submission(
     )
 
 @router.get("/submissions/me")
-def get_my_submission(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_my_submission(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
     team = get_team_for_user(db, current_user)
     if not team:
         raise HTTPException(status_code=404, detail="No team linked to this account")

@@ -5,6 +5,13 @@ export const getToken = () => localStorage.getItem(TOKEN_KEY);
 export const hasToken = () => Boolean(getToken());
 export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
+export class ApiError extends Error {
+  constructor(message, status, options) {
+    super(message, options);
+    this.status = status;
+  }
+}
+
 async function request(path, options = {}) {
   const headers = new Headers(options.headers || {});
   const token = getToken();
@@ -16,7 +23,7 @@ async function request(path, options = {}) {
   try {
     response = await fetch(`${API_URL}${path}`, { ...options, headers });
   } catch (cause) {
-    throw new Error("Cannot reach the event server.", { cause });
+    throw new ApiError("Cannot reach the event server.", 0, { cause });
   }
   const data = await response.json().catch(() => null);
   if (!response.ok) {
@@ -24,19 +31,36 @@ async function request(path, options = {}) {
       clearToken();
       window.dispatchEvent(new Event("admin:unauthorized"));
     }
-    throw new Error(data?.detail || data?.message || `Request failed (${response.status}).`);
+    throw new ApiError(data?.detail || data?.message || `Request failed (${response.status}).`, response.status);
   }
   return data;
 }
 
 export async function login(email, password) {
-  const token = await request("/login", { method: "POST", body: new URLSearchParams({ username: email.trim(), password }) });
+  let token;
+  try {
+    token = await request("/login", { method: "POST", body: new URLSearchParams({ username: email.trim(), password }) });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      throw new ApiError("Invalid username/email or password.", 401, { cause: error });
+    }
+    if (error instanceof ApiError && error.status === 502) {
+      throw new ApiError("Authentication service temporarily unavailable.", 502, { cause: error });
+    }
+    throw error;
+  }
   localStorage.setItem(TOKEN_KEY, token.access_token);
   try {
     await getAdminState();
   } catch (error) {
     clearToken();
-    throw new Error(error.message === "Administrator access required" ? "This account is not an administrator." : error.message, { cause: error });
+    if (error instanceof ApiError && error.status === 403) {
+      throw new ApiError("Admin access required.", 403, { cause: error });
+    }
+    if (error instanceof ApiError && error.status === 502) {
+      throw new ApiError("Authentication service temporarily unavailable.", 502, { cause: error });
+    }
+    throw error;
   }
   return token;
 }

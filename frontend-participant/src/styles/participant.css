@@ -338,13 +338,6 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 .participant-login__brand { display: inline-flex; margin-bottom: 2rem; }
 .participant-login__card h1 { margin: .35rem 0; }
 .participant-login__card .form { margin-top: 1.5rem; }
-.demo-credentials { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid rgba(255,255,255,.09); }
-.demo-credentials > strong { grid-column: 1 / -1; color: var(--gold-bright); font-size: .66rem; letter-spacing: .14em; text-transform: uppercase; }
-.demo-credentials article { min-width: 0; display: grid; gap: .35rem; padding: .8rem; border: 1px solid rgba(180,25,255,.2); border-radius: .7rem; background: rgba(5,3,10,.55); }
-.demo-credentials article > span { color: var(--purple-neon); font-size: .62rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.demo-credentials code { overflow-wrap: anywhere; color: var(--muted); font-size: .66rem; }
-.demo-credentials button, .demo-credentials a { width: max-content; padding: .35rem 0; border: 0; color: var(--gold-bright); background: transparent; cursor: pointer; font-size: .65rem; font-weight: 700; text-transform: uppercase; }
-@media (max-width: 700px) { .demo-credentials { grid-template-columns: 1fr; } }
 .stage-nav__note { margin: 1rem; font-size: .75rem; }
 .topbar__team .button { padding: .45rem .75rem; }
 

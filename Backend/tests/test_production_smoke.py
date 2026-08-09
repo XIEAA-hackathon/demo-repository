@@ -62,6 +62,42 @@ def test_admin_role_is_enforced(client, db):
     assert client.get("/admin/state", headers=headers).status_code == 403
 
 
+def test_admin_login_rejects_invalid_password_and_requires_authentication(client, db):
+    admin = User(
+        name="Production Admin",
+        email="production-admin@example.com",
+        role="admin",
+        password_hash=get_password_hash("Correct-Password-123"),
+    )
+    db.add(admin)
+    db.commit()
+
+    valid = client.post("/login", data={"username": admin.email, "password": "Correct-Password-123"})
+    invalid = client.post("/login", data={"username": admin.email, "password": "wrong-password"})
+
+    assert valid.status_code == 200
+    assert valid.json()["access_token"]
+    assert invalid.status_code == 401
+    assert client.get("/admin/state").status_code == 401
+
+
+def test_admin_cannot_enter_participant_panel(client, db):
+    admin = User(
+        name="Panel Admin",
+        email="panel-admin@example.com",
+        role="admin",
+        password_hash=get_password_hash("Panel-Password-123"),
+    )
+    db.add(admin)
+    db.commit()
+    login = client.post("/login", data={"username": admin.email, "password": "Panel-Password-123"})
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    response = client.get("/participant/dashboard", headers=headers)
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Participant access required"
+
+
 def test_admin_can_read_event_state(client, admin_headers):
     response = client.get("/admin/state", headers=admin_headers)
     assert response.status_code == 200
