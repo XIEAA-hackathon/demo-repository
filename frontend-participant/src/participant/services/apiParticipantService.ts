@@ -55,7 +55,12 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
         name: member.member_name, email: member.email ?? '', isLeader: member.is_leader,
       })),
     },
-    currentUserId: String(raw.user.id), eventState: raw.eventState,
+    currentUserId: String(raw.user.id),
+    currentUser: {
+      id: String(raw.user.id), name: raw.user.name, loginId: raw.user.email,
+      role: raw.isLeader ? 'leader' : 'member',
+    },
+    eventState: raw.eventState,
     wallet: { teamId: String(raw.wallet.team_id), balance: raw.wallet.balance, currency: 'coins' },
     currentProblem, latestBid,
     roundOneSettlement: raw.eventState === 'ROUND1_RESULT' ? {

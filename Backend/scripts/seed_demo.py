@@ -22,6 +22,8 @@ def seed_demo() -> dict[str, str]:
     team_name = os.getenv("DEMO_TEAM_NAME", "Demo Team").strip() or "Demo Team"
     leader_email = required("DEMO_LEADER_EMAIL").lower()
     leader_password = required("DEMO_LEADER_PASSWORD")
+    member_email = required("DEMO_MEMBER_EMAIL").lower()
+    member_password = required("DEMO_MEMBER_PASSWORD")
     admin_email = required("DEMO_ADMIN_EMAIL").lower()
     admin_password = required("DEMO_ADMIN_PASSWORD")
 
@@ -59,14 +61,20 @@ def seed_demo() -> dict[str, str]:
             team.coins = starting_coins
         leader.team_id = team.id
 
-        member_rows = [
-            ("Demo Member One", "member.one@demo.example.com"),
-            ("Demo Member Two", "member.two@demo.example.com"),
-        ]
+        member_rows = [("Demo Member One", member_email)]
         existing_emails = {member.email for member in db.query(Member).filter(Member.team_id == team.id).all()}
         for name, email in member_rows:
             if email not in existing_emails:
                 db.add(Member(team_id=team.id, member_name=name, email=email))
+
+        member_user = db.query(User).filter(User.email == member_email).first()
+        if member_user is None:
+            member_user = User(name="Demo Member One", email=member_email, role="member", password_hash="")
+            db.add(member_user)
+        member_user.name = "Demo Member One"
+        member_user.role = "member"
+        member_user.team_id = team.id
+        member_user.password_hash = get_password_hash(member_password)
 
         has_initial_allocation = db.query(WalletTransaction).filter(
             WalletTransaction.team_id == team.id,
@@ -81,7 +89,7 @@ def seed_demo() -> dict[str, str]:
             ))
 
         db.commit()
-        return {"team": team_name, "leader": leader_email, "admin": admin_email}
+        return {"team": team_name, "leader": leader_email, "member": member_email, "admin": admin_email}
     except Exception:
         db.rollback()
         raise
@@ -91,4 +99,7 @@ def seed_demo() -> dict[str, str]:
 
 if __name__ == "__main__":
     result = seed_demo()
-    print(f"Demo data ready: team={result['team']}, leader={result['leader']}, admin={result['admin']}")
+    print(
+        f"Demo data ready: team={result['team']}, leader={result['leader']}, "
+        f"member={result['member']}, admin={result['admin']}"
+    )

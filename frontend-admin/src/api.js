@@ -67,3 +67,6 @@ export const previewRegistrationImport = (file) => {
   return request("/admin/registration/import/preview", { method: "POST", body });
 };
 export const confirmRegistrationImport = (importId) => request("/admin/registration/import/confirm", { method: "POST", body: JSON.stringify({ import_id: importId }) });
+export const createTeamCredentials = (payload) => request("/admin/teams/credentials", { method: "POST", body: JSON.stringify(payload) });
+export const getTeamCredentials = (teamId) => request(`/admin/teams/${teamId}/credentials`);
+export const resetParticipantPassword = (userId) => request(`/admin/participant-accounts/${userId}/reset-password`, { method: "POST" });

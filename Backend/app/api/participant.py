@@ -12,7 +12,7 @@ from app.api.auth import get_current_user
 from app.services.event_service import (
     get_team_for_user, get_or_create_game_config, get_or_create_event_config,
     current_user_is_team_leader,
-    event_snapshot, event_timing,
+    ensure_leader, event_snapshot, event_timing,
 )
 from app.api.websockets import manager
 
@@ -197,11 +197,7 @@ async def create_submission(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    team = get_team_for_user(db, current_user)
-    if not team:
-        raise HTTPException(status_code=404, detail="No team linked to this account")
-    if team.leader_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Only the imported team leader can submit the repository.")
+    team = ensure_leader(db, current_user)
     if not team.ps_id:
         raise HTTPException(status_code=400, detail="Team has no allocated problem.")
     if not submission.repository_url.startswith("https://github.com/"):
@@ -236,11 +232,7 @@ async def update_submission(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    team = get_team_for_user(db, current_user)
-    if not team:
-        raise HTTPException(status_code=404, detail="No team linked to this account")
-    if team.leader_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Only the imported team leader can update the repository.")
+    team = ensure_leader(db, current_user)
     if not submission.repository_url.startswith("https://github.com/"):
         raise HTTPException(status_code=400, detail="Repository URL must be a valid GitHub URL starting with https://github.com/")
 

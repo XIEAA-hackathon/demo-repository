@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from app.core.database import get_db
 from app.models.models import User, Team, Member
@@ -79,7 +80,8 @@ def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends
 
 @router.post("/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form_data.username).first()
+    login_id = form_data.username.strip().lower()
+    user = db.query(User).filter(func.lower(User.email) == login_id).first()
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

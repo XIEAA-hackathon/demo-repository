@@ -1,23 +1,21 @@
 import NeonButton from '../common/NeonButton'
 import { eventContent } from '../../config/eventContent'
+import casinoBackground from './casinobg.jpg'
 
 export default function HeroSection() {
   return (
-    <section className="relative overflow-hidden" aria-label="Hero">
+    <section className="hero-casino relative overflow-hidden" aria-label="Hero">
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-hex-grid opacity-60"
+        className="hero-casino__image pointer-events-none absolute inset-0"
+        style={{ backgroundImage: `url(${casinoBackground})` }}
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -top-32 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-purple/30 blur-[120px]"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute right-[-10rem] top-40 h-72 w-72 rounded-full bg-purple-neon/20 blur-[100px]"
+        className="hero-casino__overlay pointer-events-none absolute inset-0"
       />
 
-      <div className="container-page relative flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center py-20 text-center">
+      <div className="container-page relative flex min-h-[calc(100vh-4rem)] flex-col items-start justify-center py-20 text-left">
         <p className="mb-4 font-mono text-xs font-semibold uppercase tracking-widest-xl text-purple-neon">
           Presented by {eventContent.presentedBy}
         </p>
@@ -50,7 +48,7 @@ export default function HeroSection() {
           </NeonButton>
         </div>
 
-        <div className="mt-16 flex flex-wrap items-center justify-center gap-x-10 gap-y-4 font-mono text-xs uppercase tracking-widest text-ink-muted">
+        <div className="mt-16 flex flex-wrap items-center justify-start gap-x-10 gap-y-4 font-mono text-xs uppercase tracking-widest text-ink-muted">
           <span>{eventContent.date}</span>
           <span aria-hidden="true" className="text-gold-bright">&#9670;</span>
           <span>{eventContent.time}</span>

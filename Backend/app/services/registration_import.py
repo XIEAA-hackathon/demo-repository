@@ -105,8 +105,21 @@ def _is_valid_email(value: str) -> bool:
     return bool(EMAIL_RE.match(value.strip()))
 
 def _default_password() -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(8))
+    """Return a one-time password with mixed character classes.
+
+    The plaintext value is returned to the administrator once; callers persist
+    only its password hash.
+    """
+    required = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%"),
+    ]
+    alphabet = string.ascii_letters + string.digits + "!@#$%"
+    password = required + [secrets.choice(alphabet) for _ in range(10)]
+    secrets.SystemRandom().shuffle(password)
+    return "".join(password)
 
 def parse_registration_file(filename: str, content: bytes, simple_mode: bool = False) -> Dict[str, Any]:
     """Parse an uploaded .xlsx / .csv into normalized rows.

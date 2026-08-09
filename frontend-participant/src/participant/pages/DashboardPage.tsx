@@ -53,7 +53,7 @@ export default function DashboardPage() {
   return (
     <div className="stack">
       <PageHeading eyebrow="Participant dashboard" title={dashboard.team.name}>
-        Your team’s event status and next action.
+        {dashboard.currentUser.name} · {dashboard.isLeader ? 'Team leader' : 'Team member · View only'}
       </PageHeading>
 
       <div className="dashboard-grid">
@@ -82,7 +82,8 @@ export default function DashboardPage() {
         <Card className="dash-next">
           <span className="eyebrow">Next action</span>
           <h2>{stage.label}</h2>
-          <p className="muted">{nextAction[dashboard.eventState]}</p>
+          <p className="muted">{dashboard.isLeader ? nextAction[dashboard.eventState] : `Spectator mode: ${nextAction[dashboard.eventState]}`}</p>
+          {!dashboard.isLeader && <p className="notice">You see the same live team state; mutation controls remain reserved for the registered team leader.</p>}
           <Link className="button button--primary" to={stage.path}>Open current stage</Link>
         </Card>
       </div>

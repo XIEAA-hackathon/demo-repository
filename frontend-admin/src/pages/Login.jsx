@@ -29,6 +29,13 @@ export default function Login({ onLogin }) {
             {error && <div className="login-error" role="alert">{error}</div>}
             <button className="login-button" disabled={loading} type="submit">{loading ? "AUTHENTICATING…" : "ENTER CONTROL CENTER"}<span>→</span></button>
           </form>
+          <div className="admin-demo-credentials">
+            <strong>DEMO / DEVELOPMENT CREDENTIALS</strong>
+            <code>admin.demo@bidtobuild.example.com</code>
+            <code>DemoAdmin@123</code>
+            <button type="button" onClick={() => { setEmail("admin.demo@bidtobuild.example.com"); setPassword("DemoAdmin@123"); }}>USE ADMIN DEMO</button>
+            <a href="/participant/login">Leader and teammate demo accounts →</a>
+          </div>
           <div className="system-status"><span className="status-dot online" />Backend authentication required</div>
         </section>
         <p className="login-footer">XIE · ALUMNI COMMITTEE · BID TO BUILD</p>

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional, Any
 from datetime import datetime
 
@@ -275,12 +275,29 @@ class ImportPreviewResponse(BaseModel):
     rows: List[ImportRowPreview]
 
 class CredentialRow(BaseModel):
+    user_id: Optional[int] = None
     team_name: str
     name: str
     email: str
     username: str
+    participant_id: Optional[str] = None
     temporary_password: str
     role: str
+
+class ParticipantIdentityInput(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    email: Optional[EmailStr] = None
+
+class ManualTeamCredentialsRequest(BaseModel):
+    team_name: str = Field(min_length=1, max_length=120)
+    leader: ParticipantIdentityInput
+    members: List[ParticipantIdentityInput] = Field(min_length=1, max_length=3)
+
+class ManualTeamCredentialsResponse(BaseModel):
+    team_id: int
+    team_name: str
+    member_count: int
+    credentials: List[CredentialRow]
 
 class ImportConfirmRequest(BaseModel):
     import_id: int

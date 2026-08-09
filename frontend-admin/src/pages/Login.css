@@ -309,6 +309,20 @@
   font-size: 11px;
 }
 
+.admin-demo-credentials {
+  display: grid;
+  gap: 6px;
+  margin-top: 18px;
+  padding: 13px;
+  border: 1px solid rgba(190, 76, 255, 0.2);
+  border-radius: 9px;
+  background: rgba(5, 1, 12, 0.45);
+}
+
+.admin-demo-credentials strong { color: #e7b95a; font-size: 9px; letter-spacing: 1.2px; }
+.admin-demo-credentials code { color: #b8a9c1; font-size: 11px; overflow-wrap: anywhere; }
+.admin-demo-credentials button, .admin-demo-credentials a { width: max-content; padding: 3px 0; border: 0; background: transparent; color: #bd62ff; cursor: pointer; font-size: 9px; font-weight: 800; text-decoration: none; }
+
 .status-dot {
   width: 7px;
   height: 7px;

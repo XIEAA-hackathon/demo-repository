@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
+:root {
     --bg-main: 5 3 10;
     --bg-secondary: 9 4 17;
     --surface: 13 6 24;
@@ -53,6 +53,31 @@
     outline: 2px solid rgb(var(--purple-neon));
     outline-offset: 2px;
     border-radius: 4px;
+  }
+}
+
+.hero-casino {
+  min-height: calc(100vh - 4rem);
+  background: #030208;
+}
+
+.hero-casino__image {
+  background-position: center 46%;
+  background-repeat: no-repeat;
+  background-size: cover;
+  filter: saturate(1.04) contrast(1.03);
+}
+
+.hero-casino__overlay {
+  background:
+    linear-gradient(90deg, rgba(3,2,8,.98) 0%, rgba(3,2,8,.9) 23%, rgba(3,2,8,.56) 47%, rgba(3,2,8,.16) 72%, rgba(3,2,8,.06) 100%),
+    linear-gradient(0deg, rgba(3,2,8,.42), transparent 38%, rgba(3,2,8,.18));
+}
+
+@media (max-width: 768px) {
+  .hero-casino__image { background-position: 58% center; }
+  .hero-casino__overlay {
+    background: linear-gradient(90deg, rgba(3,2,8,.97) 0%, rgba(3,2,8,.82) 58%, rgba(3,2,8,.48) 100%);
   }
 }
 

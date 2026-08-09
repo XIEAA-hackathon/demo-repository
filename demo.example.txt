@@ -8,6 +8,9 @@ Team: Demo Team
 Leader login: leader@example.com
 Leader password: replace-with-demo-password
 
+Teammate login: member@example.com
+Teammate password: replace-with-demo-password
+
 Admin login: admin@example.com
 Admin password: replace-with-demo-password
 

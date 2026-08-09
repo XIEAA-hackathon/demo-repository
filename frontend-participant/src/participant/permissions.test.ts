@@ -10,12 +10,21 @@ function dashboard(team: Team, currentUserId: string): ParticipantDashboard {
   return {
     team,
     currentUserId,
-    eventState: 'LEADER_SELECTION',
+    currentUser: { id: currentUserId, name: currentUserId, loginId: `${currentUserId}@test.local`, role: team.leaderId === currentUserId ? 'leader' : 'member' },
+    eventState: 'WAITING',
     wallet: { teamId: team.id, balance: 1000, currency: 'coins' },
     currentProblem: null,
     latestBid: null,
+    roundOneSettlement: null,
     wildcardApplication: null,
     submission: null,
+    isLeader: team.leaderId === currentUserId,
+    gameConfig: {
+      round1WinnerCount: 5, round1PreviewSeconds: 120, round1BidSeconds: 300,
+      wildcardSlots: 3, wildcardPreviewSeconds: 120, wildcardBidSeconds: 180,
+      codingDurationSeconds: 10800,
+    },
+    timing: { serverTime: new Date(0).toISOString(), receivedAt: 0, startedAt: null, endsAt: null, paused: false, pausedRemainingSeconds: null },
   }
 }
 

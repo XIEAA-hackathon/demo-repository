@@ -44,6 +44,10 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 @keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .topbar__team { display: flex; align-items: flex-end; flex-direction: column; gap: .15rem; font-size: .8rem; color: var(--muted); }
 .topbar__team strong { color: var(--gold-bright); font-family: 'JetBrains Mono', monospace; }
+.participant-identity { display: grid; justify-items: end; gap: .08rem; }
+.participant-identity small { color: var(--muted); font-size: .62rem; text-transform: uppercase; letter-spacing: .09em; }
+.participant-identity strong { color: var(--text); font-family: inherit; font-size: .82rem; }
+.participant-identity em { color: var(--purple-neon); font-size: .58rem; font-style: normal; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .workspace { width: min(1440px, 100%); margin: 0 auto; padding: 1.25rem; display: grid; grid-template-columns: 245px minmax(0, 1fr); gap: 1.25rem; }
 .workspace__main { min-width: 0; min-height: calc(100vh - 112px); padding: clamp(1.25rem, 4vw, 3rem); border: 1px solid rgba(255,255,255,.08); border-radius: 1rem; background: rgba(9,4,17,.78); box-shadow: 0 18px 55px rgba(0,0,0,.35); }
 
@@ -330,10 +334,17 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 
 /* ============ Authentication ============ */
 .participant-login { min-height: 100vh; display: grid; place-items: center; padding: 2rem; background: radial-gradient(circle at top, rgba(127, 61, 255, .22), transparent 48%), var(--bg); }
-.participant-login__card { width: min(100%, 440px); padding: 2rem; border: 1px solid var(--border); border-radius: 20px; background: rgba(17, 12, 33, .92); box-shadow: 0 24px 80px rgba(0, 0, 0, .45); }
+.participant-login__card { width: min(100%, 760px); padding: 2rem; border: 1px solid var(--border); border-radius: 20px; background: rgba(17, 12, 33, .92); box-shadow: 0 24px 80px rgba(0, 0, 0, .45); }
 .participant-login__brand { display: inline-flex; margin-bottom: 2rem; }
 .participant-login__card h1 { margin: .35rem 0; }
 .participant-login__card .form { margin-top: 1.5rem; }
+.demo-credentials { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid rgba(255,255,255,.09); }
+.demo-credentials > strong { grid-column: 1 / -1; color: var(--gold-bright); font-size: .66rem; letter-spacing: .14em; text-transform: uppercase; }
+.demo-credentials article { min-width: 0; display: grid; gap: .35rem; padding: .8rem; border: 1px solid rgba(180,25,255,.2); border-radius: .7rem; background: rgba(5,3,10,.55); }
+.demo-credentials article > span { color: var(--purple-neon); font-size: .62rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.demo-credentials code { overflow-wrap: anywhere; color: var(--muted); font-size: .66rem; }
+.demo-credentials button, .demo-credentials a { width: max-content; padding: .35rem 0; border: 0; color: var(--gold-bright); background: transparent; cursor: pointer; font-size: .65rem; font-weight: 700; text-transform: uppercase; }
+@media (max-width: 700px) { .demo-credentials { grid-template-columns: 1fr; } }
 .stage-nav__note { margin: 1rem; font-size: .75rem; }
 .topbar__team .button { padding: .45rem .75rem; }
 

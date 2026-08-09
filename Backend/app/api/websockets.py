@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from jose import JWTError, jwt
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.database import SessionLocal
+from app.core.database import get_db
 from app.models.models import User
 from app.services.event_service import event_snapshot, get_team_for_user
 
@@ -62,10 +63,9 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-def _authenticate_socket(token: str | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def _authenticate_socket(token: str | None, db: Session) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if not token:
         return None, None
-    db = SessionLocal()
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         email = payload.get("sub")
@@ -85,13 +85,11 @@ def _authenticate_socket(token: str | None) -> tuple[dict[str, Any] | None, dict
         return identity, snapshot
     except JWTError:
         return None, None
-    finally:
-        db.close()
 
 
 @router.websocket("/ws/auction")
-async def websocket_auction(websocket: WebSocket):
-    identity, snapshot = _authenticate_socket(websocket.query_params.get("token"))
+async def websocket_auction(websocket: WebSocket, db: Session = Depends(get_db)):
+    identity, snapshot = _authenticate_socket(websocket.query_params.get("token"), db)
     if not identity or not snapshot:
         await websocket.close(code=4401, reason="Valid access token required")
         return

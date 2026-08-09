@@ -94,6 +94,12 @@ export interface RoundOneSettlement {
 export interface ParticipantDashboard {
   team: Team
   currentUserId: Id
+  currentUser: {
+    id: Id
+    name: string
+    loginId: string
+    role: 'leader' | 'member'
+  }
   eventState: ParticipantEventState
   wallet: Wallet
   currentProblem: Problem | WildcardProblem | null

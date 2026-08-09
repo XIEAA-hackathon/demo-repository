@@ -23,7 +23,11 @@ export default function ParticipantLayout() {
             <strong>{stage.label}</strong>
           </div>
           <div className="topbar__team">
-            <span>{dashboard?.team.name ?? 'Loading team…'}</span>
+            <span className="participant-identity">
+              <small>Team: {dashboard?.team.name ?? 'Loading team…'}</small>
+              <strong>{dashboard?.currentUser.name ?? 'Loading participant…'}</strong>
+              <em>{dashboard?.isLeader ? 'Team leader' : 'Team member · View only'}</em>
+            </span>
             <strong>Coins: {dashboard?.wallet.balance.toLocaleString() ?? '—'}</strong>
             <button className="button button--secondary" type="button" onClick={() => void logout()}>Logout</button>
           </div>

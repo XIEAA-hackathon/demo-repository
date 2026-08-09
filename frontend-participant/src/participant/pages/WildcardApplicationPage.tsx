@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useParticipant } from '../ParticipantContext'
+import { getParticipantPermissions } from '../permissions'
 import AdvanceButton from '../components/AdvanceButton'
 import WaitingState from '../components/WaitingState'
 import { Button, Card, PageHeading } from '../components/ui'
@@ -9,6 +10,7 @@ export default function WildcardApplicationPage() {
   const [working, setWorking] = useState(false)
   if (!dashboard) return null
   const applied = Boolean(dashboard.wildcardApplication)
+  const permissions = getParticipantPermissions(dashboard)
 
   const apply = async () => {
     setWorking(true)
@@ -34,7 +36,8 @@ export default function WildcardApplicationPage() {
         </Card>
       ) : (
         <Card className="center-card">
-          <Button variant="gold" onClick={() => void apply()} disabled={working}>{working ? 'Applying…' : 'Apply for wildcard'}</Button>
+          <Button variant="gold" onClick={() => void apply()} disabled={!permissions.isLeader || working}>{working ? 'Applying…' : 'Apply for wildcard'}</Button>
+          {!permissions.isLeader && <p className="notice">Only your team leader can apply. You can continue watching the wildcard status here.</p>}
         </Card>
       )}
 

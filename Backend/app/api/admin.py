@@ -1,6 +1,7 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -12,7 +13,8 @@ from app.models.models import (
 from app.schemas.schemas import (
     EventConfigUpdate, EventConfigResponse,
     ImportPreviewResponse, ImportConfirmResponse, ImportRowPreview,
-    CredentialRow, EventStateUpdate, EVENT_STATES,
+    CredentialRow, ManualTeamCredentialsRequest, ManualTeamCredentialsResponse,
+    EventStateUpdate, EVENT_STATES,
 )
 from app.api.auth import get_current_active_admin
 from app.api.websockets import manager
@@ -22,11 +24,44 @@ from app.services.event_service import (
     get_or_create_game_config,
     transition_event_state,
 )
-from app.services.registration_import import parse_registration_file, generate_credentials, _is_valid_email
+from app.services.registration_import import (
+    parse_registration_file, generate_credentials, _default_password, _is_valid_email,
+)
 from app.core.security import get_password_hash
 import json
 
 router = APIRouter()
+
+
+def _user_by_login(db: Session, login_id: str) -> User | None:
+    return db.query(User).filter(func.lower(User.email) == login_id.strip().lower()).first()
+
+
+def _participant_id(db: Session, team_id: int, position: int) -> str:
+    base = f"BTB-T{team_id:03d}-M{position:02d}"
+    candidate = base
+    suffix = 2
+    existing = _user_by_login(db, candidate)
+    if existing and existing.team_id == team_id:
+        return candidate
+    while existing:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+        existing = _user_by_login(db, candidate)
+    return candidate
+
+
+def _credential(user: User, team: Team, password: str, supplied_email: str = "") -> CredentialRow:
+    return CredentialRow(
+        user_id=user.id,
+        team_name=team.team_name,
+        name=user.name,
+        email=supplied_email,
+        username=user.email,
+        participant_id=user.email,
+        temporary_password=password,
+        role=user.role,
+    )
 
 # ---------------------------------------------------------------- Event Config
 
@@ -109,6 +144,154 @@ def get_event_state_admin(
 ):
     snapshot = event_snapshot(db)
     return {"state": snapshot["event_state"], **snapshot, "allowed_states": EVENT_STATES}
+
+# ---------------------------------------------------------------- Participant credentials
+
+@router.post(
+    "/admin/teams/credentials",
+    response_model=ManualTeamCredentialsResponse,
+    status_code=201,
+)
+async def create_team_credentials(
+    payload: ManualTeamCredentialsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """Create one team wallet and an individual account for every participant.
+
+    Temporary passwords are returned once and never persisted as plaintext.
+    """
+    team_name = payload.team_name.strip()
+    if db.query(Team).filter(func.lower(Team.team_name) == team_name.lower()).first():
+        raise HTTPException(status_code=409, detail="TEAM ALREADY EXISTS")
+    if not payload.leader.email:
+        raise HTTPException(status_code=422, detail="Leader email is required.")
+
+    supplied_logins = [str(payload.leader.email).strip().lower()]
+    supplied_logins.extend(
+        str(member.email).strip().lower() for member in payload.members if member.email
+    )
+    if len(supplied_logins) != len(set(supplied_logins)):
+        raise HTTPException(status_code=409, detail="Each participant email/login ID must be unique.")
+    for login_id in supplied_logins:
+        if _user_by_login(db, login_id):
+            raise HTTPException(status_code=409, detail=f"ACCOUNT ALREADY EXISTS: {login_id}")
+
+    config = get_or_create_event_config(db)
+    team = Team(team_name=team_name, coins=config.starting_coins, is_approved=True)
+    db.add(team)
+    db.flush()
+
+    credentials: List[CredentialRow] = []
+    leader_password = _default_password()
+    leader_email = str(payload.leader.email).strip().lower()
+    leader = User(
+        name=payload.leader.name.strip(),
+        email=leader_email,
+        password_hash=get_password_hash(leader_password),
+        role="leader",
+        team_id=team.id,
+    )
+    db.add(leader)
+    db.flush()
+    team.leader_id = leader.id
+    credentials.append(_credential(leader, team, leader_password, leader_email))
+
+    for position, member in enumerate(payload.members, start=1):
+        supplied_email = str(member.email).strip().lower() if member.email else ""
+        login_id = supplied_email or _participant_id(db, team.id, position)
+        password = _default_password()
+        member_user = User(
+            name=member.name.strip(),
+            email=login_id,
+            password_hash=get_password_hash(password),
+            role="member",
+            team_id=team.id,
+        )
+        db.add(member_user)
+        db.flush()
+        db.add(Member(
+            team_id=team.id,
+            member_name=member_user.name,
+            email=login_id,
+        ))
+        credentials.append(_credential(member_user, team, password, supplied_email))
+
+    db.add(WalletTransaction(
+        team_id=team.id,
+        transaction_type="INITIAL_ALLOCATION",
+        amount=config.starting_coins,
+        description="Initial AlumniCoins from EventConfig",
+    ))
+    db.commit()
+
+    await manager.broadcast_event("team_updated", {
+        "action": "team_credentials_created",
+        "team_id": team.id,
+        "team_name": team.team_name,
+    })
+    return ManualTeamCredentialsResponse(
+        team_id=team.id,
+        team_name=team.team_name,
+        member_count=len(credentials),
+        credentials=credentials,
+    )
+
+
+@router.get(
+    "/admin/teams/{team_id}/credentials",
+    response_model=ManualTeamCredentialsResponse,
+)
+def get_team_credentials(
+    team_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """List existing participant login IDs without exposing passwords."""
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found.")
+    accounts = db.query(User).filter(or_(User.team_id == team.id, User.id == team.leader_id)).all()
+    accounts.sort(key=lambda account: (account.id != team.leader_id, account.name.lower()))
+    credentials = [
+        _credential(account, team, "", account.email if "@" in account.email else "")
+        for account in accounts
+        if account.role in ("leader", "member")
+    ]
+    return ManualTeamCredentialsResponse(
+        team_id=team.id,
+        team_name=team.team_name,
+        member_count=len(credentials),
+        credentials=credentials,
+    )
+
+
+@router.post(
+    "/admin/participant-accounts/{user_id}/reset-password",
+    response_model=CredentialRow,
+)
+def reset_participant_password(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    account = db.query(User).filter(User.id == user_id).first()
+    if not account or account.role not in ("leader", "member"):
+        raise HTTPException(status_code=404, detail="Participant account not found.")
+    team = (
+        db.query(Team).filter(Team.id == account.team_id).first()
+        if account.team_id
+        else db.query(Team).filter(Team.leader_id == account.id).first()
+    )
+    if not team:
+        raise HTTPException(status_code=409, detail="Participant account is not assigned to a team.")
+    password = _default_password()
+    account.password_hash = get_password_hash(password)
+    account.session_id = None
+    db.commit()
+    supplied_email = account.email if "@" in account.email else ""
+    return _credential(account, team, password, supplied_email)
+
 
 # ---------------------------------------------------------------- Registration Import
 
@@ -230,7 +413,10 @@ async def confirm_registration_import(
             db.add(WalletTransaction(team_id=team.id, transaction_type="INITIAL_ALLOCATION", amount=starting_coins, description="Initial AlumniCoins from EventConfig"))
 
         # --- leader user: find by email or create ---
-        leader = db.query(User).filter(User.email == row.leader_email).first()
+        leader_email = row.leader_email.strip().lower()
+        leader = _user_by_login(db, leader_email)
+        if leader and leader.team_id not in (None, team.id):
+            raise HTTPException(status_code=409, detail=f"ACCOUNT ALREADY EXISTS: {leader_email}")
         row_as_dict = {
             "team_name": row.team_name,
             "leader_name": row.leader_name,
@@ -240,7 +426,7 @@ async def confirm_registration_import(
             created_password = generate_credentials([row_as_dict])[0]["temporary_password"]
             leader = User(
                 name=row.leader_name,
-                email=row.leader_email,
+                email=leader_email,
                 password_hash=get_password_hash(created_password),
                 role="leader",
                 team_id=team.id,
@@ -248,52 +434,41 @@ async def confirm_registration_import(
             db.add(leader)
             db.flush()
             accounts_created += 1
-            credentials.append(CredentialRow(
-                team_name=row.team_name,
-                name=row.leader_name,
-                email=row.leader_email,
-                username=row.leader_email,
-                temporary_password=created_password,
-                role="leader",
-            ))
+            credentials.append(_credential(leader, team, created_password, leader_email))
 
         team.leader_id = leader.id
         leader.team_id = team.id
         leader.name = row.leader_name
+        leader.role = "leader"
 
         # --- members (replace member list; preserve member emails) ---
         for existing in team.members:
             db.delete(existing)
-        for member in members:
-            db.add(Member(team_id=team.id, member_name=member.get("name", ""), email=member.get("email") or None))
-            member_email = member.get("email")
-            if member_email and _is_valid_email(member_email):
-                member_user = db.query(User).filter(User.email == member_email).first()
-                if not member_user:
-                    created_password = generate_credentials([{
-                        "team_name": row.team_name,
-                        "leader_name": member.get("name", ""),
-                        "leader_email": member_email,
-                    }])[0]["temporary_password"]
-                    member_user = User(
-                        name=member.get("name", ""),
-                        email=member_email,
-                        password_hash=get_password_hash(created_password),
-                        role="member",
-                        team_id=team.id,
-                    )
-                    db.add(member_user)
-                    accounts_created += 1
-                    credentials.append(CredentialRow(
-                        team_name=row.team_name,
-                        name=member.get("name", ""),
-                        email=member_email,
-                        username=member_email,
-                        temporary_password=created_password,
-                        role="member",
-                    ))
-                else:
-                    member_user.team_id = team.id
+        for position, member in enumerate(members, start=1):
+            member_name = (member.get("name") or "").strip()
+            member_email = (member.get("email") or "").strip().lower()
+            login_id = member_email if member_email and _is_valid_email(member_email) else _participant_id(db, team.id, position)
+            member_user = _user_by_login(db, login_id)
+            if member_user and member_user.team_id not in (None, team.id):
+                raise HTTPException(status_code=409, detail=f"ACCOUNT ALREADY EXISTS: {login_id}")
+            if not member_user:
+                created_password = _default_password()
+                member_user = User(
+                    name=member_name,
+                    email=login_id,
+                    password_hash=get_password_hash(created_password),
+                    role="member",
+                    team_id=team.id,
+                )
+                db.add(member_user)
+                db.flush()
+                accounts_created += 1
+                credentials.append(_credential(member_user, team, created_password, member_email))
+            else:
+                member_user.name = member_name
+                member_user.role = "member"
+                member_user.team_id = team.id
+            db.add(Member(team_id=team.id, member_name=member_name, email=login_id))
 
         team.is_approved = True
 

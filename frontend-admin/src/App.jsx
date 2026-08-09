@@ -3,8 +3,9 @@ import Login from "./pages/Login";
 import {
   addTime, approveTeam, clearToken, confirmRegistrationImport, deleteTeam, finalizeProblem,
   finalizeWildcard, getAdminConfig, getAdminState, getBidHistory, getLeaderboard,
-  getProblemStatements, getTeams, hasToken, logout, pauseTimer, previewRegistrationImport,
-  removeTime, resumeTimer, setEventState, setProblemVisibility, updateAdminConfig,
+  getProblemStatements, getTeamCredentials, getTeams, hasToken, logout, pauseTimer, previewRegistrationImport,
+  removeTime, resetParticipantPassword, resumeTimer, setEventState, setProblemVisibility,
+  updateAdminConfig, createTeamCredentials,
 } from "./api";
 import { connectAuctionSocket } from "./auctionSocket";
 import "./App.css";
@@ -98,7 +99,7 @@ function AdminApplication({ onLogout }) {
         <div className="sidebar-brand"><div className="sidebar-logo">♠</div><div><strong>Bid to Build</strong><span>Admin control</span></div></div>
         <span className="sidebar-section-title">Event operations</span>
         <nav className="sidebar-nav">
-          {[["dashboard", "Overview"], ["event", "Event control"], ["teams", "Teams"], ["problems", "Problems"], ["imports", "Registration import"], ["bids", "Bidding status"], ["leaderboard", "Leaderboard"]].map(([id, label]) => (
+          {[["dashboard", "Overview"], ["event", "Event control"], ["teams", "Teams"], ["credentials", "Participant ID"], ["problems", "Problems"], ["imports", "Registration import"], ["bids", "Bidding status"], ["leaderboard", "Leaderboard"]].map(([id, label]) => (
             <button key={id} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">◆</span>{label}</button>
           ))}
         </nav>
@@ -112,6 +113,7 @@ function AdminApplication({ onLogout }) {
           {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} />}
           {page === "event" && <EventControl state={state} config={config} currentIndex={currentIndex} remaining={remaining} onAction={action} onConfig={setConfig} />}
           {page === "teams" && <Teams teams={teams} onAction={action} />}
+          {page === "credentials" && <ParticipantCredentials teams={teams} />}
           {page === "problems" && <Problems problems={problems} state={state} onAction={action} />}
           {page === "imports" && <RegistrationImport onAction={action} />}
           {page === "bids" && <Bids bids={bidRows} teams={teams} problems={problems} />}
@@ -141,6 +143,81 @@ function Teams({ teams, onAction }) {
 
 function Problems({ problems, state, onAction }) {
   return <section className="page-section"><div className="problem-grid">{problems.map((problem) => <article className="problem-card" key={problem.id}><span className="problem-number">{problem.ps_number}</span><h3>{problem.title}</h3><p>{problem.description}</p><div className="problem-footer"><select value={problem.status} onChange={(event) => onAction(() => setProblemVisibility(problem.id, event.target.value), "Problem visibility updated.")}><option value="hidden">Hidden</option><option value="visible">Visible</option><option value="allocated">Allocated</option></select>{state?.event_state === "ROUND1_RESULT" && problem.round === 1 && problem.status !== "allocated" && <button className="primary-button" onClick={() => onAction(() => finalizeProblem(problem.id), "Round 1 winners finalized.")}>Finalize bids</button>}</div></article>)}</div></section>;
+}
+
+function ParticipantCredentials({ teams }) {
+  const emptyMember = () => ({ name: "", email: "" });
+  const [form, setForm] = useState({ team_name: "", leader: { name: "", email: "" }, members: [emptyMember()] });
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [working, setWorking] = useState(false);
+  const [existingTeamId, setExistingTeamId] = useState("");
+
+  const updateMember = (index, field, value) => setForm((current) => ({
+    ...current,
+    members: current.members.map((member, memberIndex) => memberIndex === index ? { ...member, [field]: value } : member),
+  }));
+
+  const submit = async (event) => {
+    event.preventDefault(); setWorking(true); setError(""); setNotice("");
+    try {
+      const payload = {
+        team_name: form.team_name.trim(),
+        leader: { name: form.leader.name.trim(), email: form.leader.email.trim() },
+        members: form.members.map((member) => ({ name: member.name.trim(), email: member.email.trim() || null })),
+      };
+      const created = await createTeamCredentials(payload);
+      setResult(created); setNotice("Credentials generated. Save or export them now; temporary passwords are not stored.");
+    } catch (cause) { setError(cause.message || "Credentials could not be generated."); }
+    finally { setWorking(false); }
+  };
+
+  const credentialText = () => result.credentials.map((item) => [
+    item.role.toUpperCase(), item.name, item.username, item.temporary_password,
+  ].join("\t")).join("\n");
+  const copyAll = async () => { await navigator.clipboard.writeText(`TEAM: ${result.team_name}\n${credentialText()}`); setNotice("Credentials copied."); };
+  const downloadCsv = () => {
+    const escape = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const rows = [["Team Name", "Participant Name", "Role", "Email", "Participant ID", "Temporary Password"],
+      ...result.credentials.map((item) => [result.team_name, item.name, item.role, item.email, item.participant_id || item.username, item.temporary_password])];
+    const blob = new Blob([rows.map((row) => row.map(escape).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob); const anchor = document.createElement("a");
+    anchor.href = url; anchor.download = `${result.team_name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-credentials.csv`; anchor.click();
+    URL.revokeObjectURL(url);
+  };
+  const resetPassword = async (userId) => {
+    setWorking(true); setError("");
+    try {
+      const updated = await resetParticipantPassword(userId);
+      setResult((current) => ({ ...current, credentials: current.credentials.map((item) => item.user_id === userId ? updated : item) }));
+      setNotice("Password reset. Save the newly displayed temporary password now.");
+    } catch (cause) { setError(cause.message || "Password reset failed."); }
+    finally { setWorking(false); }
+  };
+  const loadExisting = async () => {
+    if (!existingTeamId) return;
+    setWorking(true); setError(""); setNotice("");
+    try {
+      const existing = await getTeamCredentials(existingTeamId);
+      setResult(existing); setNotice("Existing login IDs loaded. Reset a password to reveal a new temporary value.");
+    } catch (cause) { setError(cause.message || "Existing credentials could not be loaded."); }
+    finally { setWorking(false); }
+  };
+
+  return <section className="page-section credentials-page">
+    <div className="panel existing-credentials"><div className="panel-heading"><div><h3>Existing team accounts</h3><span>Load login IDs and reset individual passwords without duplicating accounts.</span></div></div><div className="credential-actions"><select value={existingTeamId} onChange={(event) => setExistingTeamId(event.target.value)}><option value="">Select a team</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.team_name}</option>)}</select><button className="secondary-button" type="button" disabled={!existingTeamId || working} onClick={() => void loadExisting()}>Load accounts</button></div></div>
+    <div className="panel"><div className="panel-heading"><div><h3>Participant ID / Team credentials</h3><span>Create one shared team wallet with an individual login for every participant.</span></div></div>
+      <form className="credential-form" onSubmit={submit}>
+        <label>Team name<input value={form.team_name} onChange={(event) => setForm({ ...form, team_name: event.target.value })} required /></label>
+        <fieldset><legend>Team leader</legend><div className="credential-row"><label>Name<input value={form.leader.name} onChange={(event) => setForm({ ...form, leader: { ...form.leader, name: event.target.value } })} required /></label><label>Email<input type="email" value={form.leader.email} onChange={(event) => setForm({ ...form, leader: { ...form.leader, email: event.target.value } })} required /></label></div></fieldset>
+        <fieldset><legend>Teammates</legend>{form.members.map((member, index) => <div className="credential-row" key={index}><label>Member {index + 1} name<input value={member.name} onChange={(event) => updateMember(index, "name", event.target.value)} required /></label><label>Email (optional)<input type="email" value={member.email} onChange={(event) => updateMember(index, "email", event.target.value)} placeholder="Generated participant ID when blank" /></label>{form.members.length > 1 && <button className="danger-link remove-member" type="button" onClick={() => setForm({ ...form, members: form.members.filter((_, memberIndex) => memberIndex !== index) })}>Remove</button>}</div>)}</fieldset>
+        <div className="credential-actions">{form.members.length < 3 && <button className="secondary-button" type="button" onClick={() => setForm({ ...form, members: [...form.members, emptyMember()] })}>Add teammate</button>}<button className="primary-button" type="submit" disabled={working}>{working ? "Generating…" : "Generate credentials"}</button></div>
+      </form>
+      {error && <p className="global-error">{error}</p>}{notice && <p className="admin-notice">{notice}</p>}
+    </div>
+    {result && <div className="panel generated-credentials"><div className="panel-heading"><div><h3>Team: {result.team_name}</h3><span>Passwords are visible only in this response or after reset.</span></div><div className="credential-actions"><button className="secondary-button" onClick={() => void copyAll()}>Copy all</button><button className="secondary-button" onClick={downloadCsv}>Download CSV</button><button className="secondary-button" onClick={() => window.print()}>Print</button></div></div><div className="table-wrapper"><table><thead><tr><th>ROLE</th><th>NAME</th><th>LOGIN ID</th><th>TEMP PASSWORD</th><th>ACTION</th></tr></thead><tbody>{result.credentials.map((item) => <tr key={item.user_id}><td>{item.role}</td><td><strong>{item.name}</strong></td><td><code>{item.username}</code></td><td><code>{item.temporary_password || "Not reset"}</code></td><td><button className="danger-link" disabled={working} onClick={() => void resetPassword(item.user_id)}>Reset password</button></td></tr>)}</tbody></table></div></div>}
+  </section>;
 }
 
 function RegistrationImport() {

@@ -39,7 +39,7 @@ def test_confirm_import_creates_teams_members_leader_and_wallets(client, admin_h
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["teams_created"] == 3
-    assert data["accounts_created"] == 5  # 3 leaders + 2 member emails (Aarav, Charlie)
+    assert data["accounts_created"] == 7  # 3 leaders + all 4 teammates
 
     team_alpha = db.query(Team).filter(Team.team_name == "Team Alpha").first()
     assert team_alpha is not None
@@ -60,6 +60,12 @@ def test_confirm_import_creates_teams_members_leader_and_wallets(client, admin_h
     assert aarav_user is not None
     assert aarav_user.role == "member"
     assert aarav_user.team_id == team_alpha.id
+
+    # teammates without email receive a stable readable participant ID
+    diya_user = db.query(User).filter(User.email == f"BTB-T{team_alpha.id:03d}-M02").first()
+    assert diya_user is not None
+    assert diya_user.name == "Diya"
+    assert diya_user.team_id == team_alpha.id
 
     # wallet ledger entry
     tx = db.query(WalletTransaction).filter(WalletTransaction.team_id == team_alpha.id).first()
@@ -110,9 +116,11 @@ def test_import_credential_export(client, admin_headers, csv_bytes):
         files={"file": ("registrations.csv", csv_bytes, "text/csv")},
     ).json()
     confirm = client.post("/admin/registration/import/confirm", headers=admin_headers, json={"import_id": preview["import_id"]}).json()
-    assert len(confirm["credentials"]) == 5  # 3 leaders + 2 members with emails
+    assert len(confirm["credentials"]) == 7  # 3 leaders + every teammate
     assert all(c["temporary_password"] for c in confirm["credentials"])
-    assert all(c["username"] == c["email"] for c in confirm["credentials"])
+    assert all(c["participant_id"] == c["username"] for c in confirm["credentials"])
+    assert all(c["username"] == c["email"] for c in confirm["credentials"] if c["email"])
+    assert any(c["username"].startswith("BTB-T") for c in confirm["credentials"] if not c["email"])
 
 
 def test_import_requires_admin(client, csv_bytes):
