@@ -18,9 +18,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test-build-deploy:
+  test-build:
     runs-on: ubuntu-latest
-    environment: production
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
     steps:
       - name: Check out deployment source
         uses: actions/checkout@v4
@@ -110,39 +111,50 @@ jobs:
           tar -C "$stage" -czf "$archive" .
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
 
-      - name: Install SSH identity
+      - name: Upload tested release
+        uses: actions/upload-artifact@v4
+        with:
+          name: casino-release-${{ steps.version.outputs.sha }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    needs: test-build
+    runs-on: [self-hosted, linux, x64, casino-production]
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - name: Download tested release
+        uses: actions/download-artifact@v4
+        with:
+          name: casino-release-${{ needs.test-build.outputs.sha }}
+          path: ${{ runner.temp }}/casino-release
+
+      - name: Deploy immutable release
         shell: bash
         env:
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+          DEPLOY_SHA: ${{ needs.test-build.outputs.sha }}
         run: |
           set -Eeuo pipefail
-          install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$EC2_SSH_KEY" > "$HOME/.ssh/deploy_key"
-          chmod 600 "$HOME/.ssh/deploy_key"
-          ssh-keyscan -H "$EC2_HOST" >> "$HOME/.ssh/known_hosts"
+          archive="$RUNNER_TEMP/casino-release/casino-hackathon-$DEPLOY_SHA.tar.gz"
+          stage="$(mktemp -d "$RUNNER_TEMP/casino-deploy.XXXXXX")"
+          trap 'find "$stage" -mindepth 1 -delete; rmdir "$stage"' EXIT
+          test -f "$archive"
+          tar -xzf "$archive" -C "$stage" ./deploy/aws/deploy-release.sh
+          bash "$stage/deploy/aws/deploy-release.sh" "$archive" "$DEPLOY_SHA"
 
-      - name: Transfer and deploy release
-        shell: bash
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          DEPLOY_SHA: ${{ steps.version.outputs.sha }}
-          ARCHIVE: ${{ steps.package.outputs.archive }}
-        run: |
-          set -Eeuo pipefail
-          ssh_args=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes)
-          remote_dir="$(ssh "${ssh_args[@]}" "$EC2_USER@$EC2_HOST" 'mktemp -d /tmp/casino-deploy.XXXXXX')"
-          case "$remote_dir" in /tmp/casino-deploy.*) ;; *) echo "Unsafe remote staging path" >&2; exit 1;; esac
-          scp "${ssh_args[@]}" "$ARCHIVE" "$EC2_USER@$EC2_HOST:$remote_dir/release.tar.gz"
-          ssh "${ssh_args[@]}" "$EC2_USER@$EC2_HOST" \
-            "tar -xzf '$remote_dir/release.tar.gz' -C '$remote_dir' && bash '$remote_dir/deploy/aws/deploy-release.sh' '$remote_dir/release.tar.gz' '$DEPLOY_SHA'"
-
+  verify-public:
+    needs: [test-build, deploy]
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 5
+    steps:
       - name: Verify public deployment
         shell: bash
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
-          DEPLOY_SHA: ${{ steps.version.outputs.sha }}
+          DEPLOY_SHA: ${{ needs.test-build.outputs.sha }}
         run: |
           set -Eeuo pipefail
           base="http://$EC2_HOST"
