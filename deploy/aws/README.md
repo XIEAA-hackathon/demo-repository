@@ -1,6 +1,6 @@
 # AWS production deployment
 
-Production is deployed only by `.github/workflows/deploy-aws.yml`. A push to `main` tests the FastAPI backend and builds all three Vite applications on a GitHub-hosted runner, creates an artifact identified by the exact Git SHA, and sends that artifact to the repository-scoped EC2 runner over its outbound HTTPS connection.
+Production is deployed only by `.github/workflows/deploy-aws.yml`. A push to `main` tests the FastAPI backend and builds the single `frontend-website` umbrella application on a GitHub-hosted runner, creates an artifact identified by the exact Git SHA, and sends that artifact to the repository-scoped EC2 runner over its outbound HTTPS connection.
 
 Persistent state is outside releases:
 
@@ -11,7 +11,7 @@ Persistent state is outside releases:
 
 The deployment script is `deploy/aws/deploy-release.sh`. It records `PUSH RECEIVED`, `FETCHING`, `RELEASE CREATED`, `INSTALLING`, `BUILDING`, `VALIDATING`, `PROMOTING`, `RESTARTING`, `HEALTH CHECK`, and `LIVE` in `/var/log/casino-hackathon-deploy.log`. A server-side `flock` on `/var/lock/casino-hackathon-deploy.lock` supplements GitHub Actions concurrency protection.
 
-The tested frontend builds arrive in the artifact. Before promotion, the server installs backend dependencies with its actual Python interpreter and imports the FastAPI application through a transient systemd unit that uses `/etc/casino-hackathon/backend.env`. This catches runtime-version and production-configuration failures before `current` changes.
+The tested umbrella frontend build arrives at `static/index.html` in the artifact and serves `/`, `/participant/*`, and `/admin/*` through the same SPA fallback. Before promotion, the server installs backend dependencies with its actual Python interpreter and imports the FastAPI application through a transient systemd unit that uses `/etc/casino-hackathon/backend.env`. This catches runtime-version and production-configuration failures before `current` changes.
 
 Promotion uses an atomic temporary-symlink rename and immediately verifies `readlink -f /opt/casino_hackathon/current`. The deployment then restarts the real `casino-hackathon-backend.service`, confirms Uvicorn remains on `127.0.0.1:8000`, reloads Nginx after `nginx -t`, and checks internal health/version plus public-proxy and frontend routes. A release directory existing does not mean it is live.
 

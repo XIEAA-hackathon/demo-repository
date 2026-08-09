@@ -69,28 +69,16 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: |
-            frontend-website/package-lock.json
-            frontend-participant/package-lock.json
-            frontend-admin/package-lock.json
+          cache-dependency-path: frontend-website/package-lock.json
 
-      - name: Build public website
+      - name: Build umbrella frontend
         working-directory: frontend-website
         env:
-          VITE_PARTICIPANT_URL: /participant
-        run: npm ci --no-audit --no-fund && npm run build
-
-      - name: Build participant application
-        working-directory: frontend-participant
-        env:
           VITE_API_URL: /api
-        run: npm ci --no-audit --no-fund && npm run build
-
-      - name: Build admin application
-        working-directory: frontend-admin
-        env:
-          VITE_API_URL: /api
-        run: npm ci --no-audit --no-fund && npm run build
+        run: |
+          npm ci --no-audit --no-fund
+          npm run test:permissions
+          npm run build
 
       - name: Verify production bundles contain no seeded credentials
         shell: bash
@@ -98,7 +86,7 @@ jobs:
           set -Eeuo pipefail
           if grep -R -E -i \
             'DemoAdmin|DemoLeader|DemoMember|@demo\.example|admin\.demo@|Use Admin Demo|Use Leader Demo|Use Participant Demo' \
-            frontend-website/dist frontend-participant/dist frontend-admin/dist; then
+            frontend-website/dist; then
             echo 'Production bundle contains a seeded credential or demo-login helper.' >&2
             exit 1
           fi
@@ -112,11 +100,9 @@ jobs:
           set -Eeuo pipefail
           stage="$RUNNER_TEMP/casino-release"
           archive="$RUNNER_TEMP/casino-hackathon-$DEPLOY_SHA.tar.gz"
-          mkdir -p "$stage/Backend" "$stage/static/public" "$stage/static/participant" "$stage/static/admin" "$stage/deploy/aws"
+          mkdir -p "$stage/Backend" "$stage/static" "$stage/deploy/aws"
           cp -a Backend/app Backend/scripts Backend/requirements.txt Backend/run.py "$stage/Backend/"
-          cp -a frontend-website/dist/. "$stage/static/public/"
-          cp -a frontend-participant/dist/. "$stage/static/participant/"
-          cp -a frontend-admin/dist/. "$stage/static/admin/"
+          cp -a frontend-website/dist/. "$stage/static/"
           cp -a deploy/aws/deploy-release.sh deploy/aws/nginx.conf deploy/aws/casino-hackathon-backend.service "$stage/deploy/aws/"
           printf 'DEPLOYED_COMMIT=%s\n' "$DEPLOY_SHA" > "$stage/deploy.env"
           tar -C "$stage" -czf "$archive" .
