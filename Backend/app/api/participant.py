@@ -1,22 +1,45 @@
 from fastapi import APIRouter, Depends, HTTPException
+from urllib.parse import urlparse
+
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.models.models import User, Team, Member, Bid, Wildcard, Submission, GameConfig, ProblemStatement
+from app.models.models import User, Team, Member, Bid, Wildcard, WildcardBid, Submission, GameConfig, ProblemStatement
 from app.schemas.schemas import (
     ParticipantDashboardResponse, DashboardUser, DashboardTeam, DashboardMember,
     DashboardLeader, DashboardProblem, DashboardBid, DashboardWildcard,
     DashboardSubmission, DashboardGameConfig, SubmissionCreate, SubmissionUpdate,
     EventTiming, LeaderboardEntry,
 )
-from app.api.auth import get_current_active_participant
+from app.api.auth import get_current_active_admin, get_current_active_participant
 from app.services.event_service import (
-    get_team_for_user, get_or_create_game_config, get_or_create_event_config,
+    get_team_for_user, get_or_create_game_config, get_or_create_event_config, get_or_create_round_control,
     current_user_is_team_leader,
-    ensure_leader, event_snapshot, event_timing,
+    ensure_leader, event_snapshot, event_timing, transition_event_state,
 )
 from app.api.websockets import manager
+from app.services.wildcard_service import available_wildcard_problems, current_selection, ranked_wildcard_bids
+from app.services.activity_log import record_event
 
 router = APIRouter()
+
+
+def _dashboard_problem(problem: ProblemStatement | None) -> DashboardProblem | None:
+    if not problem:
+        return None
+    return DashboardProblem(
+        id=problem.id,
+        ps_number=problem.ps_number.split("-", 1)[-1],
+        title=problem.title,
+        description=problem.description,
+        round=problem.round,
+        status=problem.status,
+    )
+
+
+def _valid_github_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    parts = [part for part in parsed.path.split("/") if part]
+    return parsed.scheme == "https" and parsed.netloc.lower() in {"github.com", "www.github.com"} and len(parts) >= 2
 
 @router.get("/participant/dashboard", response_model=ParticipantDashboardResponse)
 def get_participant_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
@@ -46,17 +69,24 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             is_leader=(team.leader_id and m.member_name == leader.name) if leader else False,
         ))
 
-    current_problem = None
-    if team.ps_id:
-        ps = db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first()
-        if ps:
-            current_problem = DashboardProblem(
-                id=ps.id, ps_number=ps.ps_number, title=ps.title,
-                description=ps.description, round=ps.round, status=ps.status,
-            )
+    final_problem_obj = db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first() if team.ps_id else None
+    round1_problem_obj = db.query(ProblemStatement).filter(ProblemStatement.id == team.round1_problem_id).first() if team.round1_problem_id else None
+    wildcard_problem_obj = db.query(ProblemStatement).filter(ProblemStatement.id == team.wildcard_problem_id).first() if team.wildcard_problem_id else None
+    # Compatibility for assignments created before explicit history fields existed.
+    if final_problem_obj and final_problem_obj.round == 1 and not round1_problem_obj:
+        round1_problem_obj = final_problem_obj
+    if final_problem_obj and final_problem_obj.round == 2 and not wildcard_problem_obj:
+        wildcard_problem_obj = final_problem_obj
+
+    current_problem = _dashboard_problem(final_problem_obj)
+    if not current_problem and config.state.startswith("ROUND1"):
+        control = get_or_create_round_control(db, "ROUND1")
+        current_problem = _dashboard_problem(
+            db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
+        )
 
     current_bid = None
-    latest_bid = db.query(Bid).filter(Bid.team_id == team.id).order_by(Bid.timestamp.desc()).first()
+    latest_bid = db.query(Bid).filter(Bid.team_id == team.id, Bid.round == 1).order_by(Bid.timestamp.desc()).first()
     if latest_bid:
         current_bid = DashboardBid(
             id=latest_bid.id, team_id=latest_bid.team_id, ps_id=latest_bid.ps_id,
@@ -64,17 +94,37 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         )
 
     wildcard = db.query(Wildcard).filter(Wildcard.team_id == team.id).first()
+    wildcard_bid = db.query(WildcardBid).filter(WildcardBid.team_id == team.id).first()
     wildcard_out = None
     if wildcard:
-        wildcard_out = DashboardWildcard(status=wildcard.status, coins_paid=wildcard.coins_paid, used=wildcard.used)
+        active_selection = current_selection(db)
+        wildcard_control = get_or_create_round_control(db, "WILDCARD")
+        wildcard_out = DashboardWildcard(
+            status=wildcard.status,
+            coins_paid=wildcard.coins_paid,
+            used=wildcard.used,
+            applied_at=wildcard.applied_at,
+            rank=wildcard.rank,
+            winning_bid=wildcard.winning_bid,
+            problem_id=wildcard.problem_id,
+            selected_at=wildcard.selected_at,
+            current_selection_rank=active_selection[0].rank if active_selection else None,
+            current_selection_team=active_selection[1].team_name if active_selection else None,
+            is_selection_turn=bool(active_selection and active_selection[1].id == team.id),
+            available_problem_count=len(available_wildcard_problems(db)),
+            slot_count=wildcard_control.slot_count,
+        )
 
     submission = db.query(Submission).filter(Submission.team_id == team.id).first()
     submission_out = None
     if submission:
+        submitter = db.query(User).filter(User.id == submission.submitted_by_user_id).first() if submission.submitted_by_user_id else None
         submission_out = DashboardSubmission(
             id=submission.id, problem_id=submission.problem_id,
             repository_url=submission.repository_url,
             submitted_at=submission.submitted_at, updated_at=submission.updated_at,
+            submitted_by_user_id=submission.submitted_by_user_id,
+            submitted_by_name=submitter.name if submitter else None,
         )
 
     is_leader = current_user_is_team_leader(db, current_user, team)
@@ -90,7 +140,11 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         eventState=config.state,
         wallet={"team_id": team.id, "balance": team.coins, "currency": "coins"},
         currentProblem=current_problem,
+        round1Problem=_dashboard_problem(round1_problem_obj),
+        wildcardProblem=_dashboard_problem(wildcard_problem_obj),
+        finalProblem=_dashboard_problem(final_problem_obj),
         currentBid=current_bid,
+        wildcardBidAmount=wildcard_bid.amount if wildcard_bid else None,
         wildcard=wildcard_out,
         submission=submission_out,
         isLeader=is_leader,
@@ -101,12 +155,17 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             round1_preview_seconds=event_config.round1_preview_seconds,
             round1_bid_seconds=event_config.round1_bid_seconds,
             wildcard_slots=event_config.wildcard_slots,
+            wildcard_application_seconds=event_config.wildcard_application_seconds,
             wildcard_starting_bid=event_config.wildcard_starting_bid,
             wildcard_preview_seconds=event_config.wildcard_preview_seconds,
             wildcard_bid_seconds=event_config.wildcard_bid_seconds,
             coding_duration_seconds=event_config.coding_duration_seconds,
         ),
         timing=EventTiming(**event_timing(config)),
+        round1Assigned=round1_problem_obj is not None,
+        wildcardEligible=bool(team.is_approved),
+        wildcardApplicationsOpen=get_or_create_round_control(db, "WILDCARD").applications_open,
+        submissionsOpen=bool(event_config.submissions_open),
     )
 
 @router.get("/event/snapshot")
@@ -126,20 +185,28 @@ def get_participant_problems(
     config = get_or_create_game_config(db)
     allowed_states = {
         1: {"ROUND1_PREVIEW", "ROUND1_BIDDING", "ROUND1_RESULT"},
-        2: {"WILDCARD_PREVIEW", "WILDCARD_BIDDING", "WILDCARD_SELECTION"},
+        2: {"WILDCARD_SELECTION"},
     }
     if round not in allowed_states or config.state not in allowed_states[round]:
         raise HTTPException(status_code=409, detail=f"Problem pool is not visible in state {config.state}.")
     event_config = get_or_create_event_config(db)
-    starting_bid = event_config.wildcard_starting_bid if round == 2 else event_config.round1_minimum_bid
-    problems = db.query(ProblemStatement).filter(
-        ProblemStatement.round == round,
-        ProblemStatement.status == "visible",
-    ).all()
+    starting_bid = event_config.round1_minimum_bid if round == 1 else 0
+    if round == 2:
+        team = get_team_for_user(db, current_user)
+        active = current_selection(db)
+        if not team or not active or active[1].id != team.id:
+            return []
+        problems = available_wildcard_problems(db)
+    else:
+        control = get_or_create_round_control(db, "ROUND1")
+        problems = db.query(ProblemStatement).filter(
+            ProblemStatement.round == 1,
+            ProblemStatement.id == control.current_problem_id,
+        ).all()
     return [
         {
             "id": ps.id,
-            "number": idx + 1,
+            "number": int(ps.ps_number.split("-", 1)[-1]) if ps.ps_number.split("-", 1)[-1].isdigit() else idx + 1,
             "title": ps.title,
             "summary": ps.description or "",
             "description": ps.description or "",
@@ -152,42 +219,35 @@ def get_participant_problems(
 @router.get("/participant/leaderboard", response_model=list[LeaderboardEntry])
 def get_leaderboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
     config = get_or_create_game_config(db)
-    if config.state not in ("ROUND1_BIDDING", "ROUND1_RESULT", "ROUND1_PREVIEW", "WILDCARD_APPLICATION", "WILDCARD_BIDDING", "WILDCARD_SELECTION"):
-        # still show the current standings
-        pass
+    if config.current_round == 2:
+        return [
+            LeaderboardEntry(
+                rank=index,
+                team_id=team.id,
+                team_name=team.team_name,
+                coins=team.coins,
+                ps_title=None,
+                bid_amount=bid.amount,
+            )
+            for index, (bid, team, _application) in enumerate(ranked_wildcard_bids(db), start=1)
+        ]
 
-    round_no = 1 if config.current_round == 1 else 2
-    teams = db.query(Team).all()
-    # current effective bid per team for this round
-    bids = db.query(Bid).filter(Bid.round == round_no).order_by(Bid.timestamp.desc()).all()
-    latest_by_team = {}
-    for bid in bids:
-        if bid.team_id not in latest_by_team:
-            latest_by_team[bid.team_id] = bid
-
-    ranked = sorted(
-        [{"team": t, "bid": latest_by_team.get(t.id)} for t in teams],
-        key=lambda item: (item["bid"].amount if item["bid"] else -1),
-        reverse=True,
-    )
-
-    result = []
-    for idx, item in enumerate(ranked, start=1):
-        t = item["team"]
-        bid = item["bid"]
-        ps = None
-        if t.ps_id:
-            ps_obj = db.query(ProblemStatement).filter(ProblemStatement.id == t.ps_id).first()
-            ps = ps_obj.title if ps_obj else None
-        result.append(LeaderboardEntry(
-            rank=idx,
-            team_id=t.id,
-            team_name=t.team_name,
-            coins=t.coins,
-            ps_title=ps,
-            bid_amount=bid.amount if bid else None,
-        ))
-    return result
+    control = get_or_create_round_control(db, "ROUND1")
+    query = db.query(Bid, Team).join(Team, Team.id == Bid.team_id).filter(Bid.round == 1)
+    if control.current_problem_id:
+        query = query.filter(Bid.ps_id == control.current_problem_id)
+    rows = query.order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).all()
+    return [
+        LeaderboardEntry(
+            rank=index,
+            team_id=team.id,
+            team_name=team.team_name,
+            coins=team.coins,
+            ps_title=None,
+            bid_amount=bid.amount,
+        )
+        for index, (bid, team) in enumerate(rows, start=1)
+    ]
 
 # ---------------------------------------------------------------- Submissions
 
@@ -198,21 +258,25 @@ async def create_submission(
     current_user: User = Depends(get_current_active_participant),
 ):
     team = ensure_leader(db, current_user)
+    if not get_or_create_event_config(db).submissions_open:
+        raise HTTPException(status_code=409, detail="Submissions are closed.")
     if not team.ps_id:
         raise HTTPException(status_code=400, detail="Team has no allocated problem.")
-    if not submission.repository_url.startswith("https://github.com/"):
-        raise HTTPException(status_code=400, detail="Repository URL must be a valid GitHub URL starting with https://github.com/")
+    if not _valid_github_url(submission.repository_url):
+        raise HTTPException(status_code=400, detail="Enter a valid public GitHub repository URL.")
 
     existing = db.query(Submission).filter(Submission.team_id == team.id).first()
     if existing:
-        raise HTTPException(status_code=400, detail="Submission already exists. Use PUT /submissions/me to update.")
+        raise HTTPException(status_code=409, detail="Submission already exists. Use PUT /submissions/me to update.")
 
     new_submission = Submission(
         team_id=team.id,
         problem_id=team.ps_id,
-        repository_url=submission.repository_url,
+        submitted_by_user_id=current_user.id,
+        repository_url=submission.repository_url.strip(),
     )
     db.add(new_submission)
+    record_event(db, "submission.created", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": team.ps_id})
     db.commit()
     db.refresh(new_submission)
 
@@ -224,6 +288,7 @@ async def create_submission(
         id=new_submission.id, problem_id=new_submission.problem_id,
         repository_url=new_submission.repository_url,
         submitted_at=new_submission.submitted_at, updated_at=new_submission.updated_at,
+        submitted_by_user_id=current_user.id, submitted_by_name=current_user.name,
     )
 
 @router.put("/submissions/me")
@@ -233,8 +298,12 @@ async def update_submission(
     current_user: User = Depends(get_current_active_participant),
 ):
     team = ensure_leader(db, current_user)
-    if not submission.repository_url.startswith("https://github.com/"):
-        raise HTTPException(status_code=400, detail="Repository URL must be a valid GitHub URL starting with https://github.com/")
+    if not get_or_create_event_config(db).submissions_open:
+        raise HTTPException(status_code=409, detail="Submissions are closed.")
+    if not team.ps_id:
+        raise HTTPException(status_code=400, detail="Team has no final problem.")
+    if not _valid_github_url(submission.repository_url):
+        raise HTTPException(status_code=400, detail="Enter a valid public GitHub repository URL.")
 
     existing = db.query(Submission).filter(Submission.team_id == team.id).first()
     if not existing:
@@ -242,15 +311,20 @@ async def update_submission(
         new_submission = Submission(
             team_id=team.id,
             problem_id=team.ps_id,
-            repository_url=submission.repository_url,
+            submitted_by_user_id=current_user.id,
+            repository_url=submission.repository_url.strip(),
         )
         db.add(new_submission)
+        record_event(db, "submission.created", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": team.ps_id})
         db.commit()
         db.refresh(new_submission)
         result = new_submission
     else:
-        existing.repository_url = submission.repository_url
+        existing.repository_url = submission.repository_url.strip()
+        existing.problem_id = team.ps_id
+        existing.submitted_by_user_id = current_user.id
         existing.updated_at = member_utcnow()
+        record_event(db, "submission.updated", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": team.ps_id})
         db.commit()
         db.refresh(existing)
         result = existing
@@ -258,6 +332,7 @@ async def update_submission(
         id=result.id, problem_id=result.problem_id,
         repository_url=result.repository_url,
         submitted_at=result.submitted_at, updated_at=result.updated_at,
+        submitted_by_user_id=current_user.id, submitted_by_name=current_user.name,
     )
 
 @router.get("/submissions/me")
@@ -268,11 +343,83 @@ def get_my_submission(db: Session = Depends(get_db), current_user: User = Depend
     submission = db.query(Submission).filter(Submission.team_id == team.id).first()
     if not submission:
         return None
+    submitter = db.query(User).filter(User.id == submission.submitted_by_user_id).first() if submission.submitted_by_user_id else None
     return DashboardSubmission(
         id=submission.id, problem_id=submission.problem_id,
         repository_url=submission.repository_url,
         submitted_at=submission.submitted_at, updated_at=submission.updated_at,
+        submitted_by_user_id=submission.submitted_by_user_id,
+        submitted_by_name=submitter.name if submitter else None,
     )
+
+
+@router.get("/admin/submissions")
+def get_admin_submissions(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
+    del current_user
+    config = get_or_create_event_config(db)
+    rows = []
+    teams = db.query(Team).order_by(Team.team_name.asc()).all()
+    for team in teams:
+        submission = db.query(Submission).filter(Submission.team_id == team.id).first()
+        submitter = db.query(User).filter(User.id == submission.submitted_by_user_id).first() if submission and submission.submitted_by_user_id else None
+        final_problem = db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first() if team.ps_id else None
+        final_problem_payload = ({
+            "id": final_problem.id,
+            "ps_number": final_problem.ps_number.split("-", 1)[-1],
+            "title": final_problem.title,
+            "description": final_problem.description,
+            "round": final_problem.round,
+            "status": final_problem.status,
+        } if final_problem else None)
+        rows.append({
+            "team_id": team.id,
+            "team_name": team.team_name,
+            "status": "SUBMITTED" if submission else "PENDING",
+            "github_url": submission.repository_url if submission else None,
+            "submitted_at": submission.submitted_at if submission else None,
+            "updated_at": submission.updated_at if submission else None,
+            "submitted_by": submitter.name if submitter else None,
+            "final_problem": final_problem_payload,
+        })
+    submitted = sum(row["status"] == "SUBMITTED" for row in rows)
+    return {
+        "open": bool(config.submissions_open),
+        "total": len(rows),
+        "submitted": submitted,
+        "pending": len(rows) - submitted,
+        "rows": rows,
+    }
+
+
+@router.post("/admin/submissions/open")
+async def open_submissions(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
+    if get_or_create_event_config(db).submissions_open:
+        return get_admin_submissions(db, None)
+    round_one = get_or_create_round_control(db, "ROUND1")
+    wildcard_control = get_or_create_round_control(db, "WILDCARD")
+    if not round_one.ended:
+        raise HTTPException(status_code=409, detail="End Round 1 before opening submissions.")
+    if wildcard_control.status not in {"NOT_STARTED", "COMPLETE"}:
+        raise HTTPException(status_code=409, detail="Complete Wildcard problem selection before opening submissions.")
+    event_config = get_or_create_event_config(db)
+    event_config.submissions_open = True
+    transition_event_state(db, "SUBMISSION", validate=False, commit=False)
+    record_event(db, "submissions.opened", actor=current_user)
+    db.commit()
+    await manager.broadcast_event("event_state_changed", event_snapshot(db))
+    return get_admin_submissions(db, None)
+
+
+@router.post("/admin/submissions/close")
+async def close_submissions(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
+    event_config = get_or_create_event_config(db)
+    if not event_config.submissions_open:
+        return get_admin_submissions(db, None)
+    event_config.submissions_open = False
+    record_event(db, "submissions.closed", actor=current_user)
+    db.commit()
+    await manager.broadcast_event("submission_updated", {"action": "submissions_closed"})
+    return get_admin_submissions(db, None)
 
 def member_utcnow():
     from datetime import datetime

@@ -36,6 +36,80 @@ def initialize_database() -> None:
             if "phase_started_at" not in columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE game_config ADD COLUMN phase_started_at DATETIME"))
+            event_columns = {column["name"] for column in inspect(engine).get_columns("event_config")}
+            if "wildcard_application_seconds" not in event_columns:
+                with engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE event_config ADD COLUMN wildcard_application_seconds INTEGER DEFAULT 60"))
+            targeted_columns = {
+                "round_controls": {
+                    "slot_count": "INTEGER",
+                    "selection_pool_frozen_at": "DATETIME",
+                },
+                "teams": {
+                    "round1_problem_id": "INTEGER REFERENCES problem_statements(id)",
+                    "wildcard_problem_id": "INTEGER REFERENCES problem_statements(id)",
+                    "is_system_team": "BOOLEAN NOT NULL DEFAULT 0",
+                },
+                "users": {
+                    "is_system_account": "BOOLEAN NOT NULL DEFAULT 0",
+                },
+                "wildcards": {
+                    "applied_at": "DATETIME",
+                    "rank": "INTEGER",
+                    "winning_bid": "INTEGER",
+                    "problem_id": "INTEGER REFERENCES problem_statements(id)",
+                    "selected_at": "DATETIME",
+                },
+                "submissions": {
+                    "submitted_by_user_id": "INTEGER REFERENCES users(id)",
+                },
+                "event_config": {
+                    "submissions_open": "BOOLEAN DEFAULT 0",
+                },
+                "game_config": {
+                    "last_state_update": "DATETIME",
+                },
+            }
+            for table_name, additions in targeted_columns.items():
+                existing = {column["name"] for column in inspect(engine).get_columns(table_name)}
+                for column_name, definition in additions.items():
+                    if column_name not in existing:
+                        with engine.begin() as connection:
+                            connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
+
+            # Preserve legacy assignments before ``ps_id`` becomes the final active
+            # problem pointer. Existing Round 1 assignments are copied once.
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "UPDATE teams SET round1_problem_id = ps_id "
+                    "WHERE round1_problem_id IS NULL AND ps_id IN "
+                    "(SELECT id FROM problem_statements WHERE round = 1)"
+                ))
+                connection.execute(text(
+                    "UPDATE teams SET wildcard_problem_id = ps_id "
+                    "WHERE wildcard_problem_id IS NULL AND ps_id IN "
+                    "(SELECT id FROM problem_statements WHERE round = 2)"
+                ))
+                connection.execute(text("UPDATE event_config SET wildcard_application_seconds = 60 WHERE wildcard_application_seconds = 30"))
+                connection.execute(text("UPDATE round_controls SET status = 'NOT_STARTED' WHERE round_type = 'WILDCARD' AND status IN ('IDLE', 'READY')"))
+                connection.execute(text("UPDATE round_controls SET status = 'BIDDING_OPEN' WHERE round_type = 'WILDCARD' AND status = 'BIDDING'"))
+                connection.execute(text("UPDATE wildcards SET status = 'applied' WHERE status = 'bid'"))
+                connection.execute(text("UPDATE wildcards SET status = 'qualified' WHERE status = 'won'"))
+                connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_wildcards_problem_id ON wildcards(problem_id) WHERE problem_id IS NOT NULL"))
+                connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_wildcards_rank ON wildcards(rank) WHERE rank IS NOT NULL"))
+                connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_bid_team_problem_round ON bids(team_id, ps_id, round)"))
+                connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_operation ON wallet_transactions(team_id, transaction_type, description)"))
+                connection.execute(text("UPDATE game_config SET last_state_update = CURRENT_TIMESTAMP WHERE last_state_update IS NULL"))
+
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        required_tables = {
+            "users", "teams", "problem_statements", "round_controls", "game_config", "event_config",
+            "wildcards", "wildcard_selection_pool", "submissions", "event_activity_log",
+        }
+        missing = required_tables.difference(inspect(engine).get_table_names())
+        if missing:
+            raise RuntimeError(f"Database startup check failed; missing required tables: {sorted(missing)}")
     except OperationalError:
         if database_backend == "postgresql":
             host = database_url.host or "localhost"

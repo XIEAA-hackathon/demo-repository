@@ -34,7 +34,7 @@ export default function BiddingPanel({
     setMessage(null)
     try {
       const numericAmount = Number(amount)
-      if (isWildcard) await service.placeWildcardBid(problem.id, numericAmount)
+      if (isWildcard) await service.placeWildcardBid(numericAmount)
       else await service.placeBid(problem.id, numericAmount)
       await Promise.all([refresh(), loadLeaderboard()])
       setAmount('')

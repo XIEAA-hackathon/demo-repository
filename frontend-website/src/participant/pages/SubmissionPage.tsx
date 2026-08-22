@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useParticipant } from '../ParticipantContext'
 import { getParticipantPermissions } from '../permissions'
 import AdvanceButton from '../components/AdvanceButton'
@@ -9,6 +9,7 @@ export default function SubmissionPage() {
   const [url, setUrl] = useState('')
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [working, setWorking] = useState(false)
+  useEffect(() => { setUrl(dashboard?.submission?.repositoryUrl ?? '') }, [dashboard?.submission?.repositoryUrl])
   if (!dashboard) return null
   const permissions = getParticipantPermissions(dashboard)
   const submitted = Boolean(dashboard.submission)
@@ -20,8 +21,7 @@ export default function SubmissionPage() {
     try {
       await service.submitGitHubRepository(url)
       await refresh()
-      setMessage({ type: 'success', text: 'Repository submitted for judging.' })
-      setUrl('')
+      setMessage({ type: 'success', text: dashboard.submission ? 'Repository URL updated.' : 'Repository submitted for judging.' })
     } catch (cause) {
       setMessage({ type: 'error', text: cause instanceof Error ? cause.message : 'Submission failed.' })
     } finally {
@@ -32,16 +32,17 @@ export default function SubmissionPage() {
   return (
     <div className="stack">
       <PageHeading eyebrow="Final submission" title={submitted ? 'Submission received' : 'Submit your repository'}>
-        {dashboard.currentProblem?.title}
+        {dashboard.finalProblem ? `Problem #${String(dashboard.finalProblem.number).padStart(2, '0')} · ${dashboard.finalProblem.title}` : 'Your team needs a final problem before submitting.'}
       </PageHeading>
 
       <Card>
-        {submitted && dashboard.submission ? (
+        {submitted && dashboard.submission && !dashboard.submissionsOpen ? (
           <div className="submitted">
             <span className="confirmation-mark">✓</span>
-            <h2>Repository locked in</h2>
+            <h2>Repository received</h2>
             <a className="text-link" href={dashboard.submission.repositoryUrl} target="_blank" rel="noreferrer">{dashboard.submission.repositoryUrl}</a>
-            <p className="muted">Submitted at {new Date(dashboard.submission.submittedAt).toLocaleString()}</p>
+            <p className="muted">Last updated {new Date(dashboard.submission.updatedAt || dashboard.submission.submittedAt).toLocaleString()}{dashboard.submission.submittedByName ? ` by ${dashboard.submission.submittedByName}` : ''}</p>
+            <p className="notice">The submission window is closed. Your last saved URL remains on record.</p>
           </div>
         ) : (
           <form className="form" onSubmit={submit}>
@@ -49,8 +50,10 @@ export default function SubmissionPage() {
               <span>GitHub repository URL</span>
               <input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/team/project" disabled={!permissions.canSubmitRepository} required pattern="https://github.com/.*" title="Enter a valid GitHub repository URL" />
             </label>
-            <Button type="submit" disabled={!permissions.canSubmitRepository || working}>{working ? 'Submitting…' : 'Submit repository'}</Button>
-            {!permissions.canSubmitRepository && <p className="notice">Only your team leader can submit the final repository.</p>}
+            <Button type="submit" disabled={!permissions.canSubmitRepository || working || !dashboard.finalProblem}>{working ? 'Saving…' : submitted ? 'Update repository' : 'Submit repository'}</Button>
+            {!dashboard.submissionsOpen && <p className="notice">The organizer has not opened submissions, or the window is now closed.</p>}
+            {dashboard.submissionsOpen && !permissions.isLeader && <p className="notice">Only your team leader can submit or update the final repository.</p>}
+            {submitted && dashboard.submission && <p className="muted">Last saved {new Date(dashboard.submission.updatedAt || dashboard.submission.submittedAt).toLocaleString()}</p>}
             {message && <p className={message.type === 'success' ? 'success' : 'error'} role="status">{message.text}</p>}
           </form>
         )}

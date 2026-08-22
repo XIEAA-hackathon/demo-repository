@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from datetime import datetime
+from io import BytesIO
+from pathlib import Path
+import secrets
+import tempfile
+import time
 
 from app.core.database import get_db
 from app.models.models import (
@@ -16,7 +21,7 @@ from app.schemas.schemas import (
     EventConfigUpdate, EventConfigResponse,
     ImportPreviewResponse, ImportConfirmResponse, ImportRowPreview,
     CredentialRow, ManualTeamCredentialsRequest, ManualTeamCredentialsResponse,
-    EventStateUpdate, EVENT_STATES,
+    EventStateUpdate, TimerAdjustment, EVENT_STATES,
 )
 from app.api.auth import get_current_active_admin
 from app.api.websockets import manager
@@ -25,14 +30,52 @@ from app.services.event_service import (
     get_or_create_event_config,
     get_or_create_game_config,
     transition_event_state,
+    pause_event_timer,
+    resume_event_timer,
+    adjust_event_timer,
 )
 from app.services.registration_import import (
     parse_registration_file, generate_credentials, _default_password, _is_valid_email,
+    build_registration_credential_csv, build_registration_credential_workbook,
 )
+from app.services.activity_log import record_event
 from app.core.security import get_password_hash
 import json
 
 router = APIRouter()
+
+_EXPORT_TTL_SECONDS = 15 * 60
+_EXPORT_DIRECTORY = Path(tempfile.gettempdir()) / "bid_to_build_credential_exports"
+
+
+@router.get("/admin/registration/sample.csv")
+def registration_sample(current_user=Depends(get_current_active_admin)):
+    sample = (
+        "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email,Member 2 Name,Member 2 Email\r\n"
+        "Demo Team,Demo Leader,leader@example.com,Member One,member1@example.com,Member Two,member2@example.com\r\n"
+    )
+    return Response(sample, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=registration-import-sample.csv"})
+
+
+@router.get("/admin/registration/demo.csv")
+def registration_demo(current_user=Depends(get_current_active_admin)):
+    sample = (
+        "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email,Member 2 Name,Member 2 Email\r\n"
+        "Team Alpha,Alice Sharma,alice@example.com,Bob Kumar,bob@example.com,Carol Singh,carol@example.com\r\n"
+        "Team Beta,David Rao,david@example.com,Esha Patel,esha@example.com,Farhan Ali,farhan@example.com\r\n"
+    )
+    return Response(sample, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=bid-to-build-demo-registration.csv"})
+
+
+def _store_credential_export(content: bytes, suffix: str) -> str:
+    _EXPORT_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    for export_path in _EXPORT_DIRECTORY.glob("*"):
+        if now - export_path.stat().st_mtime > _EXPORT_TTL_SECONDS:
+            export_path.unlink(missing_ok=True)
+    token = secrets.token_urlsafe(24)
+    (_EXPORT_DIRECTORY / f"{token}{suffix}").write_bytes(content)
+    return token
 
 
 def _user_by_login(db: Session, login_id: str) -> User | None:
@@ -86,9 +129,9 @@ async def update_event_config_admin(
     # Validation
     if "starting_coins" in data and data["starting_coins"] < 0:
         raise HTTPException(status_code=400, detail="starting_coins must be >= 0")
-    for field in ["round1_preview_seconds", "round1_bid_seconds", "wildcard_preview_seconds", "wildcard_bid_seconds"]:
-        if field in data and data[field] < 0:
-            raise HTTPException(status_code=400, detail=f"{field} must be >= 0")
+    for field in ["round1_preview_seconds", "round1_bid_seconds", "wildcard_application_seconds", "wildcard_preview_seconds", "wildcard_bid_seconds"]:
+        if field in data and data[field] <= 0:
+            raise HTTPException(status_code=400, detail=f"{field} must be > 0")
     if "round1_winner_count" in data and data["round1_winner_count"] <= 0:
         raise HTTPException(status_code=400, detail="round1_winner_count must be > 0")
     if "round1_minimum_bid" in data and data["round1_minimum_bid"] < 0:
@@ -108,6 +151,7 @@ async def update_event_config_admin(
 
     for field, value in data.items():
         setattr(config, field, value)
+    record_event(db, "event.configuration_updated", actor=current_user, metadata={"fields": sorted(data)})
     db.commit()
     db.refresh(config)
     await manager.broadcast_event("config_updated", {"config": EventConfigResponse.model_validate(config).model_dump(mode="json")})
@@ -115,8 +159,10 @@ async def update_event_config_admin(
 
 # ---------------------------------------------------------------- Event State
 
-async def _apply_event_state(payload: EventStateUpdate, db: Session):
-    config = transition_event_state(db, payload.state)
+async def _apply_event_state(payload: EventStateUpdate, db: Session, current_user: User):
+    config = transition_event_state(db, payload.state, commit=False)
+    record_event(db, "event.state_changed", actor=current_user, metadata={"state": config.state})
+    db.commit()
     snapshot = event_snapshot(db)
     await manager.broadcast_event("event_state_changed", snapshot)
     return snapshot
@@ -127,7 +173,16 @@ async def set_event_state(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin),
 ):
-    return await _apply_event_state(payload, db)
+    return await _apply_event_state(payload, db, current_user)
+
+
+@router.post("/admin/event/transition")
+async def transition_event(
+    payload: EventStateUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    return await _apply_event_state(payload, db, current_user)
 
 @router.post("/admin/state")
 async def set_event_state_legacy(
@@ -136,7 +191,7 @@ async def set_event_state_legacy(
     current_user: User = Depends(get_current_active_admin),
 ):
     """Backward-compatible alias. New clients use PUT /admin/event/state."""
-    result = await _apply_event_state(payload, db)
+    result = await _apply_event_state(payload, db, current_user)
     return {"state": result["event_state"], **result}
 
 @router.get("/admin/state")
@@ -145,7 +200,52 @@ def get_event_state_admin(
     current_user: User = Depends(get_current_active_admin),
 ):
     snapshot = event_snapshot(db)
-    return {"state": snapshot["event_state"], **snapshot, "allowed_states": EVENT_STATES}
+    return {
+        "state": snapshot["event_state"],
+        **snapshot,
+        "allowed_states": EVENT_STATES,
+        "connected_clients": len(manager.active_connections),
+    }
+
+
+@router.post("/admin/event/timer/pause")
+async def pause_event_timer_admin(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    pause_event_timer(db)
+    record_event(db, "event.timer_paused", actor=current_user)
+    db.commit()
+    snapshot = event_snapshot(db)
+    await manager.broadcast_event("timer_sync", snapshot)
+    return snapshot
+
+
+@router.post("/admin/event/timer/resume")
+async def resume_event_timer_admin(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    resume_event_timer(db)
+    record_event(db, "event.timer_resumed", actor=current_user)
+    db.commit()
+    snapshot = event_snapshot(db)
+    await manager.broadcast_event("timer_sync", snapshot)
+    return snapshot
+
+
+@router.post("/admin/event/timer/adjust")
+async def adjust_event_timer_admin(
+    payload: TimerAdjustment,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    adjust_event_timer(db, payload.seconds)
+    record_event(db, "event.timer_adjusted", actor=current_user, metadata={"seconds": payload.seconds})
+    db.commit()
+    snapshot = event_snapshot(db)
+    await manager.broadcast_event("timer_sync", {**snapshot, "delta": payload.seconds})
+    return snapshot
 
 # ---------------------------------------------------------------- Participant credentials
 
@@ -298,8 +398,195 @@ def reset_participant_password(
 # ---------------------------------------------------------------- Registration Import
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-@router.post("/admin/registration/import/preview", response_model=ImportPreviewResponse)
+
+@router.post("/admin/registration/import")
+async def import_registrations(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """Import valid registration rows and prepare a one-time leader credential workbook."""
+    filename = file.filename or "registrations.xlsx"
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB).")
+
+    parsed = parse_registration_file(filename, content)
+    if not parsed["rows"] and not parsed.get("row_errors"):
+        raise HTTPException(status_code=400, detail="; ".join(parsed["errors"]) or "No registration rows were found.")
+
+    config = get_or_create_event_config(db)
+    valid_rows = []
+    errors = list(parsed.get("row_errors") or [])
+
+    for row in parsed["rows"]:
+        row_messages: list[str] = []
+        team = db.query(Team).filter(func.lower(Team.team_name) == row["team_name"].lower()).first()
+        leader = _user_by_login(db, row["leader_email"])
+        if leader and leader.role != "leader":
+            row_messages.append(f"Leader email '{row['leader_email']}' belongs to a non-leader account.")
+        if leader and leader.team_id not in (None, team.id if team else None):
+            row_messages.append(f"Leader email '{row['leader_email']}' already belongs to another team.")
+        if team and team.leader_id and (not leader or team.leader_id != leader.id):
+            row_messages.append(f"Team '{row['team_name']}' already has a different leader account.")
+
+        for member in row["members"]:
+            member_email = (member.get("email") or "").strip().lower()
+            if not member_email:
+                continue
+            member_user = _user_by_login(db, member_email)
+            if member_user and (not team or member_user.team_id != team.id):
+                row_messages.append(f"Member email '{member_email}' belongs to another account or team.")
+            member_record = db.query(Member).filter(func.lower(Member.email) == member_email).first()
+            if member_record and (not team or member_record.team_id != team.id):
+                row_messages.append(f"Member email '{member_email}' is already assigned to another team.")
+
+        if row_messages:
+            errors.extend({"row_number": row["row_number"], "message": message} for message in row_messages)
+        else:
+            valid_rows.append(row)
+
+    teams_created = 0
+    teams_updated = 0
+    leaders_created = 0
+    existing_leaders = 0
+    members_imported = 0
+    leader_credentials: dict[int, dict[str, str]] = {}
+
+    try:
+        for row in valid_rows:
+            team = db.query(Team).filter(func.lower(Team.team_name) == row["team_name"].lower()).first()
+            if team:
+                teams_updated += 1
+            else:
+                team = Team(
+                    team_name=row["team_name"],
+                    coins=config.starting_coins,
+                    is_approved=True,
+                )
+                db.add(team)
+                db.flush()
+                teams_created += 1
+                db.add(WalletTransaction(
+                    team_id=team.id,
+                    transaction_type="INITIAL_ALLOCATION",
+                    amount=config.starting_coins,
+                    description="Initial AlumniCoins from registration import",
+                ))
+
+            leader_email = row["leader_email"].strip().lower()
+            leader = _user_by_login(db, leader_email)
+            if leader:
+                existing_leaders += 1
+                leader_password = "EXISTING ACCOUNT"
+            else:
+                leader_password = _default_password()
+                leader = User(
+                    name=row["leader_name"],
+                    email=leader_email,
+                    password_hash=get_password_hash(leader_password),
+                    role="leader",
+                    team_id=team.id,
+                )
+                db.add(leader)
+                db.flush()
+                leaders_created += 1
+
+            leader.name = row["leader_name"]
+            leader.role = "leader"
+            leader.team_id = team.id
+            team.leader_id = leader.id
+            team.is_approved = True
+
+            for existing_member in list(team.members):
+                db.delete(existing_member)
+            for member in row["members"]:
+                member_name = (member.get("name") or "").strip()
+                if not member_name:
+                    continue
+                member_email = (member.get("email") or "").strip().lower() or None
+                db.add(Member(team_id=team.id, member_name=member_name, email=member_email))
+                members_imported += 1
+
+            leader_credentials[row["row_number"]] = {
+                "email": leader_email,
+                "password": leader_password,
+            }
+
+        is_csv = filename.lower().endswith(".csv")
+        output_bytes = (
+            build_registration_credential_csv(content, leader_credentials)
+            if is_csv else build_registration_credential_workbook(filename, content, leader_credentials)
+        )
+        record_event(
+            db,
+            "registration.import_committed",
+            actor=current_user,
+            metadata={
+                "filename": filename,
+                "teams_created": teams_created,
+                "teams_updated": teams_updated,
+                "leaders_created": leaders_created,
+                "rows_failed": len({error["row_number"] for error in errors}),
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    output_suffix = ".csv" if is_csv else ".xlsx"
+    output_filename = f"bid_to_build_registration_credentials_{datetime.utcnow().year}{output_suffix}"
+    download_token = _store_credential_export(output_bytes, output_suffix)
+    summary = {
+        "teams_processed": len(valid_rows),
+        "teams_created": teams_created,
+        "teams_updated": teams_updated,
+        "leaders_created": leaders_created,
+        "existing_leaders": existing_leaders,
+        "members_imported": members_imported,
+        "rows_failed": len({error["row_number"] for error in errors}),
+        "errors": errors,
+        "download_token": download_token,
+        "download_filename": output_filename,
+    }
+    await manager.broadcast_event("team_updated", {
+        "action": "registrations_imported",
+        "teams_created": teams_created,
+        "teams_updated": teams_updated,
+        "leaders_created": leaders_created,
+        "members_imported": members_imported,
+    })
+    return summary
+
+
+@router.get("/admin/registration/import/download/{download_token}")
+def download_registration_credentials(
+    download_token: str,
+    current_user: User = Depends(get_current_active_admin),
+):
+    if not download_token or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for character in download_token):
+        raise HTTPException(status_code=404, detail="Credential export expired or was already downloaded.")
+    export_path = next((path for path in (_EXPORT_DIRECTORY / f"{download_token}.csv", _EXPORT_DIRECTORY / f"{download_token}.xlsx") if path.exists()), None)
+    if not export_path or time.time() - export_path.stat().st_mtime > _EXPORT_TTL_SECONDS:
+        if export_path:
+            export_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="Credential export expired or was already downloaded.")
+    content = export_path.read_bytes()
+    suffix = export_path.suffix.lower()
+    export_path.unlink(missing_ok=True)
+    filename = f"bid_to_build_registration_credentials_{datetime.utcnow().year}{suffix}"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="text/csv; charset=utf-8" if suffix == ".csv" else XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+@router.post("/admin/registration/import/preview", response_model=ImportPreviewResponse, deprecated=True)
 async def preview_registration_import(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -373,7 +660,7 @@ async def preview_registration_import(
         rows=preview_rows,
     )
 
-@router.post("/admin/registration/import/confirm", response_model=ImportConfirmResponse)
+@router.post("/admin/registration/import/confirm", response_model=ImportConfirmResponse, deprecated=True)
 async def confirm_registration_import(
     payload: dict,
     db: Session = Depends(get_db),
@@ -476,6 +763,14 @@ async def confirm_registration_import(
 
     import_record.status = "committed"
     import_record.committed_at = datetime.utcnow()
+    record_event(
+        db,
+        "registration.legacy_import_committed",
+        actor=current_user,
+        entity_type="registration_import",
+        entity_id=import_record.id,
+        metadata={"teams_created": teams_created, "teams_updated": teams_updated, "accounts_created": accounts_created},
+    )
     db.commit()
 
     await manager.broadcast_event("team_updated", {

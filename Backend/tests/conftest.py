@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
 from app.core.security import get_password_hash
 from app.models.models import User, EventConfig, GameConfig, ProblemStatement
-from app.api import auth, team, problem_statements, auction, wildcard, participant, admin, websockets
+from app.api import auth, team, problem_statements, auction, wildcard, participant, admin, websockets, rounds, operations
 
 # ---------------------------------------------------------------- helpers
 
@@ -86,7 +86,9 @@ def client(engine, session_factory):
     app.include_router(wildcard.router)
     app.include_router(participant.router)
     app.include_router(admin.router)
+    app.include_router(rounds.router)
     app.include_router(websockets.router)
+    app.include_router(operations.router)
 
     def override_get_db():
         db = session_factory()

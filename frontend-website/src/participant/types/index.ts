@@ -6,7 +6,6 @@ export const participantEventStates = [
   'ROUND1_BIDDING',
   'ROUND1_RESULT',
   'WILDCARD_APPLICATION',
-  'WILDCARD_PREVIEW',
   'WILDCARD_BIDDING',
   'WILDCARD_SELECTION',
   'CODING',
@@ -63,6 +62,8 @@ export interface Submission {
   problemId: Id
   repositoryUrl: string
   submittedAt: string
+  updatedAt: string | null
+  submittedByName: string | null
   status: 'SUBMITTED'
 }
 
@@ -75,6 +76,18 @@ export interface WildcardApplication {
 
 export interface WildcardProblem extends Problem {
   available: boolean
+}
+
+export interface WildcardState {
+  status: 'applied' | 'declined' | 'qualified' | 'selected' | 'eliminated' | string
+  rank: number | null
+  winningBid: number | null
+  selectedProblemId: Id | null
+  currentSelectionRank: number | null
+  currentSelectionTeam: string | null
+  isSelectionTurn: boolean
+  availableProblemCount: number
+  slotCount: number | null
 }
 
 export interface LeaderboardEntry {
@@ -103,16 +116,26 @@ export interface ParticipantDashboard {
   eventState: ParticipantEventState
   wallet: Wallet
   currentProblem: Problem | WildcardProblem | null
+  roundOneProblem: Problem | null
+  wildcardProblem: WildcardProblem | null
+  finalProblem: Problem | WildcardProblem | null
   latestBid: Bid | null
+  wildcardBidAmount: number | null
   roundOneSettlement: RoundOneSettlement | null
   wildcardApplication: WildcardApplication | null
+  wildcard: WildcardState | null
   submission: Submission | null
   isLeader: boolean
+  round1Assigned: boolean
+  wildcardEligible: boolean
+  wildcardApplicationsOpen: boolean
+  submissionsOpen: boolean
   gameConfig: {
     round1WinnerCount: number
     round1PreviewSeconds: number
     round1BidSeconds: number
     wildcardSlots: number
+    wildcardApplicationSeconds: number
     wildcardPreviewSeconds: number
     wildcardBidSeconds: number
     codingDurationSeconds: number

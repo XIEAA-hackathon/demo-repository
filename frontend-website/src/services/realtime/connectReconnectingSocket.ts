@@ -1,4 +1,4 @@
-export type RealtimeStatus = 'connecting' | 'connected' | 'error' | 'disconnected'
+export type RealtimeStatus = 'connecting' | 'connected' | 'reconnecting' | 'reconnected' | 'error' | 'disconnected'
 
 interface ReconnectingSocketOptions<T> {
   url: string
@@ -17,16 +17,19 @@ export function connectReconnectingSocket<T>({
   let stopped = false
   let attempt = 0
   let retryTimer: number | undefined
+  let settledTimer: number | undefined
 
   const connect = () => {
     const token = getToken()
     if (!token || stopped) return
 
-    onStatus?.('connecting')
+    onStatus?.(attempt > 0 ? 'reconnecting' : 'connecting')
     socket = new WebSocket(`${url}?token=${encodeURIComponent(token)}`)
     socket.onopen = () => {
+      const recovered = attempt > 0
       attempt = 0
-      onStatus?.('connected')
+      onStatus?.(recovered ? 'reconnected' : 'connected')
+      if (recovered) settledTimer = window.setTimeout(() => onStatus?.('connected'), 2_000)
     }
     socket.onmessage = (event) => {
       try {
@@ -37,7 +40,7 @@ export function connectReconnectingSocket<T>({
     }
     socket.onerror = () => onStatus?.('error')
     socket.onclose = (event) => {
-      onStatus?.('disconnected')
+      onStatus?.(stopped ? 'disconnected' : 'reconnecting')
       if (stopped || event.code === 4401) return
       retryTimer = window.setTimeout(connect, Math.min(30_000, 1_000 * 2 ** attempt++))
     }
@@ -47,6 +50,7 @@ export function connectReconnectingSocket<T>({
   return () => {
     stopped = true
     if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+    if (settledTimer !== undefined) window.clearTimeout(settledTimer)
     socket?.close()
   }
 }

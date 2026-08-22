@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Link, Outlet } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { useParticipant } from '../ParticipantContext'
@@ -5,9 +6,17 @@ import { getStageRoute } from '../routeConfig'
 import StageNavigation from './StageNavigation'
 
 export default function ParticipantLayout() {
-  const { dashboard, socketStatus } = useParticipant()
+  const { dashboard, socketStatus, lastSyncAt } = useParticipant()
   const { logout } = useAuth()
   const stage = getStageRoute(dashboard?.eventState ?? 'WAITING')
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const staleSeconds = lastSyncAt ? Math.floor((now - lastSyncAt) / 1_000) : null
+  const stale = staleSeconds === null || staleSeconds > 15
+  const connectionLabel = socketStatus === 'connected' ? 'Live stage' : socketStatus === 'reconnected' ? 'Reconnected' : 'Reconnecting…'
 
   return (
     <div className="app-shell">
@@ -18,8 +27,8 @@ export default function ParticipantLayout() {
         </Link>
         <div className="top-status">
           <div className="top-status__stage">
-            <span className="live-dot" aria-hidden="true" />
-            <span className="top-status__label">{socketStatus === 'connected' ? 'Live stage' : 'Reconnecting'}</span>
+            <span className={`live-dot ${socketStatus === 'connected' || socketStatus === 'reconnected' ? '' : 'is-reconnecting'}`} aria-hidden="true" />
+            <span className="top-status__label">{connectionLabel}</span>
             <strong>{stage.label}</strong>
           </div>
           <div className="topbar__team">
@@ -33,6 +42,7 @@ export default function ParticipantLayout() {
           </div>
         </div>
       </header>
+      {stale && <div className="participant-stale-warning" role="alert"><strong>Live state may be stale.</strong> Last successful synchronization: {staleSeconds === null ? 'not yet completed' : `${staleSeconds} seconds ago`}. Attempting reconnection…</div>}
       <div className="workspace">
         <StageNavigation />
         <main className="workspace__main"><Outlet /></main>

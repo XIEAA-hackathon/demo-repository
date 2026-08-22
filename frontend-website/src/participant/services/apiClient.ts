@@ -33,6 +33,9 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
       clearAccessToken()
       window.dispatchEvent(new Event('participant:unauthorized'))
     }
+    if (response.status === 409 || response.status === 503) {
+      window.dispatchEvent(new Event('participant:resync'))
+    }
     throw new ApiError(data?.detail || data?.message || `Request failed (${response.status}).`, response.status)
   }
   return data as T

@@ -2,10 +2,12 @@ import { useParticipant } from '../ParticipantContext'
 import ResultCard from '../components/ResultCard'
 import WaitingState from '../components/WaitingState'
 import { Card, PageHeading, Stat } from '../components/ui'
+import RoundOneComplete from '../components/RoundOneComplete'
 
 export default function RoundResultPage() {
   const { dashboard } = useParticipant()
   if (!dashboard) return null
+  if (dashboard.round1Assigned) return <RoundOneComplete dashboard={dashboard} />
   const settlement = dashboard.roundOneSettlement
   const bid = settlement?.bidAmount ?? 0
   const secured = settlement?.won ?? false

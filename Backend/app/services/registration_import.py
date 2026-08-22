@@ -35,8 +35,6 @@ _HEADER_ALIASES: Dict[str, List[str]] = {
 _MEMBER_NAME_PATTERN = re.compile(r"^(?:member|teammate|participant)\s*(\d+)(?:\s*(?:name|fullname))?$")
 _MEMBER_EMAIL_PATTERN = re.compile(r"^(?:member|teammate|participant)\s*(\d+)(?:\s*(?:email|emailid))$")
 
-MAX_MEMBER_COLUMNS = 8
-
 def _norm_header(header: str) -> str:
     return re.sub(r"[^a-z0-9]", "", header.lower())
 
@@ -75,7 +73,7 @@ def _detect_columns(headers: List[str]) -> Dict[str, Any]:
         m = _MEMBER_NAME_PATTERN.match(norm)
         if m:
             number = int(m.group(1))
-            if 1 <= number <= MAX_MEMBER_COLUMNS:
+            if number >= 1:
                 if number not in mapping["member_names"]:
                     mapping["member_names"][number] = idx
                     mapping["col_to_family"][idx] = f"member_name:{number}"
@@ -85,7 +83,7 @@ def _detect_columns(headers: List[str]) -> Dict[str, Any]:
         m = _MEMBER_EMAIL_PATTERN.match(norm)
         if m:
             number = int(m.group(1))
-            if 1 <= number <= MAX_MEMBER_COLUMNS:
+            if number >= 1:
                 if number not in mapping["member_emails"]:
                     mapping["member_emails"][number] = idx
                     mapping["col_to_family"][idx] = f"member_email:{number}"
@@ -122,97 +120,115 @@ def _default_password() -> str:
     return "".join(password)
 
 def parse_registration_file(filename: str, content: bytes, simple_mode: bool = False) -> Dict[str, Any]:
-    """Parse an uploaded .xlsx / .csv into normalized rows.
-
-    Returns:
-      {
-        "rows": [{"row_number", "team_name", "leader_name", "leader_email",
-                  "members": [{"name","email"}], "warnings": [...]}],
-        "warnings": [...],
-        "errors": [...],
-        "detected_columns": {...},
-      }
-    """
+    """Parse and validate an uploaded registration workbook without mutating data."""
     lower_name = filename.lower()
+    empty_result = {"rows": [], "warnings": [], "errors": [], "row_errors": [], "detected_columns": {}}
     try:
-        if lower_name.endswith(".xlsx") or lower_name.endswith(".xlsm"):
+        if lower_name.endswith((".xlsx", ".xlsm")):
             data = _read_xlsx(content)
         elif lower_name.endswith(".csv"):
             data = _read_csv(content)
         else:
-            return {"rows": [], "warnings": [], "errors": ["Unsupported file type. Upload .xlsx or .csv."], "detected_columns": {}}
+            return {**empty_result, "errors": ["Unsupported file type. Upload .xlsx or .csv."]}
     except Exception as exc:  # pragma: no cover - defensive
-        return {"rows": [], "warnings": [], "errors": [f"Could not read file: {exc}"], "detected_columns": {}}
+        return {**empty_result, "errors": [f"Could not read file: {exc}"]}
 
-    if not data:
-        return {"rows": [], "warnings": [], "errors": ["The file contains no rows."], "detected_columns": {}}
+    if not data or not any(str(value).strip() for row in data for value in row if value is not None):
+        return {**empty_result, "errors": ["The file contains no rows."]}
 
-    headers = data[0]
+    headers = [str(value).strip() if value is not None else "" for value in data[0]]
     mapping, header_errors = _detect_columns(headers)
     errors = list(header_errors)
     warnings: List[str] = []
+    row_errors: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
-
-    if mapping["team_name"] is None or mapping["leader_name"] is None or mapping["leader_email"] is None:
-        return {"rows": [], "warnings": warnings, "errors": errors, "detected_columns": mapping}
+    if header_errors:
+        return {**empty_result, "errors": errors, "detected_columns": mapping}
 
     seen_teams: Dict[str, int] = {}
-    seen_leader_emails: Dict[str, int] = {}
+    seen_leaders: Dict[str, int] = {}
+    seen_identities: Dict[str, Dict[str, Any]] = {}
 
     for row_idx, raw_row in enumerate(data[1:], start=2):
-        if raw_row is None:
-            continue
-        cells = [str(c).strip() if c is not None else "" for c in raw_row]
+        cells = [str(value).strip() if value is not None else "" for value in (raw_row or [])]
         if not any(cells):
             continue
 
         def cell(family: str) -> str:
-            idx = mapping.get(family)
-            return cells[idx] if idx is not None and idx < len(cells) else ""
+            index = mapping.get(family)
+            return cells[index] if index is not None and index < len(cells) else ""
 
         team_name = cell("team_name")
         leader_name = cell("leader_name")
-        leader_email = cell("leader_email")
-        row_warnings: List[str] = []
+        leader_email = cell("leader_email").lower()
+        messages: List[str] = []
+        missing = [
+            label for label, value in (
+                ("team name", team_name),
+                ("leader name", leader_name),
+                ("leader email", leader_email),
+            ) if not value
+        ]
+        if missing:
+            messages.append(f"Missing required field(s): {', '.join(missing)}.")
+        if leader_email and not _is_valid_email(leader_email):
+            messages.append(f"Leader email '{leader_email}' is not a valid email.")
 
-        if not team_name or not leader_name or not leader_email:
-            missing = ", ".join(
-                name for name, value in [
-                    ("team name", team_name), ("leader name", leader_name), ("leader email", leader_email)
-                ] if not value
-            )
-            errors.append(f"Row {row_idx}: missing required field(s): {missing}.")
-            continue
-
-        if not _is_valid_email(leader_email):
-            errors.append(f"Row {row_idx}: leader email '{leader_email}' is not a valid email.")
-            continue
-
-        # duplicate detection within the sheet
-        prev_team_row = seen_teams.get(team_name.lower())
-        if prev_team_row is not None:
-            warnings.append(f"Row {row_idx}: team '{team_name}' already appears at row {prev_team_row}.")
-        else:
+        previous_team_row = seen_teams.get(team_name.lower()) if team_name else None
+        if previous_team_row is not None:
+            messages.append(f"Team '{team_name}' already appears at row {previous_team_row}.")
+        elif team_name:
             seen_teams[team_name.lower()] = row_idx
 
-        prev_leader_row = seen_leader_emails.get(leader_email.lower())
-        if prev_leader_row is not None:
-            warnings.append(f"Row {row_idx}: leader email '{leader_email}' already appears at row {prev_leader_row}.")
-        else:
-            seen_leader_emails[leader_email.lower()] = row_idx
+        previous_leader_row = seen_leaders.get(leader_email) if leader_email else None
+        if previous_leader_row is not None:
+            messages.append(f"Leader email '{leader_email}' already appears at row {previous_leader_row}.")
+        elif leader_email:
+            seen_leaders[leader_email] = row_idx
 
         members: List[Dict[str, str]] = []
-        for number in sorted(set(list(mapping["member_names"].keys()) + list(mapping["member_emails"].keys()))):
-            name_idx = mapping["member_names"].get(number)
-            email_idx = mapping["member_emails"].get(number)
-            member_name = cells[name_idx] if name_idx is not None and name_idx < len(cells) else ""
-            member_email = cells[email_idx] if email_idx is not None and email_idx < len(cells) else ""
+        member_numbers = sorted(set(mapping["member_names"]) | set(mapping["member_emails"]))
+        for number in member_numbers:
+            name_index = mapping["member_names"].get(number)
+            email_index = mapping["member_emails"].get(number)
+            member_name = cells[name_index] if name_index is not None and name_index < len(cells) else ""
+            member_email = cells[email_index].lower() if email_index is not None and email_index < len(cells) else ""
             if not member_name and not member_email:
                 continue
+            if member_email and not member_name:
+                messages.append(f"Member {number} has an email but no name.")
             if member_email and not _is_valid_email(member_email):
-                warnings.append(f"Row {row_idx}: member {number} email '{member_email}' is malformed and will be ignored.")
-                member_email = ""
+                messages.append(f"Member {number} email '{member_email}' is not a valid email.")
             members.append({"name": member_name, "email": member_email})
+
+        identities = [(leader_email, "leader")]
+        identities.extend((member["email"], "member") for member in members if member["email"])
+        row_identity_emails: set[str] = set()
+        for identity_email, identity_role in identities:
+            if not identity_email:
+                continue
+            if identity_email in row_identity_emails:
+                messages.append(f"Email '{identity_email}' is reused within this team row.")
+                continue
+            row_identity_emails.add(identity_email)
+            previous = seen_identities.get(identity_email)
+            if previous and previous["row_number"] != row_idx:
+                messages.append(
+                    f"Email '{identity_email}' is already used as {previous['role']} for "
+                    f"team '{previous['team_name']}' at row {previous['row_number']}."
+                )
+            else:
+                seen_identities[identity_email] = {
+                    "row_number": row_idx,
+                    "team_name": team_name,
+                    "role": identity_role,
+                }
+
+        if messages:
+            for message in messages:
+                errors.append(f"Row {row_idx}: {message}")
+                row_errors.append({"row_number": row_idx, "message": message})
+            continue
 
         rows.append({
             "row_number": row_idx,
@@ -220,7 +236,7 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
             "leader_name": leader_name,
             "leader_email": leader_email,
             "members": members,
-            "warnings": row_warnings,
+            "warnings": [],
             "status": "new",
         })
 
@@ -228,6 +244,7 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
         "rows": rows,
         "warnings": warnings,
         "errors": errors,
+        "row_errors": row_errors,
         "detected_columns": mapping,
     }
 
@@ -246,6 +263,70 @@ def _read_xlsx(content: bytes) -> List[List[str]]:
         rows.append(list(row))
     wb.close()
     return rows
+
+
+def build_registration_credential_workbook(
+    filename: str,
+    content: bytes,
+    leader_credentials: Dict[int, Dict[str, str]],
+) -> bytes:
+    """Preserve the uploaded sheet and append one-time leader credentials."""
+    from copy import copy
+    from io import BytesIO
+    from openpyxl import Workbook, load_workbook
+
+    if filename.lower().endswith((".xlsx", ".xlsm")):
+        workbook = load_workbook(BytesIO(content))
+        sheet = workbook.active
+    else:
+        workbook = Workbook()
+        sheet = workbook.active
+        for row in _read_csv(content):
+            sheet.append(row)
+
+    login_column = sheet.max_column + 1
+    password_column = login_column + 1
+    sheet.cell(row=1, column=login_column, value="Leader Login Email")
+    sheet.cell(row=1, column=password_column, value="Leader Password")
+
+    if login_column > 1:
+        source_header = sheet.cell(row=1, column=login_column - 1)
+        for column in (login_column, password_column):
+            target = sheet.cell(row=1, column=column)
+            target._style = copy(source_header._style)
+            target.font = copy(source_header.font)
+            target.fill = copy(source_header.fill)
+            target.border = copy(source_header.border)
+            target.alignment = copy(source_header.alignment)
+            target.number_format = source_header.number_format
+
+    for row_number, credential in leader_credentials.items():
+        sheet.cell(row=row_number, column=login_column, value=credential["email"])
+        sheet.cell(row=row_number, column=password_column, value=credential["password"])
+
+    sheet.column_dimensions[sheet.cell(row=1, column=login_column).column_letter].width = 34
+    sheet.column_dimensions[sheet.cell(row=1, column=password_column).column_letter].width = 24
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+def build_registration_credential_csv(
+    content: bytes,
+    leader_credentials: Dict[int, Dict[str, str]],
+) -> bytes:
+    """Preserve CSV cell values and append one-time leader credentials."""
+    source_rows = _read_csv(content)
+    if not source_rows:
+        return b""
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow([*source_rows[0], "Leader Login Email", "Leader Password"])
+    for row_number, row in enumerate(source_rows[1:], start=2):
+        credential = leader_credentials.get(row_number, {"email": "", "password": ""})
+        writer.writerow([*row, credential["email"], credential["password"]])
+    return output.getvalue().encode("utf-8-sig")
 
 def generate_credentials(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """Produce one credential per leader account from parsed rows (passwords NOT persisted)."""

@@ -16,8 +16,9 @@ export interface ParticipantService {
   placeBid(problemId: Id, amount: number): Promise<Bid>
   getLeaderboard(round?: Bid['round']): Promise<LeaderboardEntry[]>
   applyForWildcard(): Promise<WildcardApplication>
+  declineWildcard(): Promise<void>
   getWildcardProblems(): Promise<WildcardProblem[]>
-  placeWildcardBid(problemId: Id, amount: number): Promise<Bid>
+  placeWildcardBid(amount: number): Promise<void>
   selectWildcardProblem(problemId: Id): Promise<WildcardProblem>
   submitGitHubRepository(repositoryUrl: string): Promise<Submission>
 }

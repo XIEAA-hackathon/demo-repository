@@ -41,6 +41,9 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 .top-status__label { color: var(--muted); font: 600 .58rem 'JetBrains Mono', monospace; letter-spacing: .2em; text-transform: uppercase; }
 .top-status__stage strong { color: var(--text); }
 .live-dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--success); box-shadow: 0 0 12px var(--success); animation: live-pulse 1.8s infinite; }
+.live-dot.is-reconnecting { background: var(--gold-bright); box-shadow: 0 0 12px rgba(244, 196, 87, .45); }
+.participant-stale-warning { padding: .75rem clamp(1rem, 4vw, 2.5rem); color: #ffe1a0; background: #261a08; border-bottom: 1px solid rgba(244, 196, 87, .35); font-size: .78rem; line-height: 1.5; }
+.participant-stale-warning strong { color: #fff1c6; }
 @keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .topbar__team { display: flex; align-items: flex-end; flex-direction: column; gap: .15rem; font-size: .8rem; color: var(--muted); }
 .topbar__team strong { color: var(--gold-bright); font-family: 'JetBrains Mono', monospace; }

@@ -1,24 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Login from "./pages/Login";
 import {
-  addTime, approveTeam, clearToken, confirmRegistrationImport, deleteTeam, finalizeProblem,
-  finalizeWildcard, getAdminConfig, getAdminState, getBidHistory, getLeaderboard,
-  getProblemStatements, getTeamCredentials, getTeams, hasToken, logout, pauseTimer, previewRegistrationImport,
-  removeTime, resetParticipantPassword, resumeTimer, setEventState, setProblemVisibility,
-  updateAdminConfig, createTeamCredentials,
+  addTime, approveTeam, clearToken, deleteTeam, downloadRegistrationCredentials, downloadRegistrationDemo, downloadRegistrationSample, finalizeProblem,
+  getAdminConfig, getAdminState, getBidHistory, getLeaderboard,
+  getProblemStatements, getTeamCredentials, getTeams, hasToken, logout, pauseTimer,
+  importRegistrations, removeTime, resetParticipantPassword, resumeTimer, setProblemVisibility,
+  updateAdminConfig, createTeamCredentials, getRoundControl, importRoundProblems, downloadRoundProblemSample,
+  selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
+  endRoundOne, openWildcardApplications, closeWildcardApplications,
+  confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding,
+  getAdminSubmissions, openSubmissions, closeSubmissions, ApiError,
+  getAdminHealth, runPreflight, getRecoveryState, resumeRecoveryTimer, reloadRecoveryState,
+  resyncClients, retryCurrentTransition, getActivityLog, developmentReset, resetEventData,
 } from "./services/api";
 import { connectAuctionSocket } from "./services/auctionSocket";
-
-const EVENT_STATES = [
-  "WAITING", "ROUND1_PREVIEW", "ROUND1_BIDDING", "ROUND1_RESULT",
-  "WILDCARD_APPLICATION", "WILDCARD_PREVIEW", "WILDCARD_BIDDING",
-  "WILDCARD_SELECTION", "CODING", "SUBMISSION", "JUDGING_WAIT", "RESULTS",
-];
 
 const labels = {
   WAITING: "Waiting", ROUND1_PREVIEW: "Round 1 preview", ROUND1_BIDDING: "Round 1 bidding",
   ROUND1_RESULT: "Round 1 result", WILDCARD_APPLICATION: "Wildcard applications",
-  WILDCARD_PREVIEW: "Wildcard preview", WILDCARD_BIDDING: "Wildcard bidding",
+  WILDCARD_BIDDING: "Wildcard slot bidding",
   WILDCARD_SELECTION: "Wildcard selection", CODING: "Coding", SUBMISSION: "Submission",
   JUDGING_WAIT: "Judging", RESULTS: "Results",
 };
@@ -64,6 +64,10 @@ function AdminApplication({ onLogout }) {
   const [state, setState] = useState(null);
   const [config, setConfig] = useState(null);
   const [socketStatus, setSocketStatus] = useState("connecting");
+  const [apiStatus, setApiStatus] = useState("connecting");
+  const [health, setHealth] = useState(null);
+  const [lastSyncAt, setLastSyncAt] = useState(null);
+  const [clockNow, setClockNow] = useState(Date.now());
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -73,50 +77,69 @@ function AdminApplication({ onLogout }) {
       const [teamRows, problemRows, bidRows, board, eventState, eventConfig] = await Promise.all([
         getTeams(), getProblemStatements(), getBidHistory(), getLeaderboard(), getAdminState(), getAdminConfig(),
       ]);
+      let serverHealth = { backend: "connected", database: "healthy" };
+      try { serverHealth = { ...serverHealth, ...await getAdminHealth() }; } catch { /* Core API requests above remain authoritative. */ }
       setTeams(teamRows); setProblems(problemRows); setBids(bidRows); setLeaderboard(board.teams || board);
-      setState({ ...eventState, timing: { ...eventState.timing, received_at: Date.now() } }); setConfig(eventConfig); setError("");
-    } catch (cause) { setError(cause.message || "Unable to load event data."); }
+      const syncedAt = Date.now();
+      setState({ ...eventState, timing: { ...eventState.timing, received_at: syncedAt } }); setConfig(eventConfig); setHealth(serverHealth); setLastSyncAt(syncedAt); setApiStatus("connected"); setError("");
+      return true;
+    } catch (cause) { setApiStatus("reconnecting"); setError(cause.message || "Unable to load event data."); return false; }
     finally { setLoading(false); }
   }, []);
 
   useEffect(() => { const id = setTimeout(() => void load(), 0); return () => clearTimeout(id); }, [load]);
-  useEffect(() => connectAuctionSocket({ onStatus: setSocketStatus, onMessage: () => void load() }), [load]);
+  useEffect(() => { const resync = () => { void load(); }; window.addEventListener("admin:resync", resync); return () => window.removeEventListener("admin:resync", resync); }, [load]);
+  useEffect(() => {
+    let stopped = false; let timer; let failures = 0;
+    const schedule = (delay) => { timer = window.setTimeout(async () => { if (stopped) return; const ok = await load(); failures = ok ? 0 : failures + 1; schedule(ok ? (document.hidden ? 30000 : 5000) : Math.min(30000, 1000 * 2 ** failures)); }, delay); };
+    const onVisibility = () => { if (!document.hidden) void load(); };
+    schedule(5000); document.addEventListener("visibilitychange", onVisibility);
+    return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
+  }, [load]);
+  useEffect(() => connectAuctionSocket({ onStatus: (status) => { setSocketStatus(status); if (status === "reconnected") void load(); }, onMessage: () => void load() }), [load]);
+  useEffect(() => { const timer = setInterval(() => setClockNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   const remaining = useServerCountdown(state?.timing);
+  const staleSeconds = lastSyncAt ? Math.floor((clockNow - lastSyncAt) / 1000) : null;
+  const stale = staleSeconds == null || staleSeconds > 15;
 
   const action = async (operation, success) => {
     try { setError(""); setNotice(""); await operation(); setNotice(success); await load(); }
     catch (cause) { setError(cause.message || "Action failed."); }
   };
-  const currentIndex = EVENT_STATES.indexOf(state?.event_state || state?.state);
-  const bidRows = useMemo(() => [...bids].sort((a, b) => Number(b.amount) - Number(a.amount)), [bids]);
-
   if (loading) return <div className="loading-screen"><div className="loader" />Loading live control center…</div>;
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand"><div className="sidebar-logo">♠</div><div><strong>Bid to Build</strong><span>Admin control</span></div></div>
-        <span className="sidebar-section-title">Event operations</span>
         <nav className="sidebar-nav">
-          {[["dashboard", "Overview"], ["event", "Event control"], ["teams", "Teams"], ["credentials", "Participant ID"], ["problems", "Problems"], ["imports", "Registration import"], ["bids", "Bidding status"], ["leaderboard", "Leaderboard"]].map(([id, label]) => (
-            <button key={id} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">◆</span>{label}</button>
+          <span className="sidebar-section-title">Event</span>
+          {[["dashboard", "Overview", "⌂"], ["round1", "Round 1", "1"], ["wildcard", "Wildcard", "W"], ["submission", "Submission", "S"], ["recovery", "Recovery", "R"]].map(([id, label, icon]) => (
+            <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
+          ))}
+          <span className="sidebar-section-title sidebar-section-title--management">Management</span>
+          {[["teams", "Teams", "T"], ["problems", "Problems", "P"], ["imports", "Registration import", "⇧"], ["leaderboard", "Leaderboard", "≡"], ["activity", "Event log", "L"]].map(([id, label, icon]) => (
+            <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
           ))}
         </nav>
         <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">A</div><div><strong>Event Admin</strong><span>Backend verified</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><h1>{page === "event" ? "Event Control" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-status"><span className={`status-dot ${socketStatus === "connected" ? "online" : ""}`} />{socketStatus}</div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
+        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health"><span><i className={`status-dot ${apiStatus === "connected" ? "online" : ""}`} />Backend <strong>{apiStatus === "connected" ? "Connected" : "Reconnecting"}</strong></span><span>Database <strong>{health?.database === "healthy" ? "Healthy" : "Checking"}</strong></span><small>Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {socketStatus}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
         <div className="page-content">
+          {stale && <div className="stale-state-warning" role="alert"><strong>LIVE STATE MAY BE STALE</strong><span>Last successful synchronization: {staleSeconds == null ? "not yet completed" : `${staleSeconds} seconds ago`}. Attempting reconnection…</span></div>}
           {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
           {notice && <div className="admin-notice">{notice}</div>}
           {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} />}
-          {page === "event" && <EventControl state={state} config={config} currentIndex={currentIndex} remaining={remaining} onAction={action} onConfig={setConfig} />}
+          {page === "round1" && <RoundControlPage round="round-1" state={state} config={config} remaining={remaining} onConfig={setConfig} />}
+          {page === "wildcard" && <WildcardControlPage state={state} config={config} remaining={remaining} onConfig={setConfig} />}
+          {page === "submission" && <SubmissionAdminPage />}
           {page === "teams" && <Teams teams={teams} onAction={action} />}
-          {page === "credentials" && <ParticipantCredentials teams={teams} />}
           {page === "problems" && <Problems problems={problems} state={state} onAction={action} />}
           {page === "imports" && <RegistrationImport onAction={action} />}
-          {page === "bids" && <Bids bids={bidRows} teams={teams} problems={problems} />}
           {page === "leaderboard" && <Leaderboard rows={leaderboard} />}
+          {page === "recovery" && <RecoveryPage onGlobalSync={load} onNavigate={setPage} />}
+          {page === "activity" && <ActivityLogPage />}
         </div>
       </main>
     </div>
@@ -124,16 +147,222 @@ function AdminApplication({ onLogout }) {
 }
 
 function Dashboard({ teams, problems, bids, state, remaining }) {
-  return <section className="dashboard"><div className="hero-panel"><div><span className="eyebrow">LIVE EVENT STATE</span><h2>{labels[state?.event_state] || "Waiting"}</h2><p>Every connected participant receives state changes from the backend.</p></div><div className="hero-status"><span className="live-pulse" />{state?.timing?.paused ? "TIMER PAUSED" : remaining ? formatTime(remaining) : "READY"}</div></div><div className="stats-grid"><Stat label="REGISTERED TEAMS" value={teams.length} /><Stat label="PROBLEM STATEMENTS" value={problems.length} /><Stat label="BIDS RECEIVED" value={bids.length} /><Stat label="CURRENT ROUND" value={state?.current_round ?? 1} /></div></section>;
+  const [preflight, setPreflight] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState("");
+  const check = async () => { setChecking(true); setCheckError(""); try { setPreflight(await runPreflight()); } catch (cause) { setCheckError(cause.message || "Event check failed."); } finally { setChecking(false); } };
+  return <section className="dashboard"><div className="hero-panel"><div><span className="eyebrow">LIVE EVENT STATE</span><h2>{labels[state?.event_state] || "Waiting"}</h2><p>Every connected participant receives state changes from the backend.</p></div><div className="hero-status"><span className="live-pulse" />{state?.timing?.paused ? "TIMER PAUSED" : remaining ? formatTime(remaining) : "READY"}</div></div><div className="stats-grid"><Stat label="REGISTERED TEAMS" value={teams.length} /><Stat label="PROBLEM STATEMENTS" value={problems.length} /><Stat label="BIDS RECEIVED" value={bids.length} /><Stat label="CURRENT ROUND" value={state?.current_round ?? 1} /></div><section className="preflight-panel"><div><h3>Event readiness</h3><p>Validate every live-event prerequisite without changing event state.</p></div><button className="primary-button" disabled={checking} onClick={() => void check()}>{checking ? "Running checks…" : "Run event check"}</button>{checkError && <div className="global-error" role="alert">{checkError}</div>}{preflight && <><strong className={`readiness-status readiness-status--${preflight.status.toLowerCase()}`}>{preflight.status}</strong><div className="preflight-list">{preflight.checks.map((item) => <div key={item.name}><span className={`check-mark check-mark--${item.status.toLowerCase()}`}>{item.status === "READY" ? "✓" : item.status === "WARNING" ? "!" : "×"}</span><span><strong>{item.name}</strong><small>{item.detail}</small></span></div>)}</div></>}</section></section>;
 }
 
-function EventControl({ state, config, currentIndex, remaining, onAction, onConfig }) {
-  const current = state?.event_state;
-  const saveConfig = () => onAction(() => updateAdminConfig(config), "Event configuration saved.");
-  return <section className="page-section"><div className="panel"><div className="panel-heading"><div><h3>Lifecycle control</h3><span>Only the valid next transition is enabled.</span></div><strong className="state-pill live">{labels[current]}</strong></div><div className="state-grid">{EVENT_STATES.map((item, index) => <button key={item} className={`state-button ${item === current ? "active" : ""}`} disabled={index !== currentIndex + 1 && !(current === "RESULTS" && item === "WAITING")} onClick={() => onAction(() => setEventState(item), `Event moved to ${labels[item]}.`)}>{index + 1}. {labels[item]}</button>)}</div></div>
-    <div className="dashboard-grid"><div className="panel"><div className="panel-heading"><div><h3>Server timer</h3><span>Derived from server timestamps</span></div></div><div className="admin-timer">{formatTime(remaining)}</div><div className="action-strip"><button className="secondary-button" onClick={() => onAction(pauseTimer, "Timer paused.")}>Pause</button><button className="secondary-button" onClick={() => onAction(resumeTimer, "Timer resumed.")}>Resume</button><button className="secondary-button" onClick={() => onAction(() => addTime(60), "Added 60 seconds.")}>+ 60s</button><button className="secondary-button" onClick={() => onAction(() => removeTime(60), "Removed 60 seconds.")}>− 60s</button></div></div>
-    <div className="panel"><div className="panel-heading"><div><h3>Core configuration</h3><span>Used by auctions and synchronized timers</span></div></div>{config && <div className="config-grid">{[["starting_coins", "Starting coins"], ["round1_preview_seconds", "Preview seconds"], ["round1_bid_seconds", "Round 1 bid seconds"], ["round1_winner_count", "Round 1 winners"], ["wildcard_slots", "Wildcard slots"], ["wildcard_bid_seconds", "Wildcard bid seconds"], ["coding_duration_seconds", "Coding seconds"]].map(([key, label]) => <label key={key}>{label}<input type="number" min="0" value={config[key]} onChange={(event) => onConfig({ ...config, [key]: Number(event.target.value) })} /></label>)}<button className="primary-button" onClick={saveConfig}>Save configuration</button></div>}</div></div>
-    {current === "WILDCARD_BIDDING" && <button className="primary-button" onClick={() => onAction(finalizeWildcard, "Wildcard auction finalized.")}>Finalize wildcard winners</button>}</section>;
+function RoundControlPage({ round, state, config, remaining, onConfig }) {
+  const isWildcard = round === "wildcard";
+  const [data, setData] = useState(null);
+  const [file, setFile] = useState(null);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const loadRound = useCallback(() => getRoundControl(round).then(setData).catch((cause) => setError(cause.message)), [round]);
+  useEffect(() => { void loadRound(); }, [loadRound, state?.timing?.server_time]);
+  const run = async (operation, success) => {
+    setWorking(true); setError(""); setNotice("");
+    try { const result = await operation(); if (result?.round_type) setData(result); setNotice(success); await loadRound(); }
+    catch (cause) { setError(cause.message || "Action failed."); if (cause instanceof ApiError && [409, 503].includes(cause.status)) await load(); }
+    finally { setWorking(false); }
+  };
+  const downloadSample = async () => {
+    try {
+      const blob = await downloadRoundProblemSample(round);
+      const url = URL.createObjectURL(blob); const link = document.createElement("a");
+      link.href = url; link.download = `${round}-problems-sample.csv`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (cause) { setError(cause.message); }
+  };
+  const saveSettings = () => run(() => updateAdminConfig(config), `${isWildcard ? "Wildcard" : "Round 1"} timer settings saved.`);
+  const current = data?.current_problem;
+  const eventState = data?.event?.event_state;
+  const hasTimer = Boolean(state?.timing?.ends_at || state?.timing?.paused);
+  const afterBidding = current && data?.status === "READY" && eventState === (isWildcard ? "WILDCARD_SELECTION" : "ROUND1_RESULT");
+  if (!data) return <div className="loading-screen"><div className="loader" />Loading round controls…</div>;
+
+  return <section className="round-console">
+    <header className="round-console__header">
+      <div><span className="eyebrow">EVENT / {isWildcard ? "WILDCARD" : "ROUND 1"}</span><h2>{isWildcard ? "Wildcard" : "Round 1"}</h2><p>{isWildcard ? "Manage applications, wildcard problems, and bidding." : "Manage problem preview, bidding, and team assignments."}</p></div>
+      <a className="round-leaderboard-button" href={`/leaderboard/${round}`} target="_blank" rel="noreferrer">Open round leaderboard ↗</a>
+    </header>
+
+    {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
+    {notice && <div className="admin-notice">{notice}</div>}
+
+    {isWildcard && <section className="round-applications">
+      <div><span className="eyebrow">APPLICATIONS</span><h3>{data.applications.applied} / {data.applications.eligible} applied</h3><p>{data.applications.declined} declined · {data.applications.pending} pending</p></div>
+      <div className="round-application-clock"><strong>{data.applications.open ? formatTime(remaining) : "00:00:00"}</strong><span>{data.applications.open ? "Applications open" : "Applications closed"}</span></div>
+      <div className="round-inline-actions">
+        {!data.applications.open ? <button className="primary-button" disabled={working} onClick={() => run(openWildcardApplications, "Wildcard applications opened.")}>Open applications</button> : <button className="danger-button" disabled={working} onClick={() => run(closeWildcardApplications, "Wildcard applications closed.")}>Close applications</button>}
+        {data.applications.open && <TimerButtons state={state} remaining={remaining} run={run} />}
+      </div>
+    </section>}
+
+    <div className="round-console__live">
+      <article className="round-current-problem">
+        <span className="eyebrow">CURRENT PROBLEM</span>
+        {current ? <><strong className="round-problem-number">Problem #{current.problem_number}</strong><p>{current.problem_statement}</p><span className={`round-status round-status--${data.status.toLowerCase()}`}>{data.status}</span></> : <div className="round-empty"><strong>No problem selected</strong><p>Choose any available problem from the bank below.</p></div>}
+      </article>
+      <article className="round-live-controls">
+        <div><span className="eyebrow">LIVE CONTROLS</span><h3>{data.status === "PREVIEW" ? "Problem preview" : data.status === "BIDDING" ? `${isWildcard ? "Wildcard" : "Round 1"} — live bidding` : "Ready"}</h3></div>
+        <div className="round-live-clock">{hasTimer ? formatTime(remaining) : "00:00:00"}</div>
+        {data.status === "BIDDING" && <dl className="round-bid-metrics"><div><dt>Current highest bid</dt><dd>{data.highest_bid ?? "—"}</dd></div><div><dt>Current highest team</dt><dd>{data.highest_team ?? "—"}</dd></div></dl>}
+        {(data.status === "PREVIEW" || data.status === "BIDDING") && <TimerButtons state={state} remaining={remaining} run={run} />}
+        <div className="round-primary-actions">
+          {current && data.status === "READY" && !afterBidding && <button className="primary-button" disabled={working} onClick={() => run(() => startRoundPreview(round), "Preview started.")}>Start preview</button>}
+          {data.status === "PREVIEW" && <button className="primary-button" disabled={working} onClick={() => run(() => startRoundBidding(round), "Bidding started.")}>End preview / start bidding</button>}
+          {data.status === "BIDDING" && <button className="danger-button" disabled={working} onClick={() => run(() => closeRoundBidding(round), "Bidding closed.")}>Close bidding</button>}
+          {afterBidding && <button className="primary-button" disabled={working} onClick={() => run(() => assignRoundWinners(round), "Winner assignment completed.")}>Assign winner(s)</button>}
+        </div>
+      </article>
+    </div>
+
+    <section className="round-problem-bank">
+      <div className="round-section-heading"><div><span className="eyebrow">{isWildcard ? "WILDCARD" : "ROUND 1"} PROBLEMS</span><h3>Problem bank</h3></div><div className="round-inline-actions"><label className="secondary-button round-upload">Upload XLSX / CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-button" onClick={() => void downloadSample()}>Download sample CSV</button>{file && <button className="primary-button" disabled={working} onClick={() => run(() => importRoundProblems(round, file), `${file.name} imported.`)}>Import {file.name}</button>}</div></div>
+      <div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><p>{problem.problem_statement}</p><span>{problem.status}</span>{problem.status === "AVAILABLE" && !data.ended && !current && <button className="secondary-button" onClick={() => run(() => selectRoundProblem(round, problem.id), `Problem #${problem.problem_number} selected.`)}>Select</button>}</article>) : <div className="round-empty"><strong>No problems imported</strong><p>Upload the organizer&apos;s XLSX or CSV problem bank.</p></div>}</div>
+    </section>
+
+    <section className="round-settings">
+      <div><span className="eyebrow">SETTINGS</span><h3>{isWildcard ? "Wildcard configuration" : "Round settings"}</h3><p>Change durations before the corresponding timer starts.</p></div>
+      {config && <div className="round-settings__fields">
+        {isWildcard && <label>Application duration<input type="number" min="1" value={config.wildcard_application_seconds} onChange={(event) => onConfig({ ...config, wildcard_application_seconds: Number(event.target.value) })} /></label>}
+        <label>Preview duration<input type="number" min="1" value={config[isWildcard ? "wildcard_preview_seconds" : "round1_preview_seconds"]} onChange={(event) => onConfig({ ...config, [isWildcard ? "wildcard_preview_seconds" : "round1_preview_seconds"]: Number(event.target.value) })} /></label>
+        <label>Bidding duration<input type="number" min="1" value={config[isWildcard ? "wildcard_bid_seconds" : "round1_bid_seconds"]} onChange={(event) => onConfig({ ...config, [isWildcard ? "wildcard_bid_seconds" : "round1_bid_seconds"]: Number(event.target.value) })} /></label>
+        {isWildcard && <label>Wildcard slots<input type="number" min="1" value={config.wildcard_slots} onChange={(event) => onConfig({ ...config, wildcard_slots: Number(event.target.value) })} /></label>}
+        <button className="secondary-button" onClick={saveSettings}>Save settings</button>
+      </div>}
+      {!isWildcard && <button className="danger-link round-end" disabled={data.ended || working} onClick={() => window.confirm("End Round 1? No further Round 1 selection or bidding will be allowed.") && run(endRoundOne, "Round 1 ended. Wildcard can now be opened.")}>{data.ended ? "Round 1 ended" : "End Round 1"}</button>}
+    </section>
+  </section>;
+}
+
+function WildcardControlPage({ state, config, remaining, onConfig }) {
+  const [data, setData] = useState(null);
+  const [tab, setTab] = useState("applications");
+  const [slots, setSlots] = useState(1);
+  const [file, setFile] = useState(null);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const load = useCallback(async () => { try { const result = await getRoundControl("wildcard"); setData(result); if (result.slots?.count) setSlots(result.slots.count); setError(""); return result; } catch (cause) { setError(cause.message); return null; } }, []);
+  useEffect(() => {
+    let stopped = false; let timer;
+    const poll = async () => { const result = await load(); if (stopped) return; const live = ["APPLICATIONS_OPEN", "BIDDING_OPEN", "PROBLEM_SELECTION"].includes(result?.status); timer = setTimeout(poll, document.hidden ? 60000 : live ? 2000 : 15000); };
+    void poll();
+    const onVisibility = () => { if (!document.hidden) { clearTimeout(timer); void poll(); } };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
+  }, [load]);
+  useEffect(() => {
+    if (data?.status === "APPLICATIONS_CLOSED" || data?.status === "BIDDING_OPEN" || data?.status === "BIDDING_CLOSED") setTab("bidding");
+    if (data?.status === "PROBLEM_SELECTION" || data?.status === "COMPLETE") setTab("selection");
+  }, [data?.status]);
+  const run = async (operation, success) => {
+    setWorking(true); setError(""); setNotice("");
+    try { await operation(); setNotice(success); await load(); }
+    catch (cause) { setError(cause.message || "Action failed."); if (cause instanceof ApiError && [409, 503].includes(cause.status)) await load(); }
+    finally { setWorking(false); }
+  };
+  const downloadSample = async () => {
+    try {
+      const blob = await downloadRoundProblemSample("wildcard"); const url = URL.createObjectURL(blob);
+      const link = document.createElement("a"); link.href = url; link.download = "wildcard-problems-sample.csv"; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (cause) { setError(cause.message); }
+  };
+  if (!data) return <div className="loading-screen"><div className="loader" />Loading wildcard controls…</div>;
+  const maxSlots = data.slots.maximum || 0;
+  const canConfirmSlots = data.status === "APPLICATIONS_CLOSED" && maxSlots > 0;
+  const stageCopy = {
+    NOT_STARTED: "Ready to collect applications",
+    APPLICATIONS_OPEN: "Applications are open",
+    APPLICATIONS_CLOSED: "Confirm how many teams advance",
+    BIDDING_OPEN: "Slot bidding is live",
+    BIDDING_CLOSED: "Bidding has closed",
+    PROBLEM_SELECTION: "Qualified teams are choosing in rank order",
+    COMPLETE: "Wildcard is complete",
+  }[data.status] || data.status;
+
+  return <section className="round-console wildcard-console">
+    <header className="round-console__header"><div><span className="eyebrow">EVENT / WILDCARD</span><h2>Wildcard</h2><p>Applications, one slot auction, then ranked problem selection.</p></div><a className="round-leaderboard-button" href="/leaderboard/wildcard" target="_blank" rel="noreferrer">Open public leaderboard ↗</a></header>
+    {error && <div className="global-error" role="alert"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
+    {notice && <div className="admin-notice">{notice}</div>}
+    <section className="wildcard-stage-banner"><div><span className="eyebrow">CURRENT STATUS</span><h3>{stageCopy}</h3></div><strong>{data.status.replaceAll("_", " ")}</strong></section>
+    <div className="wildcard-tabs" role="tablist" aria-label="Wildcard stages">
+      {[["applications", "1", "Applications"], ["bidding", "2", "Slot bidding"], ["selection", "3", "Problem selection"]].map(([id, number, label]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}><span>{number}</span>{label}</button>)}
+    </div>
+
+    {tab === "applications" && <div className="wildcard-panel-grid">
+      <section className="round-applications wildcard-stage-card"><div><span className="eyebrow">APPLICATION RESPONSE</span><h3>{data.applications.applied} applied</h3><p>{data.applications.declined} declined · {data.applications.pending} pending · {data.applications.eligible} eligible</p></div><div className="round-application-clock"><strong>{data.applications.open ? formatTime(remaining) : "00:00:00"}</strong><span>{data.applications.open ? "Applications open" : data.applications.status}</span></div><div className="round-inline-actions">{data.status === "NOT_STARTED" && !data.slots.confirmed && <button className="primary-button" disabled={working} onClick={() => run(openWildcardApplications, "Wildcard applications opened.")}>Open applications</button>}{data.applications.open && <><button className="danger-button" disabled={working} onClick={() => run(closeWildcardApplications, "Wildcard applications closed.")}>Close applications</button><TimerButtons state={state} remaining={remaining} run={run} /></>}</div></section>
+      <section className="round-settings wildcard-stage-card"><div><span className="eyebrow">APPLICATION TIMER</span><h3>Application window</h3><p>Default 60 seconds. Save before opening applications.</p></div>{config && <div className="round-settings__fields"><label>Duration (seconds)<input type="number" min="1" value={config.wildcard_application_seconds} onChange={(event) => onConfig({ ...config, wildcard_application_seconds: Number(event.target.value) })} /></label><button className="secondary-button" disabled={working || data.status !== "NOT_STARTED"} onClick={() => run(() => updateAdminConfig(config), "Application duration saved.")}>Save duration</button></div>}</section>
+    </div>}
+
+    {tab === "bidding" && <div className="wildcard-panel-grid">
+      <section className="wildcard-stage-card wildcard-slots"><div><span className="eyebrow">AVAILABLE SLOTS</span><h3>Choose advancing teams</h3><p>Slots cannot exceed applied teams or available wildcard problems.</p></div><div className="wildcard-slot-control"><label>Slots<input type="number" min="1" max={Math.max(1, maxSlots)} value={slots} onChange={(event) => setSlots(Number(event.target.value))} /></label><span>Maximum now: <strong>{maxSlots}</strong></span><button className="primary-button" disabled={!canConfirmSlots || working || slots < 1 || slots > maxSlots} onClick={() => run(() => confirmWildcardSlots(slots), `${slots} wildcard slot${slots === 1 ? "" : "s"} confirmed.`)}>{data.slots.confirmed ? `Confirmed: ${data.slots.count}` : "Confirm slots"}</button></div></section>
+      <section className="wildcard-stage-card wildcard-live-bidding"><div><span className="eyebrow">ONE SLOT AUCTION</span><h3>{data.bidding.open ? "Bidding is live" : data.status === "BIDDING_CLOSED" ? "Bidding expired · ready to finalize" : data.slots.confirmed ? "Ready for slot bidding" : "Confirm slots first"}</h3><p>Each applicant submits one bid. Higher bid ranks first; equal bids keep the earlier timestamp.</p></div><div>{data.bidding.open ? <div className="round-live-clock">{formatTime(remaining)}</div> : config && <div className="round-settings__fields"><label>Bidding duration (seconds)<input type="number" min="1" value={config.wildcard_bid_seconds} onChange={(event) => onConfig({ ...config, wildcard_bid_seconds: Number(event.target.value) })} /></label><button className="secondary-button" disabled={working || data.status !== "APPLICATIONS_CLOSED"} onClick={() => run(() => updateAdminConfig(config), "Bidding duration saved.")}>Save duration</button></div>}</div><div className="round-inline-actions">{data.status === "APPLICATIONS_CLOSED" && data.slots.confirmed && <button className="primary-button" disabled={working} onClick={() => run(startWildcardSlotBidding, "Wildcard slot bidding started.")}>Start slot bidding</button>}{data.bidding.open && <><button className="danger-button" disabled={working} onClick={() => window.confirm("Close slot bidding and charge the top ranked teams?") && run(closeWildcardSlotBidding, "Slot bidding finalized.")}>Close and rank</button><TimerButtons state={state} remaining={remaining} run={run} /></>}{data.status === "BIDDING_CLOSED" && <button className="primary-button" disabled={working} onClick={() => window.confirm("Finalize the frozen ranking and charge qualified teams?") && run(closeWildcardSlotBidding, "Slot bidding finalized.")}>Finalize ranking</button>}</div></section>
+      <section className="wildcard-stage-card wildcard-ranking"><div className="round-section-heading"><div><span className="eyebrow">LIVE RANKING</span><h3>{data.bidding.ranking.length} bids received</h3></div><span className="wildcard-slot-badge">TOP {data.slots.count || "—"} QUALIFY</span></div>{data.bidding.ranking.length ? <div className="wildcard-rank-list">{data.bidding.ranking.map((row) => <div key={row.team_id}><strong>#{row.rank}</strong><span>{row.team_name}</span><b>{row.value} coins</b>{row.qualified && <em>Qualified</em>}</div>)}</div> : <div className="round-empty"><strong>No bids yet</strong><p>The ranking updates live while bidding is open.</p></div>}</section>
+    </div>}
+
+    {tab === "selection" && <div className="wildcard-panel-grid">
+      <section className="wildcard-stage-card wildcard-selection-progress"><div className="round-section-heading"><div><span className="eyebrow">SEQUENTIAL SELECTION</span><h3>{data.status === "COMPLETE" ? "All problems selected" : data.selection.current_team ? `${data.selection.current_team} is choosing` : "Waiting for selection"}</h3></div>{data.selection.current_rank && <span className="wildcard-slot-badge">RANK #{data.selection.current_rank}</span>}</div>{data.selection.pool_frozen && <div className="active-pool"><strong>Active pool · {data.selection.pool.length} frozen problems</strong><span>{data.selection.pool.map((entry) => `#${entry.problem.problem_number}${entry.selected ? " selected" : ""}`).join(" · ")}</span><small>Later uploads and refreshes cannot change this selection pool.</small></div>}<div className="wildcard-qualification-list">{data.selection.qualifications.length ? data.selection.qualifications.map((row) => <article key={row.team_id}><strong>#{row.rank}</strong><div><b>{row.team_name}</b><span>{row.problem ? `Problem #${row.problem.problem_number}` : `${row.winning_bid} coin winning bid`}</span></div><em className={`selection-status selection-status--${row.status.toLowerCase()}`}>{row.status}</em></article>) : <div className="round-empty"><strong>No qualified teams</strong><p>Close slot bidding to determine the selection order.</p></div>}</div></section>
+      <section className="round-problem-bank wildcard-stage-card"><div className="round-section-heading"><div><span className="eyebrow">WILDCARD PROBLEMS</span><h3>Separate problem bank</h3></div><div className="round-inline-actions"><label className="secondary-button round-upload">Upload XLSX / CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-button" onClick={() => void downloadSample()}>Download sample CSV</button>{file && <button className="primary-button" disabled={working} onClick={() => run(() => importRoundProblems("wildcard", file), `${file.name} imported.`)}>Import {file.name}</button>}</div></div><div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><p>{problem.problem_statement}</p><span>{problem.status}</span></article>) : <div className="round-empty"><strong>No wildcard problems imported</strong><p>Upload XLSX or CSV before confirming slots.</p></div>}</div></section>
+    </div>}
+  </section>;
+}
+
+function SubmissionAdminPage() {
+  const [data, setData] = useState(null);
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [working, setWorking] = useState(false);
+  const load = useCallback(async () => { try { const result = await getAdminSubmissions(); setData(result); setError(""); return result; } catch (cause) { setError(cause.message); return null; } }, []);
+  useEffect(() => { let stopped = false; let timer; const poll = async () => { const result = await load(); if (!stopped) timer = setTimeout(poll, document.hidden ? 60000 : result?.open ? 3000 : 30000); }; void poll(); return () => { stopped = true; clearTimeout(timer); }; }, [load]);
+  const run = async (operation, success) => { setWorking(true); setError(""); setNotice(""); try { setData(await operation()); setNotice(success); } catch (cause) { setError(cause.message || "Action failed."); } finally { setWorking(false); } };
+  const rows = (data?.rows || []).filter((row) => row.team_name.toLowerCase().includes(query.trim().toLowerCase()));
+  if (!data) return <div className="loading-screen"><div className="loader" />Loading submissions…</div>;
+  return <section className="submission-admin"><header className="submission-admin__header"><div><span className="eyebrow">EVENT / SUBMISSION</span><h2>Submission monitor</h2><p>Open or close the window and track each team’s final GitHub repository.</p></div><button className={data.open ? "danger-button" : "primary-button"} disabled={working} onClick={() => run(data.open ? closeSubmissions : openSubmissions, data.open ? "Submissions closed." : "Submissions opened.")}>{data.open ? "Close submissions" : "Open submissions"}</button></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}<div className="submission-stats"><Stat label="WINDOW" value={data.open ? "OPEN" : "CLOSED"} /><Stat label="TOTAL TEAMS" value={data.total} /><Stat label="SUBMITTED" value={data.submitted} /><Stat label="PENDING" value={data.pending} /></div><div className="submission-table-panel"><div className="submission-toolbar"><div><h3>Team repositories</h3><span>{data.open ? "Live monitoring every three seconds." : "Closed window checks every thirty seconds."}</span></div><input aria-label="Search teams" placeholder="Search team…" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>FINAL PROBLEM</th><th>STATUS</th><th>GITHUB URL</th><th>SUBMITTED BY</th><th>UPDATED</th></tr></thead><tbody>{rows.map((row) => <tr key={row.team_id}><td><strong>{row.team_name}</strong></td><td>{row.final_problem ? `#${row.final_problem.ps_number} · ${row.final_problem.title}` : "—"}</td><td><span className={`table-status ${row.status === "SUBMITTED" ? "active" : "pending"}`}>{row.status}</span></td><td>{row.github_url ? <a href={row.github_url} target="_blank" rel="noreferrer">Open repository ↗</a> : "—"}</td><td>{row.submitted_by || "—"}</td><td>{row.updated_at || row.submitted_at ? new Date(row.updated_at || row.submitted_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div></div></section>;
+}
+
+function RecoveryPage({ onGlobalSync, onNavigate }) {
+  const [data, setData] = useState(null);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [eventResetConfirmation, setEventResetConfirmation] = useState("");
+  const [resetSummary, setResetSummary] = useState(null);
+  const load = useCallback(async () => { try { setData(await getRecoveryState()); setError(""); return true; } catch (cause) { setError(cause.message || "Recovery state could not be loaded."); return false; } }, []);
+  useEffect(() => { void load(); const timer = setInterval(() => { if (!document.hidden) void load(); }, 5000); return () => clearInterval(timer); }, [load]);
+  const run = async (operation, success) => { setWorking(true); setError(""); setNotice(""); try { const result = await operation(); setData(result?.current_phase ? result : await getRecoveryState()); setNotice(success); await onGlobalSync(); } catch (cause) { setError(cause.message || "Recovery action failed."); await load(); } finally { setWorking(false); } };
+  const resetEvent = async () => { setWorking(true); setError(""); setNotice(""); try { const result = await resetEventData(eventResetConfirmation); setResetSummary(result); setEventResetConfirmation(""); setData(await getRecoveryState()); setNotice("Event data reset successfully. The system is ready for a new participant import."); await onGlobalSync(); } catch (cause) { setError(cause.message || "Event data reset failed."); await load(); } finally { setWorking(false); } };
+  if (!data) return <div className="loading-screen"><div className="loader" />Loading recovery state…</div>;
+  const fields = [
+    ["Current phase", labels[data.current_phase] || data.current_phase], ["Current sub-state", data.current_sub_state],
+    ["Current problem", data.current_problem ? `${data.current_problem.number} · ${data.current_problem.title}` : "None"],
+    ["Timer", data.timer.paused ? `Paused · ${formatTime(data.timer.remaining_seconds)}` : data.timer.ends_at ? `${formatTime(data.timer.remaining_seconds)} remaining` : "Inactive"],
+    ["Round 1 completion", data.round1_complete ? "Complete" : "In progress"], ["Wildcard applications", data.wildcard_applications.status],
+    ["Wildcard auction", data.wildcard_auction_state], ["Selection rank", data.wildcard_selection_rank ?? "None"],
+    ["Submissions", data.submission_state], ["Last state update", data.last_state_update ? new Date(data.last_state_update).toLocaleString() : "Not recorded"],
+  ];
+  return <section className="operations-page"><header><div><h2>Safe event recovery</h2><p>Restore and re-synchronize the authoritative server state. Completed stages cannot be reopened here.</p></div></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}<dl className="recovery-grid">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><div className="recovery-actions"><button className="secondary-button" disabled={working || !data.timer.paused} onClick={() => run(resumeRecoveryTimer, "Current timer resumed from server state.")}>Resume current timer</button><button className="secondary-button" disabled={working} onClick={() => run(reloadRecoveryState, "Server state reloaded.")}>Reload server state</button><button className="secondary-button" disabled={working} onClick={() => run(resyncClients, "Connected clients were asked to re-sync.")}>Re-sync clients</button><button className="secondary-button" disabled={working} onClick={() => run(retryCurrentTransition, "Current transition re-evaluated safely.")}>Retry current transition</button></div><section className="event-data-reset"><div><strong>Reset event data</strong><h3>Prepare a clean event</h3><p>Permanently removes imported teams and participant accounts, problem uploads, bids, assignments, Wildcard progress, submissions, timers, leaderboards, registration imports, and event activity. Built-in Admin/demo system accounts and global configuration are preserved.</p><p>This cannot be undone. Reset is blocked while an event is active.</p></div>{data.event_data_reset_block_reason && <div className="reset-blocked" role="status">{data.event_data_reset_block_reason}</div>}<label>Type RESET EVENT<input value={eventResetConfirmation} onChange={(event) => setEventResetConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || !data.event_data_reset_allowed || eventResetConfirmation !== "RESET EVENT"} onClick={() => window.confirm("Are you absolutely sure? This permanently removes all current event and imported participant data.") && void resetEvent()}>Reset event data</button>{resetSummary && <div className="reset-summary"><strong>Event data reset complete</strong><span>Imported teams: {resetSummary.deleted.teams} removed · Participants: {resetSummary.deleted.participant_users} removed · Problems: {resetSummary.deleted.round1_problems + resetSummary.deleted.wildcard_problems} removed · Bids: {resetSummary.deleted.bids} removed · Submissions: {resetSummary.deleted.submissions} removed</span><button className="primary-button" onClick={() => onNavigate("imports")}>Go to registration import</button></div>}</section>{data.reset_enabled && <section className="development-reset"><div><strong>Development only</strong><h3>Force-reset rehearsal state</h3><p>Available only when ENABLE_EVENT_RESET is enabled. This keeps registrations and imported problems.</p></div><label>Type RESET DEVELOPMENT EVENT<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || confirmation !== "RESET DEVELOPMENT EVENT"} onClick={() => window.confirm("Reset this development rehearsal? This cannot be undone.") && run(() => developmentReset(confirmation), "Development rehearsal reset completed.")}>Reset development event</button></section>}</section>;
+}
+
+function ActivityLogPage() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const load = useCallback(() => getActivityLog().then(setData).catch((cause) => setError(cause.message || "Event log could not be loaded.")), []);
+  useEffect(() => { void load(); const timer = setInterval(() => { if (!document.hidden) void load(); }, 10000); return () => clearInterval(timer); }, [load]);
+  if (!data) return <div className="loading-screen"><div className="loader" />Loading event log…</div>;
+  return <section className="operations-page"><header><div><h2>Event activity log</h2><p>Append-only operational history. Passwords, tokens, and credential exports are never recorded.</p></div><button className="secondary-button" onClick={() => void load()}>Refresh log</button></header>{error && <div className="global-error" role="alert">{error}</div>}<div className="table-wrapper"><table><thead><tr><th>TIME</th><th>ACTOR</th><th>ACTION</th><th>ENTITY</th><th>DETAILS</th></tr></thead><tbody>{data.rows.map((row) => <tr key={row.id}><td>{new Date(row.timestamp).toLocaleString()}</td><td>{row.actor_type}{row.actor_id ? ` #${row.actor_id}` : ""}</td><td><strong>{row.action.replaceAll(".", " · ")}</strong></td><td>{row.entity_type ? `${row.entity_type}${row.entity_id ? ` #${row.entity_id}` : ""}` : "—"}</td><td><code>{Object.keys(row.metadata || {}).length ? JSON.stringify(row.metadata) : "—"}</code></td></tr>)}</tbody></table></div></section>;
+}
+
+function TimerButtons({ state, remaining, run }) {
+  return <div className="round-timer-actions"><button className="secondary-button" disabled={state?.timing?.paused} onClick={() => run(pauseTimer, "Timer paused.")}>Pause</button><button className="secondary-button" disabled={!state?.timing?.paused} onClick={() => run(resumeTimer, "Timer resumed.")}>Resume</button><button className="secondary-button" onClick={() => run(() => addTime(30), "Added 30 seconds.")}>+30 sec</button><button className="secondary-button" disabled={remaining <= 0} onClick={() => run(() => removeTime(30), "Removed up to 30 seconds.")}>−30 sec</button></div>;
 }
 
 function Teams({ teams, onAction }) {
@@ -220,9 +449,80 @@ function ParticipantCredentials({ teams }) {
 }
 
 function RegistrationImport() {
-  const [file, setFile] = useState(null); const [preview, setPreview] = useState(null); const [result, setResult] = useState(null); const [error, setError] = useState(""); const [working, setWorking] = useState(false);
-  const run = async (operation) => { setWorking(true); setError(""); try { return await operation(); } catch (cause) { setError(cause.message); } finally { setWorking(false); } };
-  return <section className="page-section"><div className="panel import-panel"><div className="panel-heading"><div><h3>Registration CSV/XLSX import</h3><span>Preview is required before confirmation.</span></div></div><input type="file" accept=".csv,.xlsx" onChange={(event) => setFile(event.target.files?.[0] || null)} /><button className="primary-button" disabled={!file || working} onClick={() => void run(async () => setPreview(await previewRegistrationImport(file)))}>Preview import</button>{error && <p className="global-error">{error}</p>}{preview && <div className="import-summary"><p><strong>{preview.teams_detected}</strong> teams · <strong>{preview.members_detected}</strong> members</p><button className="primary-button" disabled={working} onClick={() => void run(async () => setResult(await confirmRegistrationImport(preview.import_id)))}>Confirm import</button></div>}{result && <div className="credentials"><h3>Temporary credentials — save now</h3>{result.credentials.map((item) => <code key={item.email}>{item.team_name} · {item.email} · {item.temporary_password}</code>)}</div>}</div></section>;
+  const [file, setFile] = useState(null);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const [working, setWorking] = useState(false);
+  const runImport = async () => {
+    if (!file) return;
+    setWorking(true); setError(""); setResult(null);
+    try { setResult(await importRegistrations(file)); }
+    catch (cause) { setError(cause.message || "Registration import failed."); }
+    finally { setWorking(false); }
+  };
+  const download = async () => {
+    if (!result?.download_token) return;
+    setWorking(true); setError("");
+    try {
+      const blob = await downloadRegistrationCredentials(result.download_token);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = result.download_filename;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setResult({ ...result, download_token: null });
+    } catch (cause) { setError(cause.message || "Credential download failed."); }
+    finally { setWorking(false); }
+  };
+  const downloadSample = async () => {
+    try {
+      const blob = await downloadRegistrationSample(); const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a"); anchor.href = url; anchor.download = "registration-import-sample.csv"; anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (cause) { setError(cause.message || "Sample download failed."); }
+  };
+  const downloadDemo = async () => {
+    try {
+      const blob = await downloadRegistrationDemo(); const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a"); anchor.href = url; anchor.download = "bid-to-build-demo-registration.csv"; anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (cause) { setError(cause.message || "Demo CSV download failed."); }
+  };
+  const summaryRows = result ? [
+    ["Teams processed", result.teams_processed], ["Teams created", result.teams_created],
+    ["Teams updated", result.teams_updated], ["Leader accounts", result.leaders_created],
+    ["Existing leaders", result.existing_leaders], ["Members imported", result.members_imported],
+    ["Rows failed", result.rows_failed],
+  ] : [];
+
+  return <section className="registration-import">
+    <div className="registration-import__intro"><div><h2>Registration import</h2><p>Turn the organizer’s registration export into approved teams, leader logins, and a one-time credential workbook.</p></div><span className="registration-import__format">XLSX / CSV · MAX 10 MB</span></div>
+    <div className="registration-import__grid">
+      <section className="registration-upload-panel">
+        <div className="event-section-heading"><h3>Upload registration sheet</h3><p>CSV imports return a CSV credential file; XLSX imports return XLSX.</p><div className="round-inline-actions"><button className="secondary-button" onClick={() => void downloadDemo()}>Download demo CSV</button><button className="secondary-button" onClick={() => void downloadSample()}>Download blank sample</button></div></div>
+        <label className={`registration-dropzone ${file ? "registration-dropzone--ready" : ""}`}>
+          <input type="file" accept=".xlsx,.csv" onChange={(event) => { setFile(event.target.files?.[0] || null); setResult(null); setError(""); }} />
+          <span className="registration-dropzone__mark" aria-hidden="true" />
+          <strong>{file ? file.name : "Choose an XLSX or CSV file"}</strong>
+          <small>{file ? `${Math.max(1, Math.round(file.size / 1024))} KB ready to import` : "Original columns and values are preserved in the credential output file."}</small>
+        </label>
+        <div className="registration-requirements"><strong>Required registration data</strong><ul><li>Team name</li><li>Leader name and email</li><li>Member names</li><li>Member emails when available</li></ul></div>
+        <button className="event-primary-action" disabled={!file || working} onClick={() => void runImport()}>{working ? "Importing registrations…" : "Import registrations"}<span className="action-arrow" aria-hidden="true" /></button>
+        {error && <p className="global-error" role="alert">{error}</p>}
+      </section>
+
+      <section className="registration-result-panel" aria-live="polite">
+        <div className="event-section-heading"><h3>Import summary</h3><p>{result ? "Database changes committed. Review any rejected rows before distributing credentials." : "Summary and credential download will appear after a completed import."}</p></div>
+        {result ? <>
+          <dl className="registration-summary">{summaryRows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+          <div className="registration-errors"><h4>Errors</h4>{result.errors.length ? <ul>{result.errors.map((item, index) => <li key={`${item.row_number}-${index}`}><strong>Row {item.row_number}</strong><span>{item.message}</span></li>)}</ul> : <p>No row-level errors.</p>}</div>
+          <button className="primary-button registration-download" disabled={!result.download_token || working} onClick={() => void download()}>{result.download_token ? "Download credential sheet" : "Credential sheet downloaded"}</button>
+          <small className="registration-security-note">Leader passwords are available in this one-time download only and are never stored as plaintext.</small>
+        </> : <div className="registration-result-empty"><span>Import results pending</span><p>Select a registration sheet to begin.</p></div>}
+      </section>
+    </div>
+  </section>;
 }
 
 function Bids({ bids, teams, problems }) {

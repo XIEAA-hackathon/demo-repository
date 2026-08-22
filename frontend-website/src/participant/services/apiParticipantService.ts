@@ -11,13 +11,21 @@ interface RawDashboard {
   eventState: ParticipantEventState
   wallet: { team_id: number; balance: number; currency: 'coins' }
   currentProblem: RawProblem | null
+  round1Problem: RawProblem | null
+  wildcardProblem: RawProblem | null
+  finalProblem: RawProblem | null
   currentBid: { id: number; team_id: number; ps_id: number; amount: number; round: number; timestamp: string } | null
-  wildcard: { status?: string; coins_paid: number; used: boolean } | null
-  submission: { id: number; problem_id: number; repository_url: string; submitted_at: string } | null
+  wildcardBidAmount: number | null
+  wildcard: { status: string; rank: number | null; winning_bid: number | null; problem_id: number | null; current_selection_rank: number | null; current_selection_team: string | null; is_selection_turn: boolean; available_problem_count: number; slot_count: number | null } | null
+  submission: { id: number; problem_id: number; repository_url: string; submitted_at: string; updated_at: string | null; submitted_by_name: string | null } | null
   isLeader: boolean
+  round1Assigned: boolean
+  wildcardEligible: boolean
+  wildcardApplicationsOpen: boolean
+  submissionsOpen: boolean
   gameConfig: {
     round1_winner_count: number; round1_preview_seconds: number; round1_bid_seconds: number
-    wildcard_slots: number; wildcard_preview_seconds: number; wildcard_bid_seconds: number; coding_duration_seconds: number
+    wildcard_slots: number; wildcard_application_seconds: number; wildcard_preview_seconds: number; wildcard_bid_seconds: number; coding_duration_seconds: number
   }
   timing: { server_time: string; started_at: string | null; ends_at: string | null; paused: boolean; paused_remaining_seconds: number | null }
 }
@@ -47,6 +55,9 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
     round: raw.currentBid.round === 2 ? 'WILDCARD' : 'ROUND1',
   } : null
   const currentProblem = raw.currentProblem ? mapProblem(raw.currentProblem) : null
+  const roundOneProblem = raw.round1Problem ? mapProblem(raw.round1Problem) : null
+  const wildcardProblem = raw.wildcardProblem ? { ...mapProblem(raw.wildcardProblem), available: false } : null
+  const finalProblem = raw.finalProblem ? mapProblem(raw.finalProblem) : null
   return {
     team: {
       id: String(raw.team.id), name: raw.team.team_name, leaderId: String(raw.team.leader_id),
@@ -62,22 +73,35 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
     },
     eventState: raw.eventState,
     wallet: { teamId: String(raw.wallet.team_id), balance: raw.wallet.balance, currency: 'coins' },
-    currentProblem, latestBid,
+    currentProblem, roundOneProblem, wildcardProblem, finalProblem, latestBid, wildcardBidAmount: raw.wildcardBidAmount,
     roundOneSettlement: raw.eventState === 'ROUND1_RESULT' ? {
-      status: 'FINALIZED', won: Boolean(currentProblem), bidAmount: latestBid?.round === 'ROUND1' ? latestBid.amount : 0,
+      status: 'FINALIZED', won: Boolean(roundOneProblem), bidAmount: latestBid?.round === 'ROUND1' ? latestBid.amount : 0,
       finalizedAt: raw.timing.server_time,
     } : null,
-    wildcardApplication: raw.wildcard ? {
+    wildcardApplication: raw.wildcard && ['applied', 'qualified', 'selected', 'eliminated'].includes(raw.wildcard.status) ? {
       id: `wildcard-${raw.team.id}`, teamId: String(raw.team.id), appliedAt: raw.timing.server_time, status: 'CONFIRMED',
+    } : null,
+    wildcard: raw.wildcard ? {
+      status: raw.wildcard.status, rank: raw.wildcard.rank, winningBid: raw.wildcard.winning_bid,
+      selectedProblemId: raw.wildcard.problem_id == null ? null : String(raw.wildcard.problem_id),
+      currentSelectionRank: raw.wildcard.current_selection_rank, currentSelectionTeam: raw.wildcard.current_selection_team,
+      isSelectionTurn: raw.wildcard.is_selection_turn, availableProblemCount: raw.wildcard.available_problem_count,
+      slotCount: raw.wildcard.slot_count,
     } : null,
     submission: raw.submission ? {
       id: String(raw.submission.id), teamId: String(raw.team.id), problemId: String(raw.submission.problem_id),
-      repositoryUrl: raw.submission.repository_url, submittedAt: raw.submission.submitted_at, status: 'SUBMITTED',
+      repositoryUrl: raw.submission.repository_url, submittedAt: raw.submission.submitted_at,
+      updatedAt: raw.submission.updated_at, submittedByName: raw.submission.submitted_by_name, status: 'SUBMITTED',
     } : null,
     isLeader: raw.isLeader,
+    round1Assigned: raw.round1Assigned,
+    wildcardEligible: raw.wildcardEligible,
+    wildcardApplicationsOpen: raw.wildcardApplicationsOpen,
+    submissionsOpen: raw.submissionsOpen,
     gameConfig: {
       round1WinnerCount: raw.gameConfig.round1_winner_count, round1PreviewSeconds: raw.gameConfig.round1_preview_seconds,
       round1BidSeconds: raw.gameConfig.round1_bid_seconds, wildcardSlots: raw.gameConfig.wildcard_slots,
+      wildcardApplicationSeconds: raw.gameConfig.wildcard_application_seconds,
       wildcardPreviewSeconds: raw.gameConfig.wildcard_preview_seconds, wildcardBidSeconds: raw.gameConfig.wildcard_bid_seconds,
       codingDurationSeconds: raw.gameConfig.coding_duration_seconds,
     },
@@ -110,12 +134,10 @@ class ApiParticipantService implements ParticipantService {
     const dashboard = await this.getParticipantDashboard()
     return dashboard.wildcardApplication as WildcardApplication
   }
+  async declineWildcard() { await apiRequest('/wildcard/decline', { method: 'POST' }) }
   async getWildcardProblems() { return (await this.getProblems(2)) as WildcardProblem[] }
-  async placeWildcardBid(problemId: string, amount: number) {
-    await apiRequest(`/wildcard/bid?ps_id=${encodeURIComponent(problemId)}&amount=${amount}`, { method: 'POST' })
-    const bid = (await this.getParticipantDashboard()).latestBid
-    if (!bid) throw new Error('The wildcard bid was accepted but could not be reloaded.')
-    return bid
+  async placeWildcardBid(amount: number) {
+    await apiRequest(`/wildcard/bid?amount=${amount}`, { method: 'POST' })
   }
   async selectWildcardProblem(problemId: string) {
     await apiRequest(`/wildcard/select/${encodeURIComponent(problemId)}`, { method: 'POST' })
@@ -124,13 +146,13 @@ class ApiParticipantService implements ParticipantService {
     return { ...problem, available: false }
   }
   async submitGitHubRepository(repositoryUrl: string) {
-    const raw = await apiRequest<{ id: number; problem_id: number; repository_url: string; submitted_at: string }>('/submissions/me', {
+    const raw = await apiRequest<{ id: number; problem_id: number; repository_url: string; submitted_at: string; updated_at: string | null; submitted_by_name: string | null }>('/submissions/me', {
       method: 'PUT', body: JSON.stringify({ repository_url: repositoryUrl.trim() }),
     })
     const dashboard = await this.getParticipantDashboard()
     return {
       id: String(raw.id), teamId: dashboard.team.id, problemId: String(raw.problem_id), repositoryUrl: raw.repository_url,
-      submittedAt: raw.submitted_at, status: 'SUBMITTED',
+      submittedAt: raw.submitted_at, updatedAt: raw.updated_at, submittedByName: raw.submitted_by_name ?? dashboard.currentUser.name, status: 'SUBMITTED',
     } as Submission
   }
 }

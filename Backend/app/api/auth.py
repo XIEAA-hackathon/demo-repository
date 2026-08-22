@@ -8,6 +8,7 @@ from app.schemas.schemas import UserCreate, UserResponse, Token, TeamCreate
 from app.core.security import get_password_hash, verify_password, create_access_token
 from jose import JWTError, jwt
 from app.core.config import settings
+from app.services.activity_log import record_event
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -22,7 +23,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         email: str = payload.get("sub")
         session_id: str = payload.get("session_id")
-        if email is None:
+        if email is None or not session_id:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
@@ -30,8 +31,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     
-    # Invalidate if the session_id doesn't match the current one in the DB
-    if user.session_id and user.session_id != session_id:
+    # A token is valid only while both sides carry the same active session.
+    # A null database session is an explicit revocation, not a skipped check.
+    if not user.session_id or user.session_id != session_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session expired. You logged in from another device.",
@@ -106,6 +108,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     import uuid
     new_session_id = uuid.uuid4().hex
     user.session_id = new_session_id
+    record_event(db, "auth.login", actor=user)
     db.commit()
             
     access_token = create_access_token(data={"sub": user.email, "role": user.role, "session_id": new_session_id})
@@ -113,6 +116,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
 @router.post("/logout")
 def logout(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    record_event(db, "auth.logout", actor=current_user)
     current_user.session_id = None
     db.commit()
     return {"message": "Successfully logged out"}

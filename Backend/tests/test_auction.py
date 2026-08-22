@@ -1,5 +1,12 @@
 """Round 1 auction: leader-only bidding, EventConfig rules, finalization."""
-from app.models.models import Team, User, Bid, WalletTransaction, Member
+from app.models.models import Team, User, Bid, WalletTransaction, Member, RoundControl
+
+
+def _activate_problem(db, ps):
+    ps.status = "current"
+    control = RoundControl(round_type="ROUND1", current_problem_id=ps.id, status="BIDDING")
+    db.add(control)
+    db.commit()
 
 
 def _import_and_get_client_state(client, admin_headers, csv_bytes, db):
@@ -51,6 +58,7 @@ def test_imported_leader_can_bid(client, admin_headers, csv_bytes, db):
     config = db.query(GameConfig).first()
     config.state = "ROUND1_BIDDING"
     db.commit()
+    _activate_problem(db, ps)
 
     response = client.post("/bid", json={"ps_id": ps.id, "amount": 50}, headers=leader_headers)
     assert response.status_code == 200, response.text
@@ -70,6 +78,7 @@ def test_bid_does_not_deduct_coins_immediately(client, admin_headers, csv_bytes,
     config = db.query(GameConfig).first()
     config.state = "ROUND1_BIDDING"
     db.commit()
+    _activate_problem(db, ps)
 
     team_alpha = db.query(Team).filter(Team.team_name == "Team Alpha").first()
     assert team_alpha.coins == 1000
@@ -97,6 +106,7 @@ def test_bid_bounds_from_event_config(client, admin_headers, csv_bytes, db):
     config.state = "ROUND1_BIDDING"
     config.current_round = 1
     db.commit()
+    _activate_problem(db, ps)
 
     # update EventConfig: minimum bid 200
     event_config = db.query(EventConfig).first()
@@ -131,6 +141,7 @@ def test_finalize_top_n_winners_charged_once_losers_zero(client, admin_headers, 
     config.state = "ROUND1_BIDDING"
     config.current_round = 1
     db.commit()
+    _activate_problem(db, ps)
 
     # N = 2 winners only (EventConfig controls cutoff)
     event_config = db.query(EventConfig).first()

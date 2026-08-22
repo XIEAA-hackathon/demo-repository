@@ -1,6 +1,6 @@
-from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError, OperationalError
 from typing import List
 
 from app.core.database import get_db
@@ -11,7 +11,11 @@ from app.api.websockets import manager
 from app.services.event_service import (
     event_snapshot, get_or_create_game_config, get_or_create_event_config,
     get_team_for_user, ensure_leader, transition_event_state,
+    pause_event_timer, resume_event_timer, adjust_event_timer,
+    get_or_create_round_control,
+    sync_expired_event_state,
 )
+from app.services.activity_log import record_event
 
 router = APIRouter()
 
@@ -25,13 +29,18 @@ def _assert_state(state: str, config: GameConfig, allowed: List[str]):
 async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     # Leader-only: identity comes from imported registration data
     team = ensure_leader(db, current_user)
+    sync_expired_event_state(db)
     config = get_or_create_game_config(db)
     event_config = get_or_create_event_config(db)
 
     _assert_state(config.state, config, ["ROUND1_BIDDING"])
 
+    if team.ps_id is not None:
+        raise HTTPException(status_code=409, detail="Round 1 is complete for your team. Assigned teams cannot bid again.")
+
     ps = db.query(ProblemStatement).filter(ProblemStatement.id == bid.ps_id).first()
-    if not ps or ps.status != "visible":
+    control = get_or_create_round_control(db, "ROUND1")
+    if not ps or ps.id != control.current_problem_id or ps.status != "current":
         raise HTTPException(status_code=400, detail="Invalid or unavailable Problem Statement")
 
     min_bid = event_config.round1_minimum_bid
@@ -57,8 +66,12 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
         existing_bid.amount = bid.amount
     else:
         db.add(Bid(team_id=team.id, ps_id=ps.id, amount=bid.amount, round=config.current_round))
-
-    db.commit()
+    record_event(db, "round1.bid_placed", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": ps.id, "amount": bid.amount})
+    try:
+        db.commit()
+    except (IntegrityError, OperationalError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="The bid changed concurrently. Refresh and retry.") from exc
 
     await manager.broadcast_event("bid_updated", {
         "team_name": team.team_name,
@@ -121,10 +134,12 @@ async def finalize_round_one(
             description=f"Round 1 auction win for {ps.ps_number}",
         ))
         winner_team.ps_id = ps.id
+        winner_team.round1_problem_id = ps.id
         winners.append({"team": winner_team.team_name, "amount": bid.amount})
 
     if winners:
         ps.status = "allocated"
+    record_event(db, "round1.auction_finalized", actor=current_user, entity_type="problem", entity_id=ps.id, metadata={"winner_count": len(winners)})
     db.commit()
 
     transition_event_state(db, "ROUND1_RESULT")
@@ -164,38 +179,20 @@ async def start_preview(db: Session = Depends(get_db), current_user = Depends(ge
 
 @router.post("/admin/round/start-bidding")
 async def start_bidding(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
-    config = get_or_create_game_config(db)
-    # This semantic command intentionally permits skipping preview when the
-    # organizer needs to recover a live event.
-    config = transition_event_state(db, "ROUND1_BIDDING", validate=False)
+    config = transition_event_state(db, "ROUND1_BIDDING")
     snapshot = event_snapshot(db)
     await manager.broadcast_event("event_state_changed", snapshot)
     return {"state": config.state, "ends_at": config.auction_timer_end, **snapshot}
 
 @router.post("/admin/round/pause")
 async def pause_timer(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
-    config = get_or_create_game_config(db)
-    if config.timer_paused:
-        return {"message": "Timer already paused", "paused": True}
-    if not config.auction_timer_end:
-        raise HTTPException(status_code=400, detail="No active timer")
-    remaining = (config.auction_timer_end - datetime.utcnow()).total_seconds()
-    config.timer_paused = True
-    config.timer_paused_remaining_seconds = int(max(0, remaining))
-    db.commit()
+    config = pause_event_timer(db)
     await manager.broadcast_event("timer_sync", event_snapshot(db))
     return {"paused": True, "remaining_seconds": config.timer_paused_remaining_seconds}
 
 @router.post("/admin/round/resume")
 async def resume_timer(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
-    config = get_or_create_game_config(db)
-    if not config.timer_paused:
-        return {"message": "Timer is not paused", "paused": False}
-    remaining = config.timer_paused_remaining_seconds or 0
-    config.auction_timer_end = datetime.utcnow() + timedelta(seconds=remaining)
-    config.timer_paused = False
-    config.timer_paused_remaining_seconds = None
-    db.commit()
+    config = resume_event_timer(db)
     await manager.broadcast_event("timer_sync", event_snapshot(db))
     return {"paused": False, "ends_at": config.auction_timer_end}
 
@@ -203,12 +200,7 @@ async def resume_timer(db: Session = Depends(get_db), current_user = Depends(get
 async def add_time(seconds: int, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     if seconds <= 0:
         raise HTTPException(status_code=400, detail="seconds must be greater than zero")
-    config = get_or_create_game_config(db)
-    if not config.auction_timer_end:
-        raise HTTPException(status_code=400, detail="No active timer")
-    config.auction_timer_end = config.auction_timer_end + timedelta(seconds=seconds)
-    config.timer_bias_seconds += seconds
-    db.commit()
+    config = adjust_event_timer(db, seconds)
     await manager.broadcast_event("timer_sync", {**event_snapshot(db), "delta": seconds})
     return {"ends_at": config.auction_timer_end, "delta": seconds}
 
@@ -216,18 +208,13 @@ async def add_time(seconds: int, db: Session = Depends(get_db), current_user = D
 async def remove_time(seconds: int, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     if seconds <= 0:
         raise HTTPException(status_code=400, detail="seconds must be greater than zero")
-    config = get_or_create_game_config(db)
-    if not config.auction_timer_end:
-        raise HTTPException(status_code=400, detail="No active timer")
-    config.auction_timer_end = config.auction_timer_end - timedelta(seconds=seconds)
-    config.timer_bias_seconds -= seconds
-    db.commit()
+    config = adjust_event_timer(db, -seconds)
     await manager.broadcast_event("timer_sync", {**event_snapshot(db), "delta": -seconds})
     return {"ends_at": config.auction_timer_end, "delta": -seconds}
 
 @router.post("/admin/round/end-bidding")
 async def end_bidding(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
-    config = transition_event_state(db, "ROUND1_RESULT", validate=False)
+    config = transition_event_state(db, "ROUND1_RESULT")
     snapshot = event_snapshot(db)
     await manager.broadcast_event("auction_closed", snapshot)
     await manager.broadcast_event("event_state_changed", snapshot)
@@ -236,6 +223,6 @@ async def end_bidding(db: Session = Depends(get_db), current_user = Depends(get_
 @router.post("/admin/round/next-problem")
 async def next_problem(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     """Close Round 1 for teams that already won a problem; move on."""
-    config = transition_event_state(db, "ROUND1_RESULT", validate=False)
+    config = transition_event_state(db, "ROUND1_RESULT")
     await manager.broadcast_event("problem_revealed", event_snapshot(db))
     return {"state": config.state}

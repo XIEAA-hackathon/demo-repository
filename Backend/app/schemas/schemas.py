@@ -8,7 +8,6 @@ EVENT_STATES = [
     "ROUND1_BIDDING",
     "ROUND1_RESULT",
     "WILDCARD_APPLICATION",
-    "WILDCARD_PREVIEW",
     "WILDCARD_BIDDING",
     "WILDCARD_SELECTION",
     "CODING",
@@ -106,18 +105,20 @@ class TokenData(BaseModel):
 # --- Event Config Schemas ---
 class EventConfigBase(BaseModel):
     starting_coins: int = 1000
-    round1_preview_seconds: int = 120
-    round1_bid_seconds: int = 300
+    round1_preview_seconds: int = 60
+    round1_bid_seconds: int = 60
     round1_winner_count: int = 5
     round1_minimum_bid: int = 25
     round1_bid_increment: int = 1
     wildcard_enabled: bool = True
     wildcard_slots: int = 3
+    wildcard_application_seconds: int = 60
     wildcard_problem_count: int = 3
     wildcard_preview_seconds: int = 120
     wildcard_bid_seconds: int = 180
     wildcard_starting_bid: int = 150
     wildcard_bid_increment: int = 1
+    submissions_open: bool = False
     coding_duration_seconds: int = 10800
     royalty_coins_per_point: int = 10
     royalty_max_points: int = 100
@@ -131,11 +132,13 @@ class EventConfigUpdate(BaseModel):
     round1_bid_increment: Optional[int] = None
     wildcard_enabled: Optional[bool] = None
     wildcard_slots: Optional[int] = None
+    wildcard_application_seconds: Optional[int] = None
     wildcard_problem_count: Optional[int] = None
     wildcard_preview_seconds: Optional[int] = None
     wildcard_bid_seconds: Optional[int] = None
     wildcard_starting_bid: Optional[int] = None
     wildcard_bid_increment: Optional[int] = None
+    submissions_open: Optional[bool] = None
     coding_duration_seconds: Optional[int] = None
     royalty_coins_per_point: Optional[int] = None
     royalty_max_points: Optional[int] = None
@@ -193,6 +196,16 @@ class DashboardWildcard(BaseModel):
     status: Optional[str] = None
     coins_paid: int = 0
     used: bool = False
+    applied_at: Optional[datetime] = None
+    rank: Optional[int] = None
+    winning_bid: Optional[int] = None
+    problem_id: Optional[int] = None
+    selected_at: Optional[datetime] = None
+    current_selection_rank: Optional[int] = None
+    current_selection_team: Optional[str] = None
+    is_selection_turn: bool = False
+    available_problem_count: int = 0
+    slot_count: Optional[int] = None
 
 class DashboardSubmission(BaseModel):
     id: int
@@ -200,6 +213,8 @@ class DashboardSubmission(BaseModel):
     repository_url: str
     submitted_at: datetime
     updated_at: Optional[datetime]
+    submitted_by_user_id: Optional[int] = None
+    submitted_by_name: Optional[str] = None
 
 class DashboardGameConfig(BaseModel):
     starting_coins: int
@@ -208,6 +223,7 @@ class DashboardGameConfig(BaseModel):
     round1_preview_seconds: int
     round1_bid_seconds: int
     wildcard_slots: int
+    wildcard_application_seconds: int
     wildcard_starting_bid: int
     wildcard_preview_seconds: int
     wildcard_bid_seconds: int
@@ -219,6 +235,7 @@ class EventTiming(BaseModel):
     ends_at: Optional[datetime]
     paused: bool
     paused_remaining_seconds: Optional[int]
+    remaining_seconds: Optional[int] = None
 
 class ParticipantDashboardResponse(BaseModel):
     user: DashboardUser
@@ -227,12 +244,20 @@ class ParticipantDashboardResponse(BaseModel):
     eventState: str
     wallet: dict
     currentProblem: Optional[DashboardProblem]
+    round1Problem: Optional[DashboardProblem] = None
+    wildcardProblem: Optional[DashboardProblem] = None
+    finalProblem: Optional[DashboardProblem] = None
     currentBid: Optional[DashboardBid]
+    wildcardBidAmount: Optional[int] = None
     wildcard: Optional[DashboardWildcard]
     submission: Optional[DashboardSubmission]
     isLeader: bool
     gameConfig: DashboardGameConfig
     timing: EventTiming
+    round1Assigned: bool = False
+    wildcardEligible: bool = False
+    wildcardApplicationsOpen: bool = False
+    submissionsOpen: bool = False
 
 # --- Submission Schemas ---
 class SubmissionCreate(BaseModel):
@@ -240,6 +265,10 @@ class SubmissionCreate(BaseModel):
 
 class SubmissionUpdate(BaseModel):
     repository_url: str
+
+
+class WildcardSlotRequest(BaseModel):
+    slots: int = Field(ge=1)
 
 # --- Leaderboard Schemas ---
 class LeaderboardEntry(BaseModel):
@@ -253,6 +282,9 @@ class LeaderboardEntry(BaseModel):
 # --- Admin Config / State Schemas ---
 class EventStateUpdate(BaseModel):
     state: str
+
+class TimerAdjustment(BaseModel):
+    seconds: int
 
 # --- Registration Import Schemas ---
 class ImportRowPreview(BaseModel):
