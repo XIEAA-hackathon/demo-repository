@@ -43,12 +43,7 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
     min_bid = event_config.round1_minimum_bid
     increment = event_config.round1_bid_increment
 
-    if bid.amount > team.coins:
-        raise HTTPException(status_code=400, detail="Bid cannot exceed the team wallet balance.")
-    if bid.amount < min_bid:
-        raise HTTPException(status_code=400, detail=f"Bid must be at least {min_bid} coins.")
-
-    # 1. Single Problem Statement Check
+    # 1. Single Problem Statement Check across other PSs in current round
     other_ps_bid = db.query(Bid).filter(
         Bid.team_id == team.id,
         Bid.ps_id != ps.id,
@@ -57,52 +52,58 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
     if other_ps_bid:
         raise HTTPException(status_code=400, detail="You can only bid on one Problem Statement per round.")
 
-    # 2. Incremental Bid Check
-    existing_bid = db.query(Bid).filter(
+    # 2. Existing Bids & Cumulative Sum Calculation
+    existing_team_bids = db.query(Bid).filter(
         Bid.team_id == team.id,
         Bid.ps_id == ps.id,
         Bid.round == config.current_round,
-    ).first()
-    if existing_bid and bid.amount < existing_bid.amount + increment:
-        raise HTTPException(
-            status_code=400,
-            detail=f"New bid must be at least {increment} coin(s) higher than the current bid of {existing_bid.amount}.",
-        )
+    ).order_by(Bid.timestamp.asc()).all()
+
+    current_cumulative = sum(b.amount for b in existing_team_bids)
+    latest_bid = existing_team_bids[-1] if existing_team_bids else None
+
+    # Wallet check against cumulative sum + new bid
+    if current_cumulative + bid.amount > team.coins:
+        raise HTTPException(status_code=400, detail="Cumulative bid total cannot exceed the team wallet balance.")
+
+    # Check minimum bid / increment rules on new bid attempt
+    if not latest_bid:
+        if bid.amount < min_bid:
+            raise HTTPException(status_code=400, detail=f"Bid must be at least {min_bid} coins.")
+    else:
+        if bid.amount < latest_bid.amount + increment:
+            raise HTTPException(
+                status_code=400,
+                detail=f"New bid must be at least {increment} coin(s) higher than your previous bid of {latest_bid.amount}.",
+            )
 
     # 3. Cooldown Delay Enforcement (5s Default)
     cooldown = getattr(event_config, "bid_cooldown_seconds", 5) or 0
-    if cooldown > 0:
-        latest_team_bid = db.query(Bid).filter(
-            Bid.team_id == team.id,
-            Bid.round == config.current_round,
-        ).order_by(Bid.timestamp.desc()).first()
-        if latest_team_bid and latest_team_bid.timestamp:
-            ts = latest_team_bid.timestamp if latest_team_bid.timestamp.tzinfo else latest_team_bid.timestamp.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
-            elapsed = (now - ts).total_seconds()
-            if elapsed < cooldown:
-                remaining = int(cooldown - elapsed) + 1
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Please wait {remaining} second(s) before placing another bid.",
-                )
+    if cooldown > 0 and latest_bid and latest_bid.timestamp:
+        ts = latest_bid.timestamp if latest_bid.timestamp.tzinfo else latest_bid.timestamp.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        elapsed = (now - ts).total_seconds()
+        if elapsed < cooldown:
+            remaining = int(cooldown - elapsed) + 1
+            raise HTTPException(
+                status_code=400,
+                detail=f"Please wait {remaining} second(s) before placing another bid.",
+            )
 
     now = datetime.now(timezone.utc)
-    if existing_bid:
-        existing_bid.amount = bid.amount
-        existing_bid.timestamp = now
-    else:
-        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=bid.amount, round=config.current_round, timestamp=now))
-
+    new_bid_record = Bid(team_id=team.id, ps_id=ps.id, amount=bid.amount, round=config.current_round, timestamp=now)
+    db.add(new_bid_record)
     db.commit()
+
+    total_cumulative = current_cumulative + bid.amount
 
     await manager.broadcast_event("bid_updated", {
         "team_name": team.team_name,
         "team_id": team.id,
         "ps_id": ps.id,
-        "amount": bid.amount,
+        "amount": total_cumulative,
     })
-    return {"message": "Bid placed successfully. Coins are not deducted yet.", "amount": bid.amount}
+    return {"message": "Bid placed successfully. Coins are not deducted yet.", "amount": total_cumulative}
 
 @router.get("/bid-history")
 def get_bid_history(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
@@ -117,7 +118,7 @@ async def finalize_round_one(
 ):
     """Top N winners (N = EventConfig.round1_winner_count) for ONE problem statement.
 
-    Winning teams are charged exactly once. Transactional + idempotent.
+    Winning teams are charged their total cumulative bid amount. Transactional + idempotent.
     """
     config = get_or_create_game_config(db)
     event_config = get_or_create_event_config(db)
@@ -135,29 +136,45 @@ async def finalize_round_one(
             "winners": [t.team_name for t in existing_winners],
         }
 
-    top_bids = db.query(Bid).filter(
+    # Group all bids for this PS in current round by team_id
+    all_bids = db.query(Bid).filter(
         Bid.ps_id == ps.id,
         Bid.round == config.current_round,
-    ).order_by(Bid.amount.desc(), Bid.timestamp.asc()).limit(winner_count).all()
+    ).all()
+
+    team_bid_map = {}
+    for b in all_bids:
+        ts = b.timestamp if b.timestamp and b.timestamp.tzinfo else (b.timestamp.replace(tzinfo=timezone.utc) if b.timestamp else datetime.min)
+        if b.team_id not in team_bid_map:
+            team_bid_map[b.team_id] = {"total": 0, "last_ts": ts}
+        team_bid_map[b.team_id]["total"] += b.amount
+        if ts > team_bid_map[b.team_id]["last_ts"]:
+            team_bid_map[b.team_id]["last_ts"] = ts
+
+    # Sort teams by total DESC, last_ts ASC
+    sorted_teams = sorted(
+        team_bid_map.items(),
+        key=lambda item: (-item[1]["total"], item[1]["last_ts"])
+    )
 
     winners = []
-    for bid in top_bids:
-        winner_team = db.query(Team).filter(Team.id == bid.team_id).first()
+    for team_id, info in sorted_teams[:winner_count]:
+        winner_team = db.query(Team).filter(Team.id == team_id).first()
         if not winner_team or winner_team.ps_id is not None:
             continue  # team already has a problem; skip
-        if winner_team.coins < bid.amount:
+        if winner_team.coins < info["total"]:
             continue
 
-        # charge exactly once via explicit ledger entry
-        winner_team.coins -= bid.amount
+        # charge total cumulative bid sum
+        winner_team.coins -= info["total"]
         db.add(WalletTransaction(
             team_id=winner_team.id,
             transaction_type="ROUND1_WIN",
-            amount=-bid.amount,
+            amount=-info["total"],
             description=f"Round 1 auction win for {ps.ps_number}",
         ))
         winner_team.ps_id = ps.id
-        winners.append({"team": winner_team.team_name, "amount": bid.amount})
+        winners.append({"team": winner_team.team_name, "amount": info["total"]})
 
     if winners:
         ps.status = "allocated"

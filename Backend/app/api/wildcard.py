@@ -86,19 +86,26 @@ async def place_wildcard_bid(ps_id: int, amount: int, db: Session = Depends(get_
 
     starting = event_config.wildcard_starting_bid
     increment = event_config.wildcard_bid_increment
-    if amount > team.coins:
-        raise HTTPException(status_code=400, detail="Bid cannot exceed the team wallet balance.")
-    if amount < starting:
-        raise HTTPException(status_code=400, detail=f"Wildcard bid must be at least {starting} coins.")
 
-    existing_bid = db.query(Bid).filter(
+    existing_team_bids = db.query(Bid).filter(
         Bid.team_id == team.id, Bid.ps_id == ps.id, Bid.round == 2,
-    ).first()
-    if existing_bid and amount < existing_bid.amount + increment:
-        raise HTTPException(
-            status_code=400,
-            detail=f"New wildcard bid must be at least {increment} coin(s) higher than {existing_bid.amount}.",
-        )
+    ).order_by(Bid.timestamp.asc()).all()
+
+    current_cumulative = sum(b.amount for b in existing_team_bids)
+    latest_bid = existing_team_bids[-1] if existing_team_bids else None
+
+    if current_cumulative + amount > team.coins:
+        raise HTTPException(status_code=400, detail="Cumulative wildcard bid total cannot exceed team wallet balance.")
+
+    if not latest_bid:
+        if amount < starting:
+            raise HTTPException(status_code=400, detail=f"Wildcard bid must be at least {starting} coins.")
+    else:
+        if amount < latest_bid.amount + increment:
+            raise HTTPException(
+                status_code=400,
+                detail=f"New wildcard bid must be at least {increment} coin(s) higher than your previous bid of {latest_bid.amount}.",
+            )
 
     record = db.query(Wildcard).filter(Wildcard.team_id == team.id).first()
     if record and record.status != "bid":
@@ -106,63 +113,70 @@ async def place_wildcard_bid(ps_id: int, amount: int, db: Session = Depends(get_
 
     # Cooldown Delay Enforcement (5s Default)
     cooldown = getattr(event_config, "bid_cooldown_seconds", 5) or 0
-    if cooldown > 0:
-        latest_team_bid = db.query(Bid).filter(
-            Bid.team_id == team.id,
-            Bid.round == 2,
-        ).order_by(Bid.timestamp.desc()).first()
-        if latest_team_bid and latest_team_bid.timestamp:
-            ts = latest_team_bid.timestamp if latest_team_bid.timestamp.tzinfo else latest_team_bid.timestamp.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
-            elapsed = (now - ts).total_seconds()
-            if elapsed < cooldown:
-                remaining = int(cooldown - elapsed) + 1
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Please wait {remaining} second(s) before placing another bid.",
-                )
+    if cooldown > 0 and latest_bid and latest_bid.timestamp:
+        ts = latest_bid.timestamp if latest_bid.timestamp.tzinfo else latest_bid.timestamp.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        elapsed = (now - ts).total_seconds()
+        if elapsed < cooldown:
+            remaining = int(cooldown - elapsed) + 1
+            raise HTTPException(
+                status_code=400,
+                detail=f"Please wait {remaining} second(s) before placing another bid.",
+            )
 
     now = datetime.now(timezone.utc)
-    if existing_bid:
-        existing_bid.amount = amount
-        existing_bid.timestamp = now
-    else:
-        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=amount, round=2, timestamp=now))
+    db.add(Bid(team_id=team.id, ps_id=ps.id, amount=amount, round=2, timestamp=now))
 
     if not record:
         db.add(Wildcard(team_id=team.id, coins_paid=0, status="bid"))
     db.commit()
 
+    total_cumulative = current_cumulative + amount
+
     await manager.broadcast_event("bid_updated", {
         "team_name": team.team_name,
         "team_id": team.id,
         "ps_id": ps.id,
-        "amount": amount,
+        "amount": total_cumulative,
         "round": "WILDCARD",
     })
-    return {"message": "Wildcard bid placed. Coins are not deducted yet.", "amount": amount}
+    return {"message": "Wildcard bid placed. Coins are not deducted yet.", "amount": total_cumulative}
 
 @router.post("/admin/wildcard/finalize")
 async def finalize_wildcard(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
-    """Top N bidders (N = EventConfig.wildcard_slots) win the wildcard auction."""
+    """Top N bidders (N = EventConfig.wildcard_slots) win the wildcard auction based on total cumulative bid."""
     config = get_or_create_game_config(db)
     event_config = get_or_create_event_config(db)
     slots = event_config.wildcard_slots
 
-    top_bids = db.query(Bid).filter(Bid.round == 2).order_by(Bid.amount.desc(), Bid.timestamp.asc()).limit(slots).all()
+    all_wildcard_bids = db.query(Bid).filter(Bid.round == 2).all()
+    team_bid_map = {}
+    for b in all_wildcard_bids:
+        ts = b.timestamp if b.timestamp and b.timestamp.tzinfo else (b.timestamp.replace(tzinfo=timezone.utc) if b.timestamp else datetime.min)
+        if b.team_id not in team_bid_map:
+            team_bid_map[b.team_id] = {"total": 0, "last_ts": ts}
+        team_bid_map[b.team_id]["total"] += b.amount
+        if ts > team_bid_map[b.team_id]["last_ts"]:
+            team_bid_map[b.team_id]["last_ts"] = ts
+
+    sorted_teams = sorted(
+        team_bid_map.items(),
+        key=lambda item: (-item[1]["total"], item[1]["last_ts"])
+    )
 
     winners = []
-    for bid in top_bids:
-        team = db.query(Team).filter(Team.id == bid.team_id).first()
+    for team_id, info in sorted_teams[:slots]:
+        team = db.query(Team).filter(Team.id == team_id).first()
+        if not team:
+            continue
         record = db.query(Wildcard).filter(Wildcard.team_id == team.id).first()
         if record and record.status in ("won", "selected"):
             continue
-        # winner must still switch from original problem at selection time; mark won now
         record = record or Wildcard(team_id=team.id)
         record.status = "won"
-        record.coins_paid = bid.amount
+        record.coins_paid = info["total"]
         db.add(record)
-        winners.append({"team": team.team_name, "amount": bid.amount})
+        winners.append({"team": team.team_name, "amount": info["total"]})
 
     db.commit()
     transition_event_state(db, "WILDCARD_SELECTION", validate=False)
@@ -199,12 +213,22 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
     if not ps or ps.round != 2 or ps.status != "visible":
         raise HTTPException(status_code=400, detail="Invalid or already-selected Bonus Problem.")
 
-    # rank check: process in descending bid order; a lower-ranked winner may not steal a problem
-    winning_bids = db.query(Bid).filter(Bid.round == 2).order_by(Bid.amount.desc(), Bid.timestamp.asc()).all()
-    rank_team_ids = []
-    for bid in winning_bids:
-        if bid.team_id not in rank_team_ids:
-            rank_team_ids.append(bid.team_id)
+    # rank check: process in descending cumulative bid order
+    all_wildcard_bids = db.query(Bid).filter(Bid.round == 2).all()
+    team_bid_map = {}
+    for b in all_wildcard_bids:
+        ts = b.timestamp if b.timestamp and b.timestamp.tzinfo else (b.timestamp.replace(tzinfo=timezone.utc) if b.timestamp else datetime.min)
+        if b.team_id not in team_bid_map:
+            team_bid_map[b.team_id] = {"total": 0, "last_ts": ts}
+        team_bid_map[b.team_id]["total"] += b.amount
+        if ts > team_bid_map[b.team_id]["last_ts"]:
+            team_bid_map[b.team_id]["last_ts"] = ts
+
+    sorted_teams = sorted(
+        team_bid_map.items(),
+        key=lambda item: (-item[1]["total"], item[1]["last_ts"])
+    )
+    rank_team_ids = [item[0] for item in sorted_teams]
     if team.id not in rank_team_ids:
         raise HTTPException(status_code=403, detail="Your team is not a wildcard winner.")
 

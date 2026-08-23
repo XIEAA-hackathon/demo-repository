@@ -58,9 +58,11 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
     current_bid = None
     latest_bid = db.query(Bid).filter(Bid.team_id == team.id).order_by(Bid.timestamp.desc()).first()
     if latest_bid:
+        team_round_bids = db.query(Bid).filter(Bid.team_id == team.id, Bid.round == latest_bid.round).all()
+        cumulative_amount = sum(b.amount for b in team_round_bids)
         current_bid = DashboardBid(
             id=latest_bid.id, team_id=latest_bid.team_id, ps_id=latest_bid.ps_id,
-            amount=latest_bid.amount, round=latest_bid.round, timestamp=latest_bid.timestamp,
+            amount=cumulative_amount, round=latest_bid.round, timestamp=latest_bid.timestamp,
         )
 
     wildcard = db.query(Wildcard).filter(Wildcard.team_id == team.id).first()
