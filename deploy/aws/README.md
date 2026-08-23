@@ -35,9 +35,9 @@ The EC2 runner uses the labels `self-hosted`, `linux`, `x64`, and `casino-produc
 
 First-time provisioning on Amazon Linux 2023 uses `sudo bash deploy/aws/setup-server.sh`. Existing environment and database files are preserved. Frontends are never compiled on the t3.micro instance.
 
-## SSH deployment from `main1`
+## Automatic deployment from `main1`
 
-`.github/workflows/deploy-main1.yml` is a separate deployment path for the existing EC2 checkout at `/home/ec2-user/demo-repository`. It triggers only for pushes to `main1`, runs the complete Backend test suite, builds the umbrella Vite frontend on GitHub Actions, and uploads only the tested frontend artifact plus the remote deployment script over SSH.
+`.github/workflows/deploy-main1.yml` is a separate deployment path for the existing EC2 checkout at `/home/ec2-user/demo-repository`. It triggers only for pushes to `main1`, runs the complete Backend test suite, builds the umbrella Vite frontend on a GitHub-hosted runner, then downloads only the tested frontend artifact plus deployment script through the repository-scoped `casino-production` runner on EC2. Inbound SSH from hosted runners is not required and no security-group change is needed.
 
 The EC2 script fetches the exact pushed commit from `origin/main1` into an isolated staging tree. It does not use `git reset --hard`, and it does not require the EC2 checkout's frontend worktree to be clean. Backend promotion preserves `Backend/.env`, `Backend/venv`, SQLite files, logs, and caches. The existing SQLite database remains at `/home/ec2-user/demo-repository/Backend/casino_hackathon.db`; moving it is a separate maintenance operation and is not performed by deployment.
 
@@ -51,13 +51,7 @@ This works because the repository now contains one BrowserRouter application and
 
 Before either Backend or static content changes, `deploy-main1-remote.sh` saves a rollback snapshot under `/opt/casino_hackathon/main1-backups`. At most five snapshots are retained. A failed Backend health check or Nginx/frontend check restores the previous snapshot; database migrations are never rolled back automatically. The deployed SHA is recorded at `/home/ec2-user/deploy-state/main1-deployed-sha`. Both AWS workflows share the `production-aws` GitHub concurrency group and `/var/lock/casino-hackathon-deploy.lock`, so the existing `main` release pipeline and this `main1` pipeline cannot promote at the same time.
 
-Create these repository Actions secrets under **Settings → Secrets and variables → Actions → New repository secret**:
-
-- `EC2_HOST`: the EC2 public DNS name;
-- `EC2_USER`: `ec2-user`;
-- `EC2_SSH_KEY`: the complete private PEM key, including its BEGIN/END lines.
-
-Never commit the PEM file. The workflow writes it to an ephemeral GitHub runner with mode `0600`, pins the server's ED25519 host key in `known_hosts`, and removes the temporary files after the job.
+The deployment itself requires no EC2 private key in GitHub because the repository-scoped runner is already installed on the server. `EC2_HOST`, `EC2_USER`, and `EC2_SSH_KEY` may remain configured for administrator-operated diagnostics, but the automatic deployment does not read or print them.
 
 The deployment requires only the commands listed in `deploy/aws/casino-main1-sudoers`. Install and validate that rule once on EC2:
 
@@ -75,7 +69,7 @@ To deploy, commit and push the changes to `main1`:
 git push origin main1
 ```
 
-Follow the run under **GitHub → Actions → Deploy main1 to EC2**. A successful run logs the commit SHA, Backend tests, frontend build, SSH verification, dependency installation, service restart, Backend health, Nginx validation, and final public checks without printing secrets.
+Follow the run under **GitHub → Actions → Deploy main1 to EC2**. A successful run logs the commit SHA, Backend tests, frontend build, runner staging, dependency installation, service restart, Backend health, Nginx validation, and final route checks without printing secrets.
 
 On EC2, verify the active result with:
 

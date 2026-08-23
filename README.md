@@ -95,7 +95,7 @@ git commit -m "Describe the production change"
 git push origin main1
 ```
 
-The `main1` push runs the complete Backend test suite and builds the umbrella frontend on a GitHub-hosted runner. It uploads the tested frontend artifact and deployment script over verified SSH, fetches the exact `origin/main1` commit on EC2, preserves the existing SQLite database, environment files, and venv, restarts `casino-backend.service`, validates `/health`, promotes the frontend into the existing `static/public`, `static/admin`, and `static/participant` layout, validates Nginx, and verifies the public routes.
+The `main1` push runs the complete Backend test suite and builds the umbrella frontend on a GitHub-hosted runner. The repository-scoped `casino-production` runner then downloads the tested artifact on EC2, fetches the exact `origin/main1` commit, preserves the existing SQLite database, environment files, and venv, restarts `casino-backend.service`, validates `/health`, promotes the frontend into the existing `static/public`, `static/admin`, and `static/participant` layout, validates Nginx, and verifies the public routes. This outbound runner path avoids opening EC2 SSH to GitHub-hosted runner addresses.
 
 The current persistent database remains at:
 

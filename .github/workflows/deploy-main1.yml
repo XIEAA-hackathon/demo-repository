@@ -96,7 +96,7 @@ jobs:
 
   deploy:
     needs: test-build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, casino-production]
     environment: production
     timeout-minutes: 25
     steps:
@@ -106,79 +106,34 @@ jobs:
           name: main1-deployment-${{ needs.test-build.outputs.sha }}
           path: ${{ runner.temp }}/main1-payload
 
-      - name: Configure verified SSH client
+      - name: Stage tested frontend and deployment script
         shell: bash
         env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-        run: |
-          set -Eeuo pipefail
-          test -n "$EC2_HOST"
-          test -n "$EC2_SSH_KEY"
-          install -d -m 0700 "$HOME/.ssh"
-          printf '%s\n' "$EC2_SSH_KEY" > "$HOME/.ssh/main1-deploy-key"
-          chmod 0600 "$HOME/.ssh/main1-deploy-key"
-          timeout 15 ssh-keyscan -H -t ed25519 "$EC2_HOST" > "$HOME/.ssh/known_hosts"
-          test -s "$HOME/.ssh/known_hosts"
-          chmod 0600 "$HOME/.ssh/known_hosts"
-
-      - name: Verify SSH connection
-        shell: bash
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-        run: |
-          set -Eeuo pipefail
-          test -n "$EC2_HOST"
-          test "$EC2_USER" = "ec2-user"
-          ssh -i "$HOME/.ssh/main1-deploy-key" \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
-            "$EC2_USER@$EC2_HOST" 'echo "SSH connection verified"'
-
-      - name: Upload tested frontend and deployment script
-        shell: bash
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
           DEPLOY_SHA: ${{ needs.test-build.outputs.sha }}
         run: |
           set -Eeuo pipefail
-          test -n "$EC2_HOST"
-          test "$EC2_USER" = "ec2-user"
-          remote_dir="/home/$EC2_USER/deploy-staging/incoming-$DEPLOY_SHA"
-          ssh -i "$HOME/.ssh/main1-deploy-key" \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
-            "$EC2_USER@$EC2_HOST" "install -d -m 0700 '$remote_dir'"
-          scp -i "$HOME/.ssh/main1-deploy-key" \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
-            "$RUNNER_TEMP/main1-payload/frontend-$DEPLOY_SHA.tar.gz" \
-            "$RUNNER_TEMP/main1-payload/deploy-main1-remote.sh" \
-            "$EC2_USER@$EC2_HOST:$remote_dir/"
+          test "$(id -un)" = "ec2-user"
+          remote_dir="/home/ec2-user/deploy-staging/incoming-$DEPLOY_SHA"
+          install -d -m 0700 "$remote_dir"
+          install -m 0600 "$RUNNER_TEMP/main1-payload/frontend-$DEPLOY_SHA.tar.gz" "$remote_dir/"
+          install -m 0700 "$RUNNER_TEMP/main1-payload/deploy-main1-remote.sh" "$remote_dir/"
 
       - name: Deploy main1 release on EC2
         shell: bash
         env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
           DEPLOY_SHA: ${{ needs.test-build.outputs.sha }}
         run: |
           set -Eeuo pipefail
-          test -n "$EC2_HOST"
-          test "$EC2_USER" = "ec2-user"
-          remote_dir="/home/$EC2_USER/deploy-staging/incoming-$DEPLOY_SHA"
+          remote_dir="/home/ec2-user/deploy-staging/incoming-$DEPLOY_SHA"
           echo "Starting EC2 deployment for commit $DEPLOY_SHA"
-          ssh -i "$HOME/.ssh/main1-deploy-key" \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
-            "$EC2_USER@$EC2_HOST" \
-            "bash '$remote_dir/deploy-main1-remote.sh' '$DEPLOY_SHA' '$remote_dir/frontend-$DEPLOY_SHA.tar.gz'"
+          bash "$remote_dir/deploy-main1-remote.sh" \
+            "$DEPLOY_SHA" "$remote_dir/frontend-$DEPLOY_SHA.tar.gz"
 
-      - name: Verify public deployment
+      - name: Verify deployed routes
         shell: bash
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           set -Eeuo pipefail
-          base="http://$EC2_HOST"
+          base="http://127.0.0.1"
           verified=0
           for _ in {1..12}; do
             if [[ $(curl --max-time 15 --silent --show-error "$base/api/health" || true) == '{"status":"ok"}' ]] \
@@ -192,8 +147,3 @@ jobs:
           done
           test "$verified" -eq 1
           echo "Deployment ${{ needs.test-build.outputs.sha }} is healthy and publicly reachable"
-
-      - name: Remove temporary SSH material
-        if: always()
-        shell: bash
-        run: rm -f "$HOME/.ssh/main1-deploy-key" "$HOME/.ssh/known_hosts"
