@@ -113,7 +113,45 @@ async def update_event_config_admin(
     db.commit()
     db.refresh(config)
     await manager.broadcast_event("config_updated", {"config": EventConfigResponse.model_validate(config).model_dump(mode="json")})
+    await manager.broadcast_event("event_state_changed", event_snapshot(db))
     return config
+
+@router.put("/admin/cooldown")
+async def set_bid_cooldown(seconds: int, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
+    if seconds < 0:
+        raise HTTPException(status_code=400, detail="Cooldown seconds must be >= 0")
+    config = get_or_create_event_config(db)
+    config.bid_cooldown_seconds = seconds
+    db.commit()
+    db.refresh(config)
+    await manager.broadcast_event("config_updated", {"config": EventConfigResponse.model_validate(config).model_dump(mode="json")})
+    await manager.broadcast_event("event_state_changed", event_snapshot(db))
+    return {"message": f"Bid cooldown updated to {seconds} seconds", "bid_cooldown_seconds": seconds}
+
+@router.post("/admin/cooldown/add")
+async def add_bid_cooldown(seconds: int, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
+    if seconds <= 0:
+        raise HTTPException(status_code=400, detail="Seconds to add must be > 0")
+    config = get_or_create_event_config(db)
+    config.bid_cooldown_seconds = (config.bid_cooldown_seconds or 0) + seconds
+    db.commit()
+    db.refresh(config)
+    await manager.broadcast_event("config_updated", {"config": EventConfigResponse.model_validate(config).model_dump(mode="json")})
+    await manager.broadcast_event("event_state_changed", event_snapshot(db))
+    return {"message": f"Added {seconds} second(s) to bid cooldown. New cooldown: {config.bid_cooldown_seconds}s", "bid_cooldown_seconds": config.bid_cooldown_seconds}
+
+@router.post("/admin/cooldown/reduce")
+async def reduce_bid_cooldown(seconds: int, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
+    if seconds <= 0:
+        raise HTTPException(status_code=400, detail="Seconds to reduce must be > 0")
+    config = get_or_create_event_config(db)
+    current_val = config.bid_cooldown_seconds or 0
+    config.bid_cooldown_seconds = max(0, current_val - seconds)
+    db.commit()
+    db.refresh(config)
+    await manager.broadcast_event("config_updated", {"config": EventConfigResponse.model_validate(config).model_dump(mode="json")})
+    await manager.broadcast_event("event_state_changed", event_snapshot(db))
+    return {"message": f"Reduced bid cooldown by {seconds} second(s). New cooldown: {config.bid_cooldown_seconds}s", "bid_cooldown_seconds": config.bid_cooldown_seconds}
 
 # ---------------------------------------------------------------- Event State
 

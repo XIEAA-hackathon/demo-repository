@@ -85,9 +85,11 @@ def event_timing(config: GameConfig) -> dict:
 
 def event_snapshot(db: Session) -> dict:
     config = get_or_create_game_config(db)
+    event_config = get_or_create_event_config(db)
     return {
         "event_state": config.state,
         "current_round": config.current_round,
+        "bid_cooldown_seconds": event_config.bid_cooldown_seconds,
         "timing": event_timing(config),
     }
 
