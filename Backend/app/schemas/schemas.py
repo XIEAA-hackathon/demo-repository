@@ -65,6 +65,13 @@ class PSCreate(BaseModel):
     round: int = 1
     status: str = "visible"
 
+class PSUpdate(BaseModel):
+    ps_number: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    round: Optional[int] = None
+    status: Optional[str] = None
+
 class PSResponse(BaseModel):
     id: int
     ps_number: str
@@ -72,6 +79,12 @@ class PSResponse(BaseModel):
     description: Optional[str]
     round: int
     status: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+class AdminPSResponse(PSResponse):
+    allocated_team_id: Optional[int] = None
+    allocated_team_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
