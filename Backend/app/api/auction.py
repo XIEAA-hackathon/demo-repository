@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
@@ -23,14 +23,20 @@ def _assert_state(state: str, config: GameConfig, allowed: List[str]):
 
 @router.post("/bid")
 async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
-    # Leader-only: identity comes from imported registration data
     team = ensure_leader(db, current_user)
     config = get_or_create_game_config(db)
     event_config = get_or_create_event_config(db)
 
     _assert_state(config.state, config, ["ROUND1_BIDDING"])
 
-    ps = db.query(ProblemStatement).filter(ProblemStatement.id == bid.ps_id).first()
+    if config.auction_timer_end and not config.timer_paused:
+        end_time = config.auction_timer_end if config.auction_timer_end.tzinfo else config.auction_timer_end.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > end_time:
+            raise HTTPException(status_code=400, detail="Bidding time has expired for this round.")
+
+    # Row-level pessimistic locking for concurrency safety
+    team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
+    ps = db.query(ProblemStatement).filter(ProblemStatement.id == bid.ps_id).with_for_update().first()
     if not ps or ps.status != "visible":
         raise HTTPException(status_code=400, detail="Invalid or unavailable Problem Statement")
 
@@ -42,6 +48,16 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
     if bid.amount < min_bid:
         raise HTTPException(status_code=400, detail=f"Bid must be at least {min_bid} coins.")
 
+    # 1. Single Problem Statement Check
+    other_ps_bid = db.query(Bid).filter(
+        Bid.team_id == team.id,
+        Bid.ps_id != ps.id,
+        Bid.round == config.current_round,
+    ).first()
+    if other_ps_bid:
+        raise HTTPException(status_code=400, detail="You can only bid on one Problem Statement per round.")
+
+    # 2. Incremental Bid Check
     existing_bid = db.query(Bid).filter(
         Bid.team_id == team.id,
         Bid.ps_id == ps.id,
@@ -53,10 +69,30 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
             detail=f"New bid must be at least {increment} coin(s) higher than the current bid of {existing_bid.amount}.",
         )
 
+    # 3. Cooldown Delay Enforcement (5s Default)
+    cooldown = getattr(event_config, "bid_cooldown_seconds", 5) or 0
+    if cooldown > 0:
+        latest_team_bid = db.query(Bid).filter(
+            Bid.team_id == team.id,
+            Bid.round == config.current_round,
+        ).order_by(Bid.timestamp.desc()).first()
+        if latest_team_bid and latest_team_bid.timestamp:
+            ts = latest_team_bid.timestamp if latest_team_bid.timestamp.tzinfo else latest_team_bid.timestamp.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            elapsed = (now - ts).total_seconds()
+            if elapsed < cooldown:
+                remaining = int(cooldown - elapsed) + 1
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Please wait {remaining} second(s) before placing another bid.",
+                )
+
+    now = datetime.now(timezone.utc)
     if existing_bid:
         existing_bid.amount = bid.amount
+        existing_bid.timestamp = now
     else:
-        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=bid.amount, round=config.current_round))
+        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=bid.amount, round=config.current_round, timestamp=now))
 
     db.commit()
 
@@ -179,7 +215,8 @@ async def pause_timer(db: Session = Depends(get_db), current_user = Depends(get_
         return {"message": "Timer already paused", "paused": True}
     if not config.auction_timer_end:
         raise HTTPException(status_code=400, detail="No active timer")
-    remaining = (config.auction_timer_end - datetime.utcnow()).total_seconds()
+    end_time = config.auction_timer_end if config.auction_timer_end.tzinfo else config.auction_timer_end.replace(tzinfo=timezone.utc)
+    remaining = (end_time - datetime.now(timezone.utc)).total_seconds()
     config.timer_paused = True
     config.timer_paused_remaining_seconds = int(max(0, remaining))
     db.commit()
@@ -192,7 +229,7 @@ async def resume_timer(db: Session = Depends(get_db), current_user = Depends(get
     if not config.timer_paused:
         return {"message": "Timer is not paused", "paused": False}
     remaining = config.timer_paused_remaining_seconds or 0
-    config.auction_timer_end = datetime.utcnow() + timedelta(seconds=remaining)
+    config.auction_timer_end = datetime.now(timezone.utc) + timedelta(seconds=remaining)
     config.timer_paused = False
     config.timer_paused_remaining_seconds = None
     db.commit()

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from datetime import datetime, timezone
 
 from app.core.database import get_db
 from app.models.models import Team, Wildcard, GameConfig, ProblemStatement, Bid, WalletTransaction
@@ -77,7 +78,9 @@ async def place_wildcard_bid(ps_id: int, amount: int, db: Session = Depends(get_
     if config.state != "WILDCARD_BIDDING":
         raise HTTPException(status_code=409, detail=f"Wildcard bidding is not open (state: {config.state}).")
 
-    ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
+    # Row-level pessimistic locking
+    team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
+    ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).with_for_update().first()
     if not ps or ps.round != 2 or ps.status != "visible":
         raise HTTPException(status_code=400, detail="Invalid or unavailable Wildcard problem.")
 
@@ -101,10 +104,30 @@ async def place_wildcard_bid(ps_id: int, amount: int, db: Session = Depends(get_
     if record and record.status != "bid":
         raise HTTPException(status_code=400, detail="Your team already owns a wildcard outcome.")
 
+    # Cooldown Delay Enforcement (5s Default)
+    cooldown = getattr(event_config, "bid_cooldown_seconds", 5) or 0
+    if cooldown > 0:
+        latest_team_bid = db.query(Bid).filter(
+            Bid.team_id == team.id,
+            Bid.round == 2,
+        ).order_by(Bid.timestamp.desc()).first()
+        if latest_team_bid and latest_team_bid.timestamp:
+            ts = latest_team_bid.timestamp if latest_team_bid.timestamp.tzinfo else latest_team_bid.timestamp.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            elapsed = (now - ts).total_seconds()
+            if elapsed < cooldown:
+                remaining = int(cooldown - elapsed) + 1
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Please wait {remaining} second(s) before placing another bid.",
+                )
+
+    now = datetime.now(timezone.utc)
     if existing_bid:
         existing_bid.amount = amount
+        existing_bid.timestamp = now
     else:
-        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=amount, round=2))
+        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=amount, round=2, timestamp=now))
 
     if not record:
         db.add(Wildcard(team_id=team.id, coins_paid=0, status="bid"))
@@ -162,7 +185,9 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
     if config.state != "WILDCARD_SELECTION":
         raise HTTPException(status_code=409, detail=f"Wildcard selection is not open (state: {config.state}).")
 
-    record = db.query(Wildcard).filter(Wildcard.team_id == team.id).first()
+    # Row-level pessimistic locking for wildcard selection
+    team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
+    record = db.query(Wildcard).filter(Wildcard.team_id == team.id).with_for_update().first()
     if not record or record.status != "won":
         raise HTTPException(status_code=403, detail="Only wildcard winners can select a Bonus Problem.")
     if record.used or record.status == "selected":
@@ -170,7 +195,7 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
     if not team.ps_id:
         raise HTTPException(status_code=400, detail="Your team has no original problem to switch from.")
 
-    ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
+    ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).with_for_update().first()
     if not ps or ps.round != 2 or ps.status != "visible":
         raise HTTPException(status_code=400, detail="Invalid or already-selected Bonus Problem.")
 
@@ -182,6 +207,16 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
             rank_team_ids.append(bid.team_id)
     if team.id not in rank_team_ids:
         raise HTTPException(status_code=403, detail="Your team is not a wildcard winner.")
+
+    # Enforce strict rank-order priority lock: higher-ranked winners must select first
+    my_rank_index = rank_team_ids.index(team.id)
+    for higher_rank_team_id in rank_team_ids[:my_rank_index]:
+        higher_rank_wildcard = db.query(Wildcard).filter(Wildcard.team_id == higher_rank_team_id).first()
+        if higher_rank_wildcard and higher_rank_wildcard.status == "won" and not higher_rank_wildcard.used:
+            raise HTTPException(
+                status_code=400,
+                detail="A higher-ranked wildcard winner must select their Bonus Problem first.",
+            )
 
     # previous winners selecting this problem get priority (first come, first served in rank order)
     already_selected = db.query(Wildcard).filter(

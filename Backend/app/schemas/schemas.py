@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from typing import List, Optional, Any
 from datetime import datetime
 
@@ -30,8 +30,7 @@ class UserResponse(BaseModel):
     email: str
     role: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Team Schemas ---
 class MemberCreate(BaseModel):
@@ -45,8 +44,7 @@ class MemberResponse(BaseModel):
     id: int
     member_name: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class TeamResponse(BaseModel):
     id: int
@@ -57,8 +55,7 @@ class TeamResponse(BaseModel):
     is_approved: bool
     members: List[MemberResponse]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Problem Statement Schemas ---
 class PSCreate(BaseModel):
@@ -76,13 +73,12 @@ class PSResponse(BaseModel):
     round: int
     status: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Bid Schemas ---
 class BidCreate(BaseModel):
     ps_id: int
-    amount: int
+    amount: int = Field(..., gt=0, description="Bid amount must be strictly greater than 0")
 
 class BidResponse(BaseModel):
     id: int
@@ -92,8 +88,7 @@ class BidResponse(BaseModel):
     round: int
     timestamp: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Token Schemas ---
 class Token(BaseModel):
@@ -119,6 +114,7 @@ class EventConfigBase(BaseModel):
     wildcard_starting_bid: int = 150
     wildcard_bid_increment: int = 1
     coding_duration_seconds: int = 10800
+    bid_cooldown_seconds: int = 5
     royalty_coins_per_point: int = 10
     royalty_max_points: int = 100
 
@@ -137,14 +133,14 @@ class EventConfigUpdate(BaseModel):
     wildcard_starting_bid: Optional[int] = None
     wildcard_bid_increment: Optional[int] = None
     coding_duration_seconds: Optional[int] = None
+    bid_cooldown_seconds: Optional[int] = None
     royalty_coins_per_point: Optional[int] = None
     royalty_max_points: Optional[int] = None
 
 class EventConfigResponse(EventConfigBase):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Participant Dashboard Schemas ---
 class DashboardUser(BaseModel):
@@ -212,6 +208,7 @@ class DashboardGameConfig(BaseModel):
     wildcard_preview_seconds: int
     wildcard_bid_seconds: int
     coding_duration_seconds: int
+    bid_cooldown_seconds: int = 5
 
 class EventTiming(BaseModel):
     server_time: datetime

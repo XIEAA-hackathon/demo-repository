@@ -174,6 +174,9 @@ class EventConfig(Base):
     # Coding
     coding_duration_seconds = Column(Integer, default=10800)  # 3 hours
 
+    # Cooldown
+    bid_cooldown_seconds = Column(Integer, default=5)
+
     # Royalty
     royalty_coins_per_point = Column(Integer, default=10)
     royalty_max_points = Column(Integer, default=100)

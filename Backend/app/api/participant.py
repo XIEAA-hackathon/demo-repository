@@ -105,6 +105,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             wildcard_preview_seconds=event_config.wildcard_preview_seconds,
             wildcard_bid_seconds=event_config.wildcard_bid_seconds,
             coding_duration_seconds=event_config.coding_duration_seconds,
+            bid_cooldown_seconds=event_config.bid_cooldown_seconds,
         ),
         timing=EventTiming(**event_timing(config)),
     )
@@ -275,5 +276,5 @@ def get_my_submission(db: Session = Depends(get_db), current_user: User = Depend
     )
 
 def member_utcnow():
-    from datetime import datetime
-    return datetime.utcnow()
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)

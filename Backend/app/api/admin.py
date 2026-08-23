@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.core.database import get_db
 from app.models.models import (
@@ -101,6 +101,8 @@ async def update_event_config_admin(
         raise HTTPException(status_code=400, detail="wildcard_problem_count must be >= 0")
     if "coding_duration_seconds" in data and data["coding_duration_seconds"] < 0:
         raise HTTPException(status_code=400, detail="coding_duration_seconds must be >= 0")
+    if "bid_cooldown_seconds" in data and data["bid_cooldown_seconds"] < 0:
+        raise HTTPException(status_code=400, detail="bid_cooldown_seconds must be >= 0")
     if "royalty_coins_per_point" in data and data["royalty_coins_per_point"] < 0:
         raise HTTPException(status_code=400, detail="royalty_coins_per_point must be >= 0")
     if "royalty_max_points" in data and data["royalty_max_points"] < 0:
@@ -305,6 +307,11 @@ async def preview_registration_import(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin),
 ):
+    if file.filename:
+        ext = file.filename.lower()
+        if not (ext.endswith(".csv") or ext.endswith(".xlsx") or ext.endswith(".xls")):
+            raise HTTPException(status_code=400, detail="Invalid file type. Only .csv, .xlsx, and .xls files are allowed.")
+
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large (max 10 MB).")
@@ -475,7 +482,7 @@ async def confirm_registration_import(
         team.is_approved = True
 
     import_record.status = "committed"
-    import_record.committed_at = datetime.utcnow()
+    import_record.committed_at = datetime.now(timezone.utc)
     db.commit()
 
     await manager.broadcast_event("team_updated", {

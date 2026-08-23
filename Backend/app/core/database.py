@@ -32,10 +32,20 @@ def initialize_database() -> None:
         # ``create_all`` does not add columns to an existing SQLite database.
         # Keep this small migration-less project upgrade-safe for local users.
         if database_backend == "sqlite":
-            columns = {column["name"] for column in inspect(engine).get_columns("game_config")}
-            if "phase_started_at" not in columns:
+            game_columns = {column["name"] for column in inspect(engine).get_columns("game_config")}
+            if "phase_started_at" not in game_columns:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE game_config ADD COLUMN phase_started_at DATETIME"))
+
+            user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+            if "session_id" not in user_columns:
+                with engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE users ADD COLUMN session_id VARCHAR"))
+
+            event_columns = {column["name"] for column in inspect(engine).get_columns("event_config")}
+            if "bid_cooldown_seconds" not in event_columns:
+                with engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE event_config ADD COLUMN bid_cooldown_seconds INTEGER DEFAULT 5"))
     except OperationalError:
         if database_backend == "postgresql":
             host = database_url.host or "localhost"

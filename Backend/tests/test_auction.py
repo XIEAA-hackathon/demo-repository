@@ -102,6 +102,7 @@ def test_bid_bounds_from_event_config(client, admin_headers, csv_bytes, db):
     event_config = db.query(EventConfig).first()
     event_config.round1_minimum_bid = 200
     event_config.round1_bid_increment = 25
+    event_config.bid_cooldown_seconds = 0
     db.commit()
 
     response = client.post("/bid", json={"ps_id": ps.id, "amount": 50}, headers=leader_headers)

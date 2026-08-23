@@ -53,7 +53,7 @@ def transition_event_state(db: Session, state: str, *, validate: bool = True) ->
             detail=f"Cannot transition from {config.state} to {state}. Allowed next state(s): {allowed}",
         )
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     duration = _duration_for_state(get_or_create_event_config(db), state)
     config.state = state
     if state == "WAITING" or state.startswith("ROUND1"):
