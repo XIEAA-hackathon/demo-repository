@@ -1,0 +1,199 @@
+name: Deploy main1 to EC2
+
+on:
+  push:
+    branches:
+      - main1
+
+permissions:
+  contents: read
+
+concurrency:
+  # Shared with deploy-aws.yml so main and main1 can never promote concurrently.
+  group: production-aws
+  cancel-in-progress: false
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - name: Check out pushed main1 commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify deployment commit
+        id: version
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin main1
+          test "$sha" = "${{ github.sha }}"
+          test "$sha" = "$(git rev-parse origin/main1)"
+          echo "Deploying commit $sha from main1"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: Backend/requirements-dev.txt
+
+      - name: Test FastAPI backend
+        working-directory: Backend
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pytest -q
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-website/package-lock.json
+
+      - name: Install and build umbrella frontend
+        working-directory: frontend-website
+        env:
+          VITE_API_URL: /api
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci --no-audit --no-fund
+          npm run test:permissions
+          npm run build
+          test -s dist/index.html
+          test -d dist/assets
+          echo "Frontend build completed for ${{ steps.version.outputs.sha }}"
+
+      - name: Package deployment payload
+        shell: bash
+        env:
+          DEPLOY_SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          payload="$RUNNER_TEMP/main1-payload"
+          mkdir -p "$payload"
+          tar -C frontend-website/dist -czf "$payload/frontend-$DEPLOY_SHA.tar.gz" .
+          cp deploy/aws/deploy-main1-remote.sh "$payload/"
+          bash -n "$payload/deploy-main1-remote.sh"
+          echo "$DEPLOY_SHA" > "$payload/commit-sha"
+
+      - name: Upload tested deployment payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: main1-deployment-${{ steps.version.outputs.sha }}
+          path: ${{ runner.temp }}/main1-payload
+          if-no-files-found: error
+          retention-days: 3
+
+  deploy:
+    needs: test-build
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 25
+    steps:
+      - name: Download tested payload
+        uses: actions/download-artifact@v4
+        with:
+          name: main1-deployment-${{ needs.test-build.outputs.sha }}
+          path: ${{ runner.temp }}/main1-payload
+
+      - name: Configure verified SSH client
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$EC2_HOST"
+          test -n "$EC2_SSH_KEY"
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$EC2_SSH_KEY" > "$HOME/.ssh/main1-deploy-key"
+          chmod 0600 "$HOME/.ssh/main1-deploy-key"
+          timeout 15 ssh-keyscan -H -t ed25519 "$EC2_HOST" > "$HOME/.ssh/known_hosts"
+          test -s "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/known_hosts"
+
+      - name: Verify SSH connection
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$EC2_HOST"
+          test "$EC2_USER" = "ec2-user"
+          ssh -i "$HOME/.ssh/main1-deploy-key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$EC2_USER@$EC2_HOST" 'echo "SSH connection verified"'
+
+      - name: Upload tested frontend and deployment script
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          DEPLOY_SHA: ${{ needs.test-build.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$EC2_HOST"
+          test "$EC2_USER" = "ec2-user"
+          remote_dir="/home/$EC2_USER/deploy-staging/incoming-$DEPLOY_SHA"
+          ssh -i "$HOME/.ssh/main1-deploy-key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$EC2_USER@$EC2_HOST" "install -d -m 0700 '$remote_dir'"
+          scp -i "$HOME/.ssh/main1-deploy-key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$RUNNER_TEMP/main1-payload/frontend-$DEPLOY_SHA.tar.gz" \
+            "$RUNNER_TEMP/main1-payload/deploy-main1-remote.sh" \
+            "$EC2_USER@$EC2_HOST:$remote_dir/"
+
+      - name: Deploy main1 release on EC2
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          DEPLOY_SHA: ${{ needs.test-build.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$EC2_HOST"
+          test "$EC2_USER" = "ec2-user"
+          remote_dir="/home/$EC2_USER/deploy-staging/incoming-$DEPLOY_SHA"
+          echo "Starting EC2 deployment for commit $DEPLOY_SHA"
+          ssh -i "$HOME/.ssh/main1-deploy-key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "$EC2_USER@$EC2_HOST" \
+            "bash '$remote_dir/deploy-main1-remote.sh' '$DEPLOY_SHA' '$remote_dir/frontend-$DEPLOY_SHA.tar.gz'"
+
+      - name: Verify public deployment
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -Eeuo pipefail
+          base="http://$EC2_HOST"
+          verified=0
+          for _ in {1..12}; do
+            if [[ $(curl --max-time 15 --silent --show-error "$base/api/health" || true) == '{"status":"ok"}' ]] \
+              && curl --max-time 15 --fail --silent --show-error "$base/" | grep -qi '<div id="root"></div>' \
+              && curl --max-time 15 --fail --silent --show-error "$base/admin/" | grep -qi '<div id="root"></div>' \
+              && curl --max-time 15 --fail --silent --show-error "$base/participant/" | grep -qi '<div id="root"></div>'; then
+              verified=1
+              break
+            fi
+            sleep 5
+          done
+          test "$verified" -eq 1
+          echo "Deployment ${{ needs.test-build.outputs.sha }} is healthy and publicly reachable"
+
+      - name: Remove temporary SSH material
+        if: always()
+        shell: bash
+        run: rm -f "$HOME/.ssh/main1-deploy-key" "$HOME/.ssh/known_hosts"

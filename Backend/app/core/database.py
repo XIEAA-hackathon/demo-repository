@@ -34,6 +34,14 @@ def initialize_database() -> None:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE event_config ADD COLUMN bid_cooldown_seconds INTEGER DEFAULT 5"))
 
+        user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+        if "created_at" not in user_columns:
+            created_at_type = "TIMESTAMP WITH TIME ZONE" if database_backend == "postgresql" else "DATETIME"
+            with engine.begin() as connection:
+                connection.execute(text(f"ALTER TABLE users ADD COLUMN created_at {created_at_type}"))
+        with engine.begin() as connection:
+            connection.execute(text("UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"))
+
         # ``create_all`` does not add columns to an existing SQLite database.
         # Keep this small migration-less project upgrade-safe for local users.
         if database_backend == "sqlite":

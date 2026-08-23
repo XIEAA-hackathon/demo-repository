@@ -1,8 +1,6 @@
-name: Deploy main to AWS
+name: Legacy manual deploy main to AWS
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
@@ -38,10 +36,6 @@ jobs:
           git fetch --no-tags origin main
           if ! git merge-base --is-ancestor "$sha" origin/main; then
             echo "Ref is not contained in origin/main; refusing production deployment." >&2
-            exit 1
-          fi
-          if [[ "${{ github.event_name }}" == "push" && "$sha" != "${{ github.sha }}" ]]; then
-            echo "Checkout SHA does not match the pushed main SHA." >&2
             exit 1
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"

@@ -15,7 +15,7 @@ from app.core.security import get_password_hash
 from app.core.config import settings
 from app.models.models import User, EventConfig, GameConfig, ProblemStatement
 from app.services.demo_seed import provision_demo_accounts
-from app.api import auth, team, problem_statements, auction, wildcard, participant, admin, websockets, rounds, operations, judging
+from app.api import auth, team, problem_statements, auction, wildcard, participant, admin, websockets, rounds, operations, judging, management
 
 # ---------------------------------------------------------------- helpers
 
@@ -92,6 +92,7 @@ def client(engine, session_factory):
     app.include_router(websockets.router)
     app.include_router(operations.router)
     app.include_router(judging.router)
+    app.include_router(management.router)
 
     def override_get_db():
         db = session_factory()

@@ -14,6 +14,8 @@ import {
   getJudging, saveJudgingWinners, publishJudgingResults,
   getAdminHealth, runPreflight, getRecoveryState, resumeRecoveryTimer, reloadRecoveryState,
   resyncClients, retryCurrentTransition, getActivityLog, developmentReset, resetEventData,
+  getManagedAdminUsers, createManagedAdminUser, getManagedLeaderboardUsers,
+  createManagedLeaderboardUser, resetManagedUserPassword, resetManagedUsers,
 } from "./services/api";
 import { connectAuctionSocket } from "./services/auctionSocket";
 
@@ -120,14 +122,14 @@ function AdminApplication({ onLogout }) {
             <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
           ))}
           <span className="sidebar-section-title sidebar-section-title--management">Management</span>
-          {[["teams", "Teams", "T"], ["problems", "Problems", "P"], ["imports", "Registration import", "⇧"], ["leaderboard", "Leaderboard", "≡"], ["activity", "Event log", "L"]].map(([id, label, icon]) => (
+          {[["admin-users", "Admin Users", "A"], ["leaderboard-users", "Leaderboard Users", "D"], ["teams", "Teams", "T"], ["problems", "Problems", "P"], ["imports", "Registration import", "⇧"], ["leaderboard", "Leaderboard", "≡"], ["activity", "Event log", "L"]].map(([id, label, icon]) => (
             <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
           ))}
         </nav>
         <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">A</div><div><strong>Event Admin</strong><span>Backend verified</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health"><span><i className={`status-dot ${apiStatus === "connected" ? "online" : ""}`} />Backend <strong>{apiStatus === "connected" ? "Connected" : "Reconnecting"}</strong></span><span>Database <strong>{health?.database === "healthy" ? "Healthy" : "Checking"}</strong></span><small>Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {socketStatus}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
+        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page === "admin-users" ? "Admin Users" : page === "leaderboard-users" ? "Leaderboard Users" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health"><span><i className={`status-dot ${apiStatus === "connected" ? "online" : ""}`} />Backend <strong>{apiStatus === "connected" ? "Connected" : "Reconnecting"}</strong></span><span>Database <strong>{health?.database === "healthy" ? "Healthy" : "Checking"}</strong></span><small>Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {socketStatus}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
         <div className="page-content">
           {stale && <div className="stale-state-warning" role="alert"><strong>LIVE STATE MAY BE STALE</strong><span>Last successful synchronization: {staleSeconds == null ? "not yet completed" : `${staleSeconds} seconds ago`}. Attempting reconnection…</span></div>}
           {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
@@ -137,6 +139,8 @@ function AdminApplication({ onLogout }) {
           {page === "wildcard" && <WildcardControlPage state={state} config={config} remaining={remaining} onConfig={setConfig} />}
           {page === "submission" && <SubmissionAdminPage />}
           {page === "judging" && <JudgingAdminPage onGlobalSync={load} />}
+          {page === "admin-users" && <ManagedUsersPage kind="admin" />}
+          {page === "leaderboard-users" && <ManagedUsersPage kind="leaderboard" />}
           {page === "teams" && <Teams teams={teams} onAction={action} />}
           {page === "problems" && <Problems problems={problems} state={state} onAction={action} />}
           {page === "imports" && <RegistrationImport onAction={action} />}
@@ -619,6 +623,88 @@ function RegistrationImport() {
 function Bids({ bids, teams, problems }) {
   const teamName = (id) => teams.find((team) => team.id === id)?.team_name || `Team ${id}`; const problemName = (id) => problems.find((problem) => problem.id === id)?.ps_number || id;
   return <section className="page-section"><div className="table-wrapper"><table><thead><tr><th>RANK</th><th>TEAM</th><th>PROBLEM</th><th>ROUND</th><th>AMOUNT</th><th>RECEIVED</th></tr></thead><tbody>{bids.map((bid, index) => <tr key={bid.id}><td>#{index + 1}</td><td>{teamName(bid.team_id)}</td><td>{problemName(bid.ps_id)}</td><td>{bid.round}</td><td className="coins">{bid.amount}</td><td>{new Date(bid.timestamp).toLocaleTimeString()}</td></tr>)}</tbody></table></div></section>;
+}
+
+function ManagedUsersPage({ kind }) {
+  const isAdmin = kind === "admin";
+  const [users, setUsers] = useState([]);
+  const [form, setForm] = useState({ login_id: "", password: "", confirm_password: "" });
+  const [resetTarget, setResetTarget] = useState(null);
+  const [passwordForm, setPasswordForm] = useState({ new_password: "", confirm_password: "" });
+  const [resetConfirmation, setResetConfirmation] = useState("");
+  const [resetResult, setResetResult] = useState(null);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const load = useCallback(async () => {
+    const result = await (isAdmin ? getManagedAdminUsers() : getManagedLeaderboardUsers());
+    setUsers(result.users || []);
+  }, [isAdmin]);
+
+  useEffect(() => {
+    setUsers([]); setError(""); setNotice(""); setResetTarget(null); setResetResult(null);
+    void load().catch((cause) => setError(cause.message || "Managed users could not be loaded."));
+  }, [load]);
+
+  const createUser = async (event) => {
+    event.preventDefault(); setError(""); setNotice("");
+    if (form.password !== form.confirm_password) { setError("Password confirmation does not match."); return; }
+    setWorking(true);
+    try {
+      await (isAdmin ? createManagedAdminUser(form) : createManagedLeaderboardUser(form));
+      setForm({ login_id: "", password: "", confirm_password: "" });
+      setNotice(`${isAdmin ? "Admin" : "Leaderboard"} user created.`);
+      await load();
+    } catch (cause) { setError(cause.message || "User could not be created."); }
+    finally { setWorking(false); }
+  };
+
+  const beginPasswordReset = (user) => {
+    setResetTarget(user); setPasswordForm({ new_password: "", confirm_password: "" }); setError(""); setNotice("");
+  };
+
+  const resetPassword = async (event) => {
+    event.preventDefault(); setError(""); setNotice("");
+    if (passwordForm.new_password !== passwordForm.confirm_password) { setError("Password confirmation does not match."); return; }
+    setWorking(true);
+    try {
+      await resetManagedUserPassword(resetTarget.id, passwordForm);
+      setNotice(`Password reset for ${resetTarget.login_id}. Existing sessions were signed out.`);
+      setResetTarget(null); setPasswordForm({ new_password: "", confirm_password: "" });
+    } catch (cause) { setError(cause.message || "Password could not be reset."); }
+    finally { setWorking(false); }
+  };
+
+  const resetAllManaged = async () => {
+    setWorking(true); setError(""); setNotice("");
+    try {
+      const result = await resetManagedUsers(resetConfirmation);
+      setResetResult(result); setResetConfirmation(""); setResetTarget(null);
+      setNotice("Non-system Admin and Leaderboard users removed.");
+      await load();
+    } catch (cause) { setError(cause.message || "Managed users could not be reset."); }
+    finally { setWorking(false); }
+  };
+
+  return <section className="managed-users-page">
+    <header className="managed-users-header"><div><h2>{isAdmin ? "Admin users" : "Leaderboard users"}</h2><p>{isAdmin ? "Create event administrators and manage their access." : "Create read-only display logins for the existing public leaderboard."}</p></div><span>{users.length} account{users.length === 1 ? "" : "s"}</span></header>
+    {error && <div className="global-error" role="alert">{error}</div>}
+    {notice && <div className="admin-notice" role="status">{notice}</div>}
+    <form className="managed-user-form" onSubmit={createUser}>
+      <div><h3>Create {isAdmin ? "Admin" : "Leaderboard"} user</h3><p>Passwords are hashed by the server and are never shown again.</p></div>
+      <label>Login ID<input value={form.login_id} onChange={(event) => setForm({ ...form, login_id: event.target.value })} autoComplete="username" required /></label>
+      <label>Password<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} autoComplete="new-password" required /></label>
+      <label>Confirm password<input type="password" value={form.confirm_password} onChange={(event) => setForm({ ...form, confirm_password: event.target.value })} autoComplete="new-password" required /></label>
+      <button className="primary-button" type="submit" disabled={working}>{working ? "Creating…" : `Create ${isAdmin ? "Admin" : "Leaderboard"} user`}</button>
+    </form>
+    <div className="managed-user-table table-wrapper"><table><thead><tr><th>LOGIN ID</th><th>STATUS</th><th>CREATED</th><th>ACTIONS</th></tr></thead><tbody>
+      {users.map((user) => <tr key={user.id}><td><strong>{user.login_id}</strong>{user.is_system_account && <span className="system-account-note">Protected permanent account</span>}</td><td><span className={`table-status ${user.is_system_account ? "system" : "active"}`}>{user.status}</span></td><td>{user.created_at ? new Date(user.created_at).toLocaleString() : "—"}</td><td className="table-actions">{(!user.is_system_account || !isAdmin) ? <button type="button" onClick={() => beginPasswordReset(user)}>Reset password</button> : <span>Protected</span>}</td></tr>)}
+      {!users.length && <tr><td className="managed-users-empty" colSpan="4">No {isAdmin ? "Admin" : "Leaderboard"} users found.</td></tr>}
+    </tbody></table></div>
+    {resetTarget && <form className="managed-password-reset" onSubmit={resetPassword}><div><h3>Reset password</h3><p>{resetTarget.login_id} will be signed out of every active session.</p></div><label>New password<input type="password" value={passwordForm.new_password} onChange={(event) => setPasswordForm({ ...passwordForm, new_password: event.target.value })} autoComplete="new-password" required /></label><label>Confirm password<input type="password" value={passwordForm.confirm_password} onChange={(event) => setPasswordForm({ ...passwordForm, confirm_password: event.target.value })} autoComplete="new-password" required /></label><div className="managed-password-actions"><button className="secondary-button" type="button" onClick={() => setResetTarget(null)}>Cancel</button><button className="primary-button" type="submit" disabled={working}>{working ? "Resetting…" : "Reset password"}</button></div></form>}
+    {isAdmin && <section className="managed-users-reset"><div><strong>Reset managed users</strong><h3>Remove temporary management access</h3><p>Deletes only non-system Admin and Leaderboard users. Permanent system accounts, Demo Team, participants, and event data remain unchanged.</p></div><label>Type RESET USERS<input value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value)} autoComplete="off" /></label><button className="danger-button" disabled={working || resetConfirmation !== "RESET USERS"} onClick={() => window.confirm("Delete every non-system Admin and Leaderboard user? This cannot be undone.") && void resetAllManaged()}>Reset managed users</button>{resetResult && <div className="managed-users-reset__result" role="status"><strong>Managed users reset</strong><span>Admin users: {resetResult.deleted.admin_users} removed · Leaderboard users: {resetResult.deleted.leaderboard_users} removed</span></div>}</section>}
+  </section>;
 }
 
 function Leaderboard({ rows }) { return <section className="page-section leaderboard-page"><div className="table-wrapper"><table><thead><tr><th>RANK</th><th>TEAM</th><th>COINS</th><th>PROBLEM</th></tr></thead><tbody>{rows.map((team, index) => <tr key={team.team_id || team.id}><td><span className={`leader-rank ${index < 3 ? "gold" : ""}`}>{index + 1}</span></td><td><strong>{team.team_name}</strong></td><td className="coins">{team.coins}</td><td>{team.allocated_ps || "—"}</td></tr>)}</tbody></table></div></section>; }

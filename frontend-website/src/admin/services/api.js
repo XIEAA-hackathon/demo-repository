@@ -137,3 +137,9 @@ export const retryCurrentTransition = () => request("/admin/recovery/retry-trans
 export const getActivityLog = (limit = 200) => request(`/admin/activity-log?limit=${encodeURIComponent(limit)}`);
 export const developmentReset = (confirmation) => request("/admin/development/reset", { method: "POST", body: JSON.stringify({ confirmation }) });
 export const resetEventData = (confirmation) => request("/admin/event-data/reset", { method: "POST", body: JSON.stringify({ confirmation }) });
+export const getManagedAdminUsers = () => request("/admin/management/admin-users");
+export const createManagedAdminUser = (payload) => request("/admin/management/admin-users", { method: "POST", body: JSON.stringify(payload) });
+export const getManagedLeaderboardUsers = () => request("/admin/management/leaderboard-users");
+export const createManagedLeaderboardUser = (payload) => request("/admin/management/leaderboard-users", { method: "POST", body: JSON.stringify(payload) });
+export const resetManagedUserPassword = (userId, payload) => request(`/admin/management/users/${userId}/password`, { method: "PUT", body: JSON.stringify(payload) });
+export const resetManagedUsers = (confirmation) => request("/admin/management/reset", { method: "POST", body: JSON.stringify({ confirmation }) });

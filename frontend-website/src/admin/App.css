@@ -2398,3 +2398,40 @@ td strong {
 .submission-table-panel td a { color: #d17af7; text-decoration: none; }
 @media (max-width: 1100px) { .wildcard-slots, .wildcard-live-bidding { grid-template-columns: 1fr; } .wildcard-slot-control, .wildcard-live-bidding .round-inline-actions { justify-content: flex-start; } .submission-stats { grid-template-columns: repeat(2,1fr); } }
 @media (max-width: 760px) { .wildcard-stage-banner, .submission-admin__header, .submission-toolbar { align-items: flex-start; flex-direction: column; } .wildcard-tabs button { min-height: 58px; flex-direction: column; gap: 5px; font-size: 9px; line-height: 1.25; } .wildcard-stage-card { padding: 20px 17px; } .wildcard-stage-card p, .wildcard-stage-banner h3 { line-height: 1.55; } .wildcard-rank-list > div { grid-template-columns: 34px 1fr auto; } .wildcard-rank-list em { grid-column: 2; } .submission-stats { grid-template-columns: 1fr 1fr; } .submission-table-panel { padding: 18px 15px; } .submission-toolbar input { width: 100%; } }
+
+.managed-users-page { display: grid; gap: 20px; }
+.managed-users-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding: 4px 2px 12px; }
+.managed-users-header h2, .managed-user-form h3, .managed-password-reset h3, .managed-users-reset h3 { margin: 0; color: #f7f0fb; }
+.managed-users-header h2 { font-size: clamp(28px, 3vw, 42px); letter-spacing: -.035em; }
+.managed-users-header p, .managed-user-form p, .managed-password-reset p, .managed-users-reset p { max-width: 70ch; margin: 7px 0 0; color: #a897b1; font-size: 10px; line-height: 1.65; }
+.managed-users-header > span { color: #c8b4d0; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.managed-user-form { display: grid; grid-template-columns: minmax(210px, 1fr) repeat(3, minmax(150px, .72fr)) auto; gap: 14px; align-items: end; padding: 22px; background: #100817; border: 1px solid rgba(190,91,243,.18); border-radius: 15px; }
+.managed-user-form label, .managed-password-reset label, .managed-users-reset label { display: grid; gap: 7px; color: #c7b3ce; font-size: 9px; font-weight: 800; letter-spacing: .04em; }
+.managed-user-form input, .managed-password-reset input, .managed-users-reset input { min-width: 0; padding: 11px 12px; color: #f7f0fb; background: #0d0613; border: 1px solid rgba(182,74,255,.3); border-radius: 8px; outline: none; }
+.managed-user-form input:focus-visible, .managed-password-reset input:focus-visible, .managed-users-reset input:focus-visible { border-color: #b85cff; box-shadow: 0 7px 22px rgba(80,22,112,.2); outline: 3px solid rgba(184,92,255,.14); outline-offset: 1px; }
+.managed-user-table { background: #100817; border: 1px solid rgba(190,91,243,.18); border-radius: 15px; }
+.managed-user-table td:first-child strong { display: block; overflow-wrap: anywhere; }
+.system-account-note { display: block; margin-top: 5px; color: #bba3c3; font-size: 8px; letter-spacing: .04em; }
+.table-status.system { color: #e9c66f; background: rgba(233,198,111,.09); border-color: rgba(233,198,111,.3); }
+.managed-user-table .table-actions > span { color: #8f7a98; font-size: 9px; }
+.managed-users-empty { padding: 34px !important; color: #9d8aa5; text-align: center; }
+.managed-password-reset { display: grid; grid-template-columns: minmax(230px, 1fr) minmax(180px, .6fr) minmax(180px, .6fr) auto; gap: 14px; align-items: end; padding: 20px 22px; background: rgba(178,73,240,.055); border: 1px solid rgba(178,73,240,.2); border-radius: 14px; }
+.managed-password-actions { display: flex; gap: 9px; }
+.managed-users-reset { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .5fr) auto; gap: 18px; align-items: end; margin-top: 8px; padding: 26px; background: #1a080e; border: 1px solid rgba(255,83,112,.34); border-radius: 14px; box-shadow: 0 18px 48px rgba(2,0,5,.24); }
+.managed-users-reset > div:first-child { grid-column: 1 / -1; }
+.managed-users-reset > div:first-child > strong { color: #ff8499; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+.managed-users-reset__result { grid-column: 1 / -1; display: grid; gap: 4px; padding: 14px 16px; color: #75e6a7; background: rgba(56,233,139,.06); border: 1px solid rgba(56,233,139,.22); border-radius: 10px; }
+.managed-users-reset__result span { color: #a8d5b9; font-size: 9px; line-height: 1.5; }
+
+@media (max-width: 1180px) {
+  .managed-user-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .managed-user-form > div { grid-column: 1 / -1; }
+  .managed-password-reset { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .managed-password-reset > div:first-child { grid-column: 1 / -1; }
+}
+@media (max-width: 760px) {
+  .managed-users-header { align-items: flex-start; flex-direction: column; }
+  .managed-user-form, .managed-password-reset, .managed-users-reset { grid-template-columns: 1fr; padding: 20px 17px; }
+  .managed-user-form > div, .managed-password-reset > div:first-child, .managed-users-reset > div:first-child { grid-column: auto; }
+  .managed-password-actions { flex-wrap: wrap; }
+}

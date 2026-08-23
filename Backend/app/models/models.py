@@ -14,6 +14,7 @@ class User(Base):
     team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
     session_id = Column(String, nullable=True) # Used to track the active session
     is_system_account = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 class ProblemStatement(Base):
     __tablename__ = "problem_statements"

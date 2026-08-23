@@ -67,7 +67,7 @@ Leaderboard Display:
 - ID: `leaderboard@bidtobuild.example.com`
 - Password: `Leaderboard@123`
 
-All three accounts use the normal database-backed password hashing and login flow. They are explicitly marked as permanent system records, so **Reset Event Data** and **Reset Participant Credentials** preserve these accounts and `Demo Team` while continuing to remove imported event participants.
+All three accounts use the normal database-backed password hashing and login flow. They are explicitly marked as permanent system records, so **Reset Event Data**, **Reset Participant Credentials**, and **Reset Managed Users** preserve these accounts and `Demo Team` while continuing to remove imported event participants or non-system management accounts.
 
 ### Changing Demo Credentials
 
@@ -87,33 +87,35 @@ Restart the FastAPI backend after changing them. The values are loaded by `Backe
 
 ## Automatic AWS Deployment
 
-Production deploys only from committed `origin/main` through `.github/workflows/deploy-aws.yml`:
+Production deploys automatically from committed `origin/main1` through `.github/workflows/deploy-main1.yml`:
 
 ```bash
 git add -A
 git commit -m "Describe the production change"
-git push origin main
+git push origin main1
 ```
 
-The main-branch push runs the backend tests and builds the umbrella frontend once on a GitHub-hosted runner. It packages the tested output under the exact commit SHA, then the repository-scoped EC2 runner invokes `deploy/aws/deploy-release.sh`. The server installs backend dependencies, validates the application with the production Python/runtime configuration, atomically promotes `/opt/casino_hackathon/current`, restarts the backend, reloads Nginx, and verifies internal and public health/version endpoints.
+The `main1` push runs the complete Backend test suite and builds the umbrella frontend on a GitHub-hosted runner. It uploads the tested frontend artifact and deployment script over verified SSH, fetches the exact `origin/main1` commit on EC2, preserves the existing SQLite database, environment files, and venv, restarts `casino-backend.service`, validates `/health`, promotes the frontend into the existing `static/public`, `static/admin`, and `static/participant` layout, validates Nginx, and verifies the public routes.
 
-Persistent configuration and the SQLite database remain outside immutable releases:
+The current persistent database remains at:
 
-- `/etc/casino-hackathon/backend.env`
-- `/opt/casino_hackathon/data/casino_hackathon.db`
+- `/home/ec2-user/demo-repository/Backend/casino_hackathon.db`
 
-Use the active symlink as the authoritative release check:
+The deployed main1 SHA is recorded at:
 
 ```bash
-readlink -f /opt/casino_hackathon/current
+cat /home/ec2-user/deploy-state/main1-deployed-sha
 ```
 
-A directory under `/opt/casino_hackathon/releases/<sha>` is only a prepared release. It is live only when `current` resolves to that SHA and the health checks pass. If post-promotion checks fail, the deployment script atomically restores the previous release and restarts/reloads the same services. The server retains the active release plus five recent rollback candidates.
+If a post-promotion check fails, `deploy/aws/deploy-main1-remote.sh` restores the previous Backend/static snapshot and restarts/reloads the same services. The server retains the latest five rollback snapshots under `/opt/casino_hackathon/main1-backups` and never copies or reverses SQLite data during source rollback.
 
-For a deliberate rollback, dispatch the same workflow with a prior SHA already contained in `main`:
+For a deliberate rollback, revert the bad commit and push the revert through the same pipeline:
 
 ```bash
-gh workflow run deploy-aws.yml --ref main -f ref=<full-main-commit-sha>
+git switch main1
+git pull --ff-only origin main1
+git revert <bad-deployment-commit-sha>
+git push origin main1
 ```
 
-Deployment stage and rollback records are stored in `/var/log/casino-hackathon-deploy.log`. See `deploy/aws/README.md` for the detailed release model and recovery procedure.
+The previous `main` self-hosted-runner workflow remains manual-only as `.github/workflows/deploy-aws.yml`; it no longer deploys automatically on `main` pushes. See `deploy/aws/README.md` for SSH secrets, EC2 verification, failure logs, and recovery details.

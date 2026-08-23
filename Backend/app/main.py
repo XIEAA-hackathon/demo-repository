@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging
+from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging, management
 from app.core.database import initialize_database, SessionLocal
 from app.models import models
 from app.core.config import settings
@@ -103,6 +103,7 @@ app.include_router(rounds.router, tags=["Round Operations"])
 app.include_router(websockets.router, tags=["WebSockets"])
 app.include_router(operations.router, tags=["Event Operations"])
 app.include_router(judging.router, tags=["Judging and Public Results"])
+app.include_router(management.router, tags=["Managed Users"])
 
 
 @app.exception_handler(SQLAlchemyError)
