@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -152,7 +155,7 @@ def get_participant_problems(
         for idx, ps in enumerate(problems)
     ]
 
-@router.get("/participant/leaderboard", response_model=list[LeaderboardEntry])
+@router.get("/participant/leaderboard", response_model=List[LeaderboardEntry])
 def get_leaderboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
     config = get_or_create_game_config(db)
     if config.state not in ("ROUND1_BIDDING", "ROUND1_RESULT", "ROUND1_PREVIEW", "WILDCARD_APPLICATION", "WILDCARD_BIDDING", "WILDCARD_SELECTION"):
