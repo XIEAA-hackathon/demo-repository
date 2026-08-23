@@ -229,11 +229,13 @@ def event_timing(config: GameConfig) -> dict:
 def event_snapshot(db: Session) -> dict:
     sync_expired_event_state(db)
     config = get_or_create_game_config(db)
+    event_config = get_or_create_event_config(db)
     round1 = get_or_create_round_control(db, "ROUND1")
     wildcard = get_or_create_round_control(db, "WILDCARD")
     return {
         "event_state": config.state,
         "current_round": config.current_round,
+        "bid_cooldown_seconds": event_config.bid_cooldown_seconds,
         "last_state_update": config.last_state_update,
         "timing": event_timing(config),
         "allowed_transitions": sorted(STATE_TRANSITIONS.get(config.state, set())),

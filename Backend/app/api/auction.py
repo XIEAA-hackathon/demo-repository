@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -16,6 +20,7 @@ from app.services.event_service import (
     sync_expired_event_state,
 )
 from app.services.activity_log import record_event
+from app.services.bid_cooldown import bid_cooldown_rejection, bid_cooldown_remaining
 
 router = APIRouter()
 
@@ -38,7 +43,8 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
     if team.ps_id is not None:
         raise HTTPException(status_code=409, detail="Round 1 is complete for your team. Assigned teams cannot bid again.")
 
-    ps = db.query(ProblemStatement).filter(ProblemStatement.id == bid.ps_id).first()
+    team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
+    ps = db.query(ProblemStatement).filter(ProblemStatement.id == bid.ps_id).with_for_update().first()
     control = get_or_create_round_control(db, "ROUND1")
     if not ps or ps.id != control.current_problem_id or ps.status != "current":
         raise HTTPException(status_code=400, detail="Invalid or unavailable Problem Statement")
@@ -62,10 +68,24 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
             detail=f"New bid must be at least {increment} coin(s) higher than the current bid of {existing_bid.amount}.",
         )
 
+    cooldown = event_config.bid_cooldown_seconds or 0
+    remaining = bid_cooldown_remaining(
+        db,
+        team.id,
+        cooldown,
+        round_type="ROUND1",
+        problem_id=ps.id,
+        round_number=config.current_round,
+    )
+    if remaining > 0:
+        return bid_cooldown_rejection(remaining)
+
+    now = datetime.now(timezone.utc)
     if existing_bid:
         existing_bid.amount = bid.amount
+        existing_bid.timestamp = now
     else:
-        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=bid.amount, round=config.current_round))
+        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=bid.amount, round=config.current_round, timestamp=now))
     record_event(db, "round1.bid_placed", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": ps.id, "amount": bid.amount})
     try:
         db.commit()

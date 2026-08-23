@@ -97,6 +97,7 @@ export const importRegistrations = (file) => {
   const body = new FormData(); body.append("file", file);
   return request("/admin/registration/import", { method: "POST", body });
 };
+export const resetRegistrationCredentials = (confirmation) => request("/admin/registration/credentials/reset", { method: "POST", body: JSON.stringify({ confirmation }) });
 export const downloadRegistrationCredentials = (token) => request(`/admin/registration/import/download/${encodeURIComponent(token)}`, { responseType: "blob" });
 export const downloadRegistrationSample = () => request("/admin/registration/sample.csv", { responseType: "blob" });
 export const downloadRegistrationDemo = () => request("/admin/registration/demo.csv", { responseType: "blob" });
@@ -123,6 +124,9 @@ export const closeWildcardSlotBidding = () => request("/admin/rounds/wildcard/bi
 export const getAdminSubmissions = () => request("/admin/submissions");
 export const openSubmissions = () => request("/admin/submissions/open", { method: "POST" });
 export const closeSubmissions = () => request("/admin/submissions/close", { method: "POST" });
+export const getJudging = () => request("/admin/judging");
+export const saveJudgingWinners = (payload) => request("/admin/judging/winners", { method: "PUT", body: JSON.stringify(payload) });
+export const publishJudgingResults = () => request("/admin/judging/publish", { method: "POST" });
 export const getAdminHealth = () => request("/health");
 export const runPreflight = () => request("/admin/preflight");
 export const getRecoveryState = () => request("/admin/recovery");

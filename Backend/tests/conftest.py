@@ -12,8 +12,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
 from app.core.security import get_password_hash
+from app.core.config import settings
 from app.models.models import User, EventConfig, GameConfig, ProblemStatement
-from app.api import auth, team, problem_statements, auction, wildcard, participant, admin, websockets, rounds, operations
+from app.services.demo_seed import provision_demo_accounts
+from app.api import auth, team, problem_statements, auction, wildcard, participant, admin, websockets, rounds, operations, judging
 
 # ---------------------------------------------------------------- helpers
 
@@ -89,6 +91,7 @@ def client(engine, session_factory):
     app.include_router(rounds.router)
     app.include_router(websockets.router)
     app.include_router(operations.router)
+    app.include_router(judging.router)
 
     def override_get_db():
         db = session_factory()
@@ -105,6 +108,18 @@ def admin_headers(client, db):
     _create_event_defaults(db)
     admin_user = _create_admin(db)
     response = client.post("/login", data={"username": admin_user.email, "password": "admin123"})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+@pytest.fixture()
+def display_headers(client, db):
+    _create_event_defaults(db)
+    provision_demo_accounts(db)
+    db.commit()
+    response = client.post(
+        "/leaderboard/login",
+        data={"username": settings.LEADERBOARD_DISPLAY_EMAIL, "password": settings.LEADERBOARD_DISPLAY_PASSWORD},
+    )
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 

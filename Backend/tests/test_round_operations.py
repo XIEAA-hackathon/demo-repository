@@ -17,10 +17,10 @@ def _team(db, name, email):
 
 def _problem_csv(prefix="Problem"):
     return (
-        "Problem Number,Problem Statement\n"
-        f"1,{prefix} one\n"
-        f"2,{prefix} two\n"
-        f"3,{prefix} three\n"
+        "Problem Number,Title,Description\n"
+        f"1,{prefix} one title,{prefix} one description\n"
+        f"2,{prefix} two title,{prefix} two description\n"
+        f"3,{prefix} three title,{prefix} three description\n"
     ).encode()
 
 
@@ -105,14 +105,14 @@ def test_wildcard_applications_and_separate_problem_pool(client, admin_headers, 
         files={"file": ("wildcard.csv", _problem_csv("Wildcard"), "text/csv")},
     )
     assert round_one.status_code == wildcard.status_code == 200
-    assert len([row for row in round_one.json()["problems"] if row["problem_statement"].startswith("Round")]) == 3
-    assert all(row["problem_statement"].startswith("Wildcard") for row in wildcard.json()["problems"])
+    assert len([row for row in round_one.json()["problems"] if row["title"].startswith("Round")]) == 3
+    assert all(row["description"].startswith("Wildcard") for row in wildcard.json()["problems"])
     wildcard_two = next(row for row in wildcard.json()["problems"] if row["problem_number"] == "2")
     selected = client.post(f"/admin/rounds/wildcard/problems/{wildcard_two['id']}/select", headers=admin_headers)
     assert selected.status_code == 409
 
 
-def test_round_leaderboards_do_not_mix_rounds(client, admin_headers, db):
+def test_round_leaderboards_do_not_mix_rounds(client, admin_headers, display_headers, db):
     alpha = _team(db, "Round Team", "round@board.test")
     beta = _team(db, "Wildcard Team", "wildcard@board.test")
     round_problem = ProblemStatement(ps_number="R1-1", title="R1", round=1)
@@ -126,21 +126,22 @@ def test_round_leaderboards_do_not_mix_rounds(client, admin_headers, db):
     ])
     db.commit()
 
-    round_board = client.get("/leaderboard/round-1").json()
-    wildcard_board = client.get("/leaderboard/wildcard").json()
+    round_board = client.get("/leaderboard/round-1", headers=display_headers).json()
+    wildcard_board = client.get("/leaderboard/wildcard", headers=display_headers).json()
     assert [row["team_name"] for row in round_board["rows"]] == ["Round Team"]
     assert [row["team_name"] for row in wildcard_board["rows"]] == ["Wildcard Team"]
 
 
 def test_problem_import_validation_and_admin_authorization(client, admin_headers):
-    duplicate = b"Problem No,Statement\n1,First\n1,Duplicate\n2,\n"
+    duplicate = b"Problem No,Problem Title,Problem Description\n1,First,First description\n1,Duplicate,Duplicate description\n2,,\n"
     response = client.post(
         "/admin/rounds/round-1/problems/import", headers=admin_headers,
         files={"file": ("invalid.csv", duplicate, "text/csv")},
     )
     assert response.status_code == 422
     assert any("duplicate problem number" in item for item in response.json()["detail"])
-    assert any("problem statement is required" in item for item in response.json()["detail"])
+    assert any("problem title is required" in item for item in response.json()["detail"])
+    assert any("problem description is required" in item for item in response.json()["detail"])
     assert client.post(
         "/admin/rounds/round-1/problems/import",
         files={"file": ("round.csv", _problem_csv(), "text/csv")},
@@ -151,7 +152,7 @@ def test_problem_import_validation_and_admin_authorization(client, admin_headers
     ).status_code == 400
 
 
-def test_round_one_live_board_uses_current_problem_and_reflects_bid_updates(client, admin_headers, db, login_headers_factory):
+def test_round_one_live_board_uses_current_problem_and_reflects_bid_updates(client, admin_headers, display_headers, db, login_headers_factory):
     team = _team(db, "Live Team", "live@board.test")
     headers = login_headers_factory("live@board.test")
     old_problem = ProblemStatement(ps_number="R1-10", title="Old", round=1, status="completed")
@@ -163,15 +164,32 @@ def test_round_one_live_board_uses_current_problem_and_reflects_bid_updates(clie
     game = db.query(GameConfig).first()
     game.state = "ROUND1_BIDDING"
     game.current_round = 1
+    db.query(EventConfig).first().bid_cooldown_seconds = 0
     db.commit()
 
     first = client.post("/bid", headers=headers, json={"ps_id": current_problem.id, "amount": 200})
     assert first.status_code == 200, first.text
-    board = client.get("/leaderboard/round-1")
+    board = client.get("/leaderboard/round-1", headers=display_headers)
     assert board.headers["cache-control"] == "no-store"
     assert board.json()["rows"][0]["value"] == 200
 
     updated = client.post("/bid", headers=headers, json={"ps_id": current_problem.id, "amount": 275})
     assert updated.status_code == 200, updated.text
-    refreshed = client.get("/leaderboard/round-1").json()
+    refreshed = client.get("/leaderboard/round-1", headers=display_headers).json()
     assert refreshed["rows"][0]["value"] == 275
+
+
+def test_problem_samples_round_trip_with_title_and_description(client, admin_headers):
+    for round_slug in ("round-1", "wildcard"):
+        sample = client.get(f"/admin/rounds/{round_slug}/problems/sample.csv", headers=admin_headers)
+        assert sample.status_code == 200
+        assert sample.text.startswith("Problem Number,Title,Description")
+        imported = client.post(
+            f"/admin/rounds/{round_slug}/problems/import",
+            headers=admin_headers,
+            files={"file": (f"{round_slug}.csv", sample.content, "text/csv")},
+        )
+        assert imported.status_code == 200, imported.text
+        first = next(row for row in imported.json()["problems"] if row["problem_number"] == "1")
+        assert first["title"] == "Adaptive Noise Cancellation"
+        assert first["description"].startswith("Develop an AI/ML-enabled")

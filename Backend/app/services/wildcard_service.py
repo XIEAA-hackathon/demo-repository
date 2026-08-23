@@ -108,6 +108,8 @@ def problem_payload(problem: ProblemStatement) -> dict:
     return {
         "id": problem.id,
         "problem_number": display_problem_number(problem),
+        "title": problem.title,
+        "description": problem.description,
         "problem_statement": problem.description or problem.title,
         "status": "SELECTED" if problem.status == "allocated" else "AVAILABLE",
     }

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -18,8 +20,13 @@ class Settings(BaseSettings):
     ADMIN_EMAIL: str = "admin@example.com"
     ADMIN_PASSWORD: str = ""
     ADMIN_NAME: str = "Event Admin"
-    SYSTEM_ACCOUNT_EMAILS: str = "admin.demo@bidtobuild.example.com,leader@demo.example.com"
-    SYSTEM_TEAM_NAMES: str = "Demo Team"
+    DEMO_ADMIN_EMAIL: str = "admin.demo@bidtobuild.example.com"
+    DEMO_ADMIN_PASSWORD: str = "DemoAdmin@123"
+    DEMO_LEADER_EMAIL: str = "leader@demo.example.com"
+    DEMO_LEADER_PASSWORD: str = "DemoLeader@123"
+    DEMO_TEAM_NAME: str = "Demo Team"
+    LEADERBOARD_DISPLAY_EMAIL: str = "leaderboard@bidtobuild.example.com"
+    LEADERBOARD_DISPLAY_PASSWORD: str = "Leaderboard@123"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -35,12 +42,5 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.APP_ENV.strip().lower() in {"production", "prod", "live"}
 
-    @property
-    def system_account_emails(self) -> list[str]:
-        return [value.strip().lower() for value in self.SYSTEM_ACCOUNT_EMAILS.split(",") if value.strip()]
-
-    @property
-    def system_team_names(self) -> list[str]:
-        return [value.strip() for value in self.SYSTEM_TEAM_NAMES.split(",") if value.strip()]
 
 settings = Settings()

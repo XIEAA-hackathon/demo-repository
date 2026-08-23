@@ -1,4 +1,6 @@
-from pydantic import BaseModel, EmailStr, Field
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import List, Optional, Any
 from datetime import datetime
 
@@ -29,8 +31,7 @@ class UserResponse(BaseModel):
     email: str
     role: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Team Schemas ---
 class MemberCreate(BaseModel):
@@ -44,8 +45,7 @@ class MemberResponse(BaseModel):
     id: int
     member_name: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class TeamResponse(BaseModel):
     id: int
@@ -56,8 +56,7 @@ class TeamResponse(BaseModel):
     is_approved: bool
     members: List[MemberResponse]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Problem Statement Schemas ---
 class PSCreate(BaseModel):
@@ -67,6 +66,13 @@ class PSCreate(BaseModel):
     round: int = 1
     status: str = "visible"
 
+class PSUpdate(BaseModel):
+    ps_number: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    round: Optional[int] = None
+    status: Optional[str] = None
+
 class PSResponse(BaseModel):
     id: int
     ps_number: str
@@ -75,13 +81,18 @@ class PSResponse(BaseModel):
     round: int
     status: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
+class AdminPSResponse(PSResponse):
+    allocated_team_id: Optional[int] = None
+    allocated_team_name: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Bid Schemas ---
 class BidCreate(BaseModel):
     ps_id: int
-    amount: int
+    amount: int = Field(..., gt=0, description="Bid amount must be strictly greater than 0")
 
 class BidResponse(BaseModel):
     id: int
@@ -91,8 +102,7 @@ class BidResponse(BaseModel):
     round: int
     timestamp: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Token Schemas ---
 class Token(BaseModel):
@@ -120,6 +130,7 @@ class EventConfigBase(BaseModel):
     wildcard_bid_increment: int = 1
     submissions_open: bool = False
     coding_duration_seconds: int = 10800
+    bid_cooldown_seconds: int = 5
     royalty_coins_per_point: int = 10
     royalty_max_points: int = 100
 
@@ -140,14 +151,14 @@ class EventConfigUpdate(BaseModel):
     wildcard_bid_increment: Optional[int] = None
     submissions_open: Optional[bool] = None
     coding_duration_seconds: Optional[int] = None
+    bid_cooldown_seconds: Optional[int] = None
     royalty_coins_per_point: Optional[int] = None
     royalty_max_points: Optional[int] = None
 
 class EventConfigResponse(EventConfigBase):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Participant Dashboard Schemas ---
 class DashboardUser(BaseModel):
@@ -216,10 +227,22 @@ class DashboardSubmission(BaseModel):
     submitted_by_user_id: Optional[int] = None
     submitted_by_name: Optional[str] = None
 
+
+class DashboardWinner(BaseModel):
+    team_id: int
+    team_name: str
+
+
+class DashboardFinalResults(BaseModel):
+    first_place: DashboardWinner
+    second_place: DashboardWinner
+    third_place: DashboardWinner
+
 class DashboardGameConfig(BaseModel):
     starting_coins: int
     round1_winner_count: int
     round1_minimum_bid: int
+    round1_bid_increment: int
     round1_preview_seconds: int
     round1_bid_seconds: int
     wildcard_slots: int
@@ -228,6 +251,7 @@ class DashboardGameConfig(BaseModel):
     wildcard_preview_seconds: int
     wildcard_bid_seconds: int
     coding_duration_seconds: int
+    bid_cooldown_seconds: int = 5
 
 class EventTiming(BaseModel):
     server_time: datetime
@@ -251,6 +275,8 @@ class ParticipantDashboardResponse(BaseModel):
     wildcardBidAmount: Optional[int] = None
     wildcard: Optional[DashboardWildcard]
     submission: Optional[DashboardSubmission]
+    finalResults: Optional[DashboardFinalResults] = None
+    bidCooldownRemainingSeconds: float = 0
     isLeader: bool
     gameConfig: DashboardGameConfig
     timing: EventTiming
@@ -282,6 +308,12 @@ class LeaderboardEntry(BaseModel):
 # --- Admin Config / State Schemas ---
 class EventStateUpdate(BaseModel):
     state: str
+
+
+class JudgingWinnersUpdate(BaseModel):
+    first_place_team_id: int
+    second_place_team_id: int
+    third_place_team_id: int
 
 class TimerAdjustment(BaseModel):
     seconds: int

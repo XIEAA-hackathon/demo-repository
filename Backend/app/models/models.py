@@ -10,7 +10,7 @@ class User(Base):
     name = Column(String, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
-    role = Column(String, nullable=False) # 'admin', 'leader' or 'member'
+    role = Column(String, nullable=False) # 'admin', 'leader', 'member', or 'display'
     team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
     session_id = Column(String, nullable=True) # Used to track the active session
     is_system_account = Column(Boolean, nullable=False, default=False)
@@ -162,6 +162,18 @@ class Submission(Base):
 
     team = relationship("Team", back_populates="submission")
 
+
+class FinalResult(Base):
+    __tablename__ = "final_results"
+
+    id = Column(Integer, primary_key=True)
+    first_place_team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    second_place_team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    third_place_team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    saved_at = Column(DateTime(timezone=True), nullable=True)
+    published_at = Column(DateTime(timezone=True), nullable=True)
+    result_status = Column(String, nullable=False, default="WAITING")
+
 class RegistrationImport(Base):
     __tablename__ = "registration_imports"
 
@@ -232,6 +244,9 @@ class EventConfig(Base):
 
     # Coding
     coding_duration_seconds = Column(Integer, default=10800)  # 3 hours
+
+    # Bid pacing
+    bid_cooldown_seconds = Column(Integer, default=5)
 
     # Royalty
     royalty_coins_per_point = Column(Integer, default=10)

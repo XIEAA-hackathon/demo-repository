@@ -1,13 +1,15 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, HTTPException
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.models.models import User, Team, Member, Bid, Wildcard, WildcardBid, Submission, GameConfig, ProblemStatement
+from app.models.models import User, Team, Member, Bid, Wildcard, WildcardBid, Submission, FinalResult, GameConfig, ProblemStatement
 from app.schemas.schemas import (
     ParticipantDashboardResponse, DashboardUser, DashboardTeam, DashboardMember,
     DashboardLeader, DashboardProblem, DashboardBid, DashboardWildcard,
-    DashboardSubmission, DashboardGameConfig, SubmissionCreate, SubmissionUpdate,
+    DashboardSubmission, DashboardFinalResults, DashboardWinner, DashboardGameConfig, SubmissionCreate, SubmissionUpdate,
     EventTiming, LeaderboardEntry,
 )
 from app.api.auth import get_current_active_admin, get_current_active_participant
@@ -19,6 +21,7 @@ from app.services.event_service import (
 from app.api.websockets import manager
 from app.services.wildcard_service import available_wildcard_problems, current_selection, ranked_wildcard_bids
 from app.services.activity_log import record_event
+from app.services.bid_cooldown import bid_cooldown_remaining
 
 router = APIRouter()
 
@@ -127,6 +130,37 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             submitted_by_name=submitter.name if submitter else None,
         )
 
+    final_results = None
+    result = db.query(FinalResult).filter(FinalResult.result_status == "PUBLISHED").first()
+    if result:
+        winner_ids = [result.first_place_team_id, result.second_place_team_id, result.third_place_team_id]
+        winning_teams = {row.id: row for row in db.query(Team).filter(Team.id.in_(winner_ids)).all()}
+        if all(team_id in winning_teams for team_id in winner_ids):
+            final_results = DashboardFinalResults(
+                first_place=DashboardWinner(team_id=result.first_place_team_id, team_name=winning_teams[result.first_place_team_id].team_name),
+                second_place=DashboardWinner(team_id=result.second_place_team_id, team_name=winning_teams[result.second_place_team_id].team_name),
+                third_place=DashboardWinner(team_id=result.third_place_team_id, team_name=winning_teams[result.third_place_team_id].team_name),
+            )
+
+    cooldown_remaining = 0.0
+    if config.state == "ROUND1_BIDDING":
+        round_control = get_or_create_round_control(db, "ROUND1")
+        cooldown_remaining = bid_cooldown_remaining(
+            db,
+            team.id,
+            event_config.bid_cooldown_seconds or 0,
+            round_type="ROUND1",
+            problem_id=round_control.current_problem_id,
+            round_number=config.current_round,
+        )
+    elif config.state == "WILDCARD_BIDDING":
+        cooldown_remaining = bid_cooldown_remaining(
+            db,
+            team.id,
+            event_config.bid_cooldown_seconds or 0,
+            round_type="WILDCARD",
+        )
+
     is_leader = current_user_is_team_leader(db, current_user, team)
 
     return ParticipantDashboardResponse(
@@ -147,11 +181,14 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         wildcardBidAmount=wildcard_bid.amount if wildcard_bid else None,
         wildcard=wildcard_out,
         submission=submission_out,
+        finalResults=final_results,
+        bidCooldownRemainingSeconds=cooldown_remaining,
         isLeader=is_leader,
         gameConfig=DashboardGameConfig(
             starting_coins=event_config.starting_coins,
             round1_winner_count=event_config.round1_winner_count,
             round1_minimum_bid=event_config.round1_minimum_bid,
+            round1_bid_increment=event_config.round1_bid_increment,
             round1_preview_seconds=event_config.round1_preview_seconds,
             round1_bid_seconds=event_config.round1_bid_seconds,
             wildcard_slots=event_config.wildcard_slots,
@@ -160,6 +197,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             wildcard_preview_seconds=event_config.wildcard_preview_seconds,
             wildcard_bid_seconds=event_config.wildcard_bid_seconds,
             coding_duration_seconds=event_config.coding_duration_seconds,
+            bid_cooldown_seconds=event_config.bid_cooldown_seconds,
         ),
         timing=EventTiming(**event_timing(config)),
         round1Assigned=round1_problem_obj is not None,
@@ -413,14 +451,18 @@ async def open_submissions(db: Session = Depends(get_db), current_user: User = D
 @router.post("/admin/submissions/close")
 async def close_submissions(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     event_config = get_or_create_event_config(db)
-    if not event_config.submissions_open:
-        return get_admin_submissions(db, None)
-    event_config.submissions_open = False
-    record_event(db, "submissions.closed", actor=current_user)
+    if event_config.submissions_open:
+        event_config.submissions_open = False
+        record_event(db, "submissions.closed", actor=current_user)
+    game = get_or_create_game_config(db)
+    if game.state == "SUBMISSION":
+        transition_event_state(db, "JUDGING_WAIT", commit=False)
+        record_event(db, "judging.started", actor=current_user)
     db.commit()
     await manager.broadcast_event("submission_updated", {"action": "submissions_closed"})
+    await manager.broadcast_event("event_state_changed", event_snapshot(db))
     return get_admin_submissions(db, None)
 
 def member_utcnow():
-    from datetime import datetime
-    return datetime.utcnow()
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)

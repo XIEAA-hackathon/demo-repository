@@ -1,4 +1,6 @@
-from datetime import datetime
+from __future__ import annotations
+
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -21,6 +23,7 @@ from app.services.event_service import (
     transition_event_state,
 )
 from app.services.activity_log import record_event
+from app.services.bid_cooldown import bid_cooldown_rejection, bid_cooldown_remaining
 from app.services.wildcard_service import (
     available_wildcard_problems,
     current_selection,
@@ -177,17 +180,25 @@ async def place_wildcard_bid(
     if amount < event_config.wildcard_starting_bid:
         raise HTTPException(status_code=400, detail=f"Wildcard bid must be at least {event_config.wildcard_starting_bid} coins.")
 
-    bid = db.query(WildcardBid).filter(WildcardBid.team_id == team.id).first()
+    team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
+    bid = db.query(WildcardBid).filter(WildcardBid.team_id == team.id).with_for_update().first()
     if bid and amount < bid.amount + event_config.wildcard_bid_increment:
         raise HTTPException(
             status_code=400,
             detail=f"New wildcard bid must be at least {event_config.wildcard_bid_increment} coin(s) higher than {bid.amount}.",
         )
+
+    cooldown = event_config.bid_cooldown_seconds or 0
+    remaining = bid_cooldown_remaining(db, team.id, cooldown, round_type="WILDCARD")
+    if remaining > 0:
+        return bid_cooldown_rejection(remaining)
+
+    now = datetime.now(timezone.utc)
     if bid:
         bid.amount = amount
-        bid.timestamp = datetime.utcnow()
+        bid.timestamp = now
     else:
-        db.add(WildcardBid(team_id=team.id, amount=amount, timestamp=datetime.utcnow()))
+        db.add(WildcardBid(team_id=team.id, amount=amount, timestamp=now))
     record_event(db, "wildcard.bid_placed", actor=current_user, entity_type="team", entity_id=team.id, metadata={"amount": amount})
     db.commit()
     await manager.broadcast_event("wildcard_bid_updated", {

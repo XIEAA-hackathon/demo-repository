@@ -114,7 +114,7 @@ def test_admin_can_reset_password_once_without_storing_plaintext(client, admin_h
     assert verify_password(updated["temporary_password"], account.password_hash)
 
 
-def test_teammate_is_spectator_and_leader_controls_all_mutations(client, admin_headers, db):
+def test_only_team_leader_controls_mutations(client, admin_headers, db):
     result = create_team(client, admin_headers)
     leader_credential, members = credentials_by_role(result)
     leader_headers = login(client, leader_credential["username"], leader_credential["temporary_password"])

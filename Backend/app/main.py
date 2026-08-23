@@ -7,11 +7,12 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations
+from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging
 from app.core.database import initialize_database, SessionLocal
 from app.models import models
 from app.core.config import settings
 from app.core.security import get_password_hash
+from app.services.demo_seed import provision_demo_accounts
 from app.services.event_service import get_or_create_event_config, get_or_create_game_config
 from app.services.event_service import sync_expired_event_state
 from app.api.websockets import manager
@@ -64,10 +65,7 @@ async def lifespan(app: FastAPI):
             db.add(admin_user)
         if admin_user:
             admin_user.is_system_account = True
-        for account in db.query(models.User).filter(models.User.email.in_(settings.system_account_emails)).all():
-            account.is_system_account = True
-        for team in db.query(models.Team).filter(models.Team.team_name.in_(settings.system_team_names)).all():
-            team.is_system_team = True
+        provision_demo_accounts(db)
         db.commit()
 
         # Ensure singleton EventConfig + GameConfig rows exist
@@ -104,6 +102,7 @@ app.include_router(admin.router, tags=["Admin"])
 app.include_router(rounds.router, tags=["Round Operations"])
 app.include_router(websockets.router, tags=["WebSockets"])
 app.include_router(operations.router, tags=["Event Operations"])
+app.include_router(judging.router, tags=["Judging and Public Results"])
 
 
 @app.exception_handler(SQLAlchemyError)

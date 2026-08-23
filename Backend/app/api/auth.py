@@ -53,6 +53,22 @@ def get_current_active_participant(current_user: User = Depends(get_current_user
         raise HTTPException(status_code=403, detail="Participant access required")
     return current_user
 
+
+def get_current_active_display(current_user: User = Depends(get_current_user)):
+    if current_user.role != "display":
+        raise HTTPException(status_code=403, detail="Leaderboard display access required")
+    return current_user
+
+
+def _issue_session(user: User, db: Session) -> dict:
+    import uuid
+    new_session_id = uuid.uuid4().hex
+    user.session_id = new_session_id
+    record_event(db, "auth.login", actor=user)
+    db.commit()
+    access_token = create_access_token(data={"sub": user.email, "role": user.role, "session_id": new_session_id})
+    return {"access_token": access_token, "token_type": "bearer"}
+
 @router.post("/register")
 def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends(get_db)):
     # Check if user exists
@@ -96,6 +112,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if user.role == "display":
+        raise HTTPException(status_code=403, detail="Use the dedicated leaderboard display login.")
     
     if user.role in ("leader", "member"):
         if user.team_id:
@@ -105,14 +123,20 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         if not team or not team.is_approved:
             raise HTTPException(status_code=403, detail="Team is not approved by admin yet.")
             
-    import uuid
-    new_session_id = uuid.uuid4().hex
-    user.session_id = new_session_id
-    record_event(db, "auth.login", actor=user)
-    db.commit()
-            
-    access_token = create_access_token(data={"sub": user.email, "role": user.role, "session_id": new_session_id})
-    return {"access_token": access_token, "token_type": "bearer"}
+    return _issue_session(user, db)
+
+
+@router.post("/leaderboard/login", response_model=Token)
+def leaderboard_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    login_id = form_data.username.strip().lower()
+    user = db.query(User).filter(func.lower(User.email) == login_id).first()
+    if not user or user.role != "display" or not verify_password(form_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect leaderboard login ID or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return _issue_session(user, db)
 
 @router.post("/logout")
 def logout(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

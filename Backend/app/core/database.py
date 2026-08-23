@@ -29,6 +29,11 @@ def initialize_database() -> None:
 
     try:
         Base.metadata.create_all(bind=engine)
+        event_columns = {column["name"] for column in inspect(engine).get_columns("event_config")}
+        if "bid_cooldown_seconds" not in event_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE event_config ADD COLUMN bid_cooldown_seconds INTEGER DEFAULT 5"))
+
         # ``create_all`` does not add columns to an existing SQLite database.
         # Keep this small migration-less project upgrade-safe for local users.
         if database_backend == "sqlite":
@@ -41,6 +46,10 @@ def initialize_database() -> None:
                 with engine.begin() as connection:
                     connection.execute(text("ALTER TABLE event_config ADD COLUMN wildcard_application_seconds INTEGER DEFAULT 60"))
             targeted_columns = {
+                "problem_statements": {
+                    "title": "VARCHAR(255)",
+                    "description": "TEXT",
+                },
                 "round_controls": {
                     "slot_count": "INTEGER",
                     "selection_pool_frozen_at": "DATETIME",
@@ -80,6 +89,20 @@ def initialize_database() -> None:
             # Preserve legacy assignments before ``ps_id`` becomes the final active
             # problem pointer. Existing Round 1 assignments are copied once.
             with engine.begin() as connection:
+                problem_columns = {column["name"] for column in inspect(engine).get_columns("problem_statements")}
+                if "problem_statement" in problem_columns:
+                    connection.execute(text(
+                        "UPDATE problem_statements SET description = problem_statement "
+                        "WHERE (description IS NULL OR TRIM(description) = '') AND problem_statement IS NOT NULL"
+                    ))
+                connection.execute(text(
+                    "UPDATE problem_statements SET title = 'Problem ' || ps_number "
+                    "WHERE title IS NULL OR TRIM(title) = ''"
+                ))
+                connection.execute(text(
+                    "UPDATE problem_statements SET description = title "
+                    "WHERE description IS NULL OR TRIM(description) = ''"
+                ))
                 connection.execute(text(
                     "UPDATE teams SET round1_problem_id = ps_id "
                     "WHERE round1_problem_id IS NULL AND ps_id IN "
@@ -105,7 +128,7 @@ def initialize_database() -> None:
             connection.execute(text("SELECT 1"))
         required_tables = {
             "users", "teams", "problem_statements", "round_controls", "game_config", "event_config",
-            "wildcards", "wildcard_selection_pool", "submissions", "event_activity_log",
+            "wildcards", "wildcard_selection_pool", "submissions", "final_results", "event_activity_log",
         }
         missing = required_tables.difference(inspect(engine).get_table_names())
         if missing:

@@ -5,16 +5,17 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 import secrets
 import tempfile
 import time
+from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.models.models import (
-    User, Team, Member, EventConfig, GameConfig,
+    User, Team, Member, EventConfig,
     RegistrationImport, RegistrationImportRow, WalletTransaction, ProblemStatement,
 )
 from app.schemas.schemas import (
@@ -38,6 +39,7 @@ from app.services.registration_import import (
     parse_registration_file, generate_credentials, _default_password, _is_valid_email,
     build_registration_credential_csv, build_registration_credential_workbook,
 )
+from app.services.reset_service import reset_event_and_imported_participants
 from app.services.activity_log import record_event
 from app.core.security import get_password_hash
 import json
@@ -144,6 +146,8 @@ async def update_event_config_admin(
         raise HTTPException(status_code=400, detail="wildcard_problem_count must be >= 0")
     if "coding_duration_seconds" in data and data["coding_duration_seconds"] < 0:
         raise HTTPException(status_code=400, detail="coding_duration_seconds must be >= 0")
+    if "bid_cooldown_seconds" in data and not 0 <= data["bid_cooldown_seconds"] <= 60:
+        raise HTTPException(status_code=400, detail="bid_cooldown_seconds must be between 0 and 60")
     if "royalty_coins_per_point" in data and data["royalty_coins_per_point"] < 0:
         raise HTTPException(status_code=400, detail="royalty_coins_per_point must be >= 0")
     if "royalty_max_points" in data and data["royalty_max_points"] < 0:
@@ -155,7 +159,74 @@ async def update_event_config_admin(
     db.commit()
     db.refresh(config)
     await manager.broadcast_event("config_updated", {"config": EventConfigResponse.model_validate(config).model_dump(mode="json")})
+    await manager.broadcast_event("event_state_changed", event_snapshot(db))
     return config
+
+
+async def _broadcast_bid_cooldown(db: Session, config: EventConfig) -> None:
+    serialized = EventConfigResponse.model_validate(config).model_dump(mode="json")
+    await manager.broadcast_event("config_updated", {"config": serialized})
+    await manager.broadcast_event("event_state_changed", event_snapshot(db))
+
+
+@router.put("/admin/cooldown")
+async def set_bid_cooldown(
+    seconds: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    if not 0 <= seconds <= 60:
+        raise HTTPException(status_code=400, detail="Cooldown seconds must be between 0 and 60")
+    config = get_or_create_event_config(db)
+    config.bid_cooldown_seconds = seconds
+    record_event(db, "event.bid_cooldown_updated", actor=current_user, metadata={"seconds": seconds})
+    db.commit()
+    db.refresh(config)
+    await _broadcast_bid_cooldown(db, config)
+    return {"message": f"Bid cooldown updated to {seconds} seconds", "bid_cooldown_seconds": seconds}
+
+
+@router.post("/admin/cooldown/add")
+async def add_bid_cooldown(
+    seconds: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    if seconds <= 0:
+        raise HTTPException(status_code=400, detail="Seconds to add must be > 0")
+    config = get_or_create_event_config(db)
+    new_seconds = (config.bid_cooldown_seconds or 0) + seconds
+    if new_seconds > 60:
+        raise HTTPException(status_code=400, detail="Cooldown seconds must be between 0 and 60")
+    config.bid_cooldown_seconds = new_seconds
+    record_event(db, "event.bid_cooldown_updated", actor=current_user, metadata={"seconds": config.bid_cooldown_seconds})
+    db.commit()
+    db.refresh(config)
+    await _broadcast_bid_cooldown(db, config)
+    return {
+        "message": f"Added {seconds} second(s) to bid cooldown. New cooldown: {config.bid_cooldown_seconds}s",
+        "bid_cooldown_seconds": config.bid_cooldown_seconds,
+    }
+
+
+@router.post("/admin/cooldown/reduce")
+async def reduce_bid_cooldown(
+    seconds: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    if seconds <= 0:
+        raise HTTPException(status_code=400, detail="Seconds to reduce must be > 0")
+    config = get_or_create_event_config(db)
+    config.bid_cooldown_seconds = max(0, (config.bid_cooldown_seconds or 0) - seconds)
+    record_event(db, "event.bid_cooldown_updated", actor=current_user, metadata={"seconds": config.bid_cooldown_seconds})
+    db.commit()
+    db.refresh(config)
+    await _broadcast_bid_cooldown(db, config)
+    return {
+        "message": f"Reduced bid cooldown by {seconds} second(s). New cooldown: {config.bid_cooldown_seconds}s",
+        "bid_cooldown_seconds": config.bid_cooldown_seconds,
+    }
 
 # ---------------------------------------------------------------- Event State
 
@@ -401,6 +472,15 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+def _validate_registration_filename(filename: str) -> None:
+    if not filename.lower().endswith((".csv", ".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only .csv, .xlsx, and .xlsm files are allowed.")
+
+
+class ParticipantCredentialResetRequest(BaseModel):
+    confirmation: str
+
+
 @router.post("/admin/registration/import")
 async def import_registrations(
     file: UploadFile = File(...),
@@ -409,6 +489,7 @@ async def import_registrations(
 ):
     """Import valid registration rows and prepare a one-time leader credential workbook."""
     filename = file.filename or "registrations.xlsx"
+    _validate_registration_filename(filename)
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
@@ -517,6 +598,9 @@ async def import_registrations(
                 "password": leader_password,
             }
 
+        if any(not leader_credentials[row["row_number"]]["password"] for row in valid_rows):
+            raise RuntimeError("A leader credential output value was not generated.")
+
         is_csv = filename.lower().endswith(".csv")
         output_bytes = (
             build_registration_credential_csv(content, leader_credentials)
@@ -564,6 +648,58 @@ async def import_registrations(
     return summary
 
 
+@router.post("/admin/registration/credentials/reset")
+async def reset_registration_credentials(
+    payload: ParticipantCredentialResetRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    if payload.confirmation != "RESET CREDENTIALS":
+        raise HTTPException(status_code=422, detail="Enter RESET CREDENTIALS to confirm participant credential reset.")
+
+    try:
+        event_deleted = reset_event_and_imported_participants(
+            db,
+            actor=current_user,
+            action="registration.credentials_reset",
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    credential_exports_removed = 0
+    if _EXPORT_DIRECTORY.exists():
+        for export_path in _EXPORT_DIRECTORY.glob("*"):
+            try:
+                export_path.unlink()
+                credential_exports_removed += 1
+            except OSError:
+                pass
+
+    deleted = {
+        **event_deleted,
+        "participant_accounts": event_deleted["participant_users"],
+        "member_records": event_deleted["team_members"],
+        "credential_exports": credential_exports_removed,
+    }
+    snapshot = event_snapshot(db)
+    await manager.broadcast_event("event_state_changed", snapshot)
+    await manager.broadcast_event("round_updated", {"action": "registration_credentials_reset", "event": snapshot})
+    await manager.broadcast_event("wildcard_updated", {"action": "registration_credentials_reset", "event": snapshot})
+    await manager.broadcast_event("team_updated", {"action": "registration_credentials_reset"})
+    return {
+        "status": "reset_complete",
+        "deleted": deleted,
+        "preserved": {
+            "system_accounts": db.query(User).filter(User.is_system_account.is_(True)).count(),
+            "system_teams": db.query(Team).filter(Team.is_system_team.is_(True)).count(),
+            "admin_accounts": db.query(User).filter(User.role == "admin").count(),
+        },
+        "event_state": "WAITING",
+    }
+
+
 @router.get("/admin/registration/import/download/{download_token}")
 def download_registration_credentials(
     download_token: str,
@@ -592,6 +728,7 @@ async def preview_registration_import(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin),
 ):
+    _validate_registration_filename(file.filename or "")
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large (max 10 MB).")
@@ -762,7 +899,7 @@ async def confirm_registration_import(
         team.is_approved = True
 
     import_record.status = "committed"
-    import_record.committed_at = datetime.utcnow()
+    import_record.committed_at = datetime.now(timezone.utc)
     record_event(
         db,
         "registration.legacy_import_committed",

@@ -60,8 +60,8 @@ def _login(client, email, password):
 
 
 def _problem_csv(count: int) -> bytes:
-    rows = ["Problem Number,Problem Statement"]
-    rows.extend(f"{index},Wildcard problem {index}" for index in range(1, count + 1))
+    rows = ["Problem Number,Title,Description"]
+    rows.extend(f"{index},Wildcard title {index},Wildcard description {index}" for index in range(1, count + 1))
     return ("\n".join(rows) + "\n").encode()
 
 
@@ -136,7 +136,7 @@ def _run_slot_flow(client, admin_headers, db, *, applicants: int, slots: int, pr
     late_import = client.post(
         "/admin/rounds/wildcard/problems/import",
         headers=admin_headers,
-        files={"file": ("late.csv", b"Problem Number,Problem Statement\n999,Late problem\n", "text/csv")},
+        files={"file": ("late.csv", b"Problem Number,Title,Description\n999,Late title,Late description\n", "text/csv")},
     )
     assert late_import.status_code == 200, late_import.text
     assert len(late_import.json()["selection"]["pool"]) == slots

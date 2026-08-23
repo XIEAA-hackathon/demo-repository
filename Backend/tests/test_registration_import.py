@@ -5,8 +5,10 @@ from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
 
+from app.core.config import settings
 from app.core.security import verify_password
-from app.models.models import Team, User, Member, WalletTransaction
+from app.models.models import Bid, GameConfig, Member, ProblemStatement, RoundControl, Team, User, WalletTransaction
+from app.services.demo_seed import provision_demo_accounts
 
 
 def test_import_preview_detects_teams_and_leaders(client, admin_headers, csv_bytes):
@@ -311,3 +313,150 @@ def test_demo_csv_is_importer_compatible_and_returns_csv_credentials(client, adm
     )
     repeated_rows = list(csv.reader(io.StringIO(repeated_download.content.decode("utf-8-sig"))))
     assert repeated_rows[1][-1] == "EXISTING ACCOUNT"
+
+
+def test_registration_credential_reset_allows_fresh_passwords_and_preserves_system_accounts(client, admin_headers, db):
+    provision_demo_accounts(db)
+    db.commit()
+    source = (
+        "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email\n"
+        "Team Alpha,Alpha Leader,alpha@example.com,Alpha Member,member.alpha@example.com\n"
+        "Team Beta,Beta Leader,beta@example.com,Beta Member,member.beta@example.com\n"
+    ).encode()
+
+    def import_and_download():
+        imported = client.post(
+            "/admin/registration/import",
+            headers=admin_headers,
+            files={"file": ("registrations.csv", source, "text/csv")},
+        )
+        assert imported.status_code == 200, imported.text
+        downloaded = client.get(
+            f"/admin/registration/import/download/{imported.json()['download_token']}",
+            headers=admin_headers,
+        )
+        assert downloaded.status_code == 200, downloaded.text
+        rows = list(csv.DictReader(io.StringIO(downloaded.content.decode("utf-8-sig"))))
+        return imported.json(), rows
+
+    first, first_rows = import_and_download()
+    assert first["leaders_created"] == 2
+    first_passwords = {row["Leader Login Email"]: row["Leader Password"] for row in first_rows}
+    assert all(password and password != "EXISTING ACCOUNT" for password in first_passwords.values())
+    for email, password in first_passwords.items():
+        account = db.query(User).filter(User.email == email).one()
+        assert account.password_hash != password
+        assert verify_password(password, account.password_hash)
+        assert client.post("/login", data={"username": email, "password": password}).status_code == 200
+
+    repeated, repeated_rows = import_and_download()
+    assert repeated["leaders_created"] == 0
+    assert repeated["existing_leaders"] == 2
+    assert all(row["Leader Password"] == "EXISTING ACCOUNT" for row in repeated_rows)
+    assert db.query(User).filter(User.email.in_(("alpha@example.com", "beta@example.com"))).count() == 2
+
+    alpha_headers = {
+        "Authorization": "Bearer " + client.post(
+            "/login",
+            data={"username": "alpha@example.com", "password": first_passwords["alpha@example.com"]},
+        ).json()["access_token"]
+    }
+    assert client.post(
+        "/admin/registration/credentials/reset",
+        json={"confirmation": "RESET CREDENTIALS"},
+    ).status_code == 401
+    assert client.post(
+        "/admin/registration/credentials/reset",
+        headers=admin_headers,
+        json={"confirmation": "wrong"},
+    ).status_code == 422
+    assert client.post(
+        "/admin/registration/credentials/reset",
+        headers=alpha_headers,
+        json={"confirmation": "RESET CREDENTIALS"},
+    ).status_code == 403
+
+    reset = client.post(
+        "/admin/registration/credentials/reset",
+        headers=admin_headers,
+        json={"confirmation": "RESET CREDENTIALS"},
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["deleted"]["participant_accounts"] == 2
+    assert reset.json()["deleted"]["teams"] == 2
+    assert db.query(User).filter(User.email.in_(("alpha@example.com", "beta@example.com"))).count() == 0
+    assert db.query(Team).filter(Team.team_name.in_(("Team Alpha", "Team Beta"))).count() == 0
+    assert client.post("/login", data={"username": settings.DEMO_LEADER_EMAIL, "password": settings.DEMO_LEADER_PASSWORD}).status_code == 200
+    assert client.post("/login", data={"username": settings.DEMO_ADMIN_EMAIL, "password": settings.DEMO_ADMIN_PASSWORD}).status_code == 200
+    assert client.post(
+        "/leaderboard/login",
+        data={"username": settings.LEADERBOARD_DISPLAY_EMAIL, "password": settings.LEADERBOARD_DISPLAY_PASSWORD},
+    ).status_code == 200
+
+    after_reset, after_reset_rows = import_and_download()
+    assert after_reset["leaders_created"] == 2
+    new_passwords = {row["Leader Login Email"]: row["Leader Password"] for row in after_reset_rows}
+    assert all(password and password != "EXISTING ACCOUNT" for password in new_passwords.values())
+    assert new_passwords != first_passwords
+    for email, password in new_passwords.items():
+        assert client.post("/login", data={"username": email, "password": password}).status_code == 200
+
+
+def test_registration_credential_reset_clears_active_event_data(client, admin_headers, db):
+    provision_demo_accounts(db)
+    db.commit()
+    source = (
+        "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email\n"
+        "Team Alpha,Alpha Leader,alpha@example.com,Alpha Member,member.alpha@example.com\n"
+    ).encode()
+    imported = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("registrations.csv", source, "text/csv")},
+    )
+    assert imported.status_code == 200, imported.text
+    team = db.query(Team).filter(Team.team_name == "Team Alpha").one()
+    problem = ProblemStatement(ps_number="RESET-PS", title="Active", description="Active", round=1)
+    db.add(problem)
+    db.flush()
+    db.add(Bid(team_id=team.id, ps_id=problem.id, amount=100, round=1))
+    game = db.query(GameConfig).first()
+    game.state = "ROUND1_BIDDING"
+    db.commit()
+
+    reset = client.post(
+        "/admin/registration/credentials/reset",
+        headers=admin_headers,
+        json={"confirmation": "RESET CREDENTIALS"},
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["event_state"] == "WAITING"
+    assert db.query(User).filter(User.email == "alpha@example.com").count() == 0
+    assert db.query(Team).filter(Team.team_name == "Team Alpha").count() == 0
+    assert db.query(Bid).count() == 0
+    assert db.query(ProblemStatement).count() == 0
+    db.expire_all()
+    assert db.query(GameConfig).first().state == "WAITING"
+    controls = {control.round_type: control for control in db.query(RoundControl).all()}
+    assert controls["ROUND1"].status == "IDLE"
+    assert controls["WILDCARD"].status == "NOT_STARTED"
+    assert client.post("/login", data={"username": settings.DEMO_LEADER_EMAIL, "password": settings.DEMO_LEADER_PASSWORD}).status_code == 200
+    assert client.post("/login", data={"username": settings.DEMO_ADMIN_EMAIL, "password": settings.DEMO_ADMIN_PASSWORD}).status_code == 200
+
+    imported_again = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("registrations.csv", source, "text/csv")},
+    )
+    assert imported_again.status_code == 200, imported_again.text
+    assert imported_again.json()["leaders_created"] == 1
+    credentials = client.get(
+        f"/admin/registration/import/download/{imported_again.json()['download_token']}",
+        headers=admin_headers,
+    )
+    row = next(csv.DictReader(io.StringIO(credentials.content.decode("utf-8-sig"))))
+    assert row["Leader Password"] not in {"", "EXISTING ACCOUNT"}
+    assert client.post(
+        "/login",
+        data={"username": row["Leader Login Email"], "password": row["Leader Password"]},
+    ).status_code == 200

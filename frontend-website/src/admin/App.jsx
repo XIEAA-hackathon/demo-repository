@@ -5,11 +5,13 @@ import {
   getAdminConfig, getAdminState, getBidHistory, getLeaderboard,
   getProblemStatements, getTeamCredentials, getTeams, hasToken, logout, pauseTimer,
   importRegistrations, removeTime, resetParticipantPassword, resumeTimer, setProblemVisibility,
+  resetRegistrationCredentials,
   updateAdminConfig, createTeamCredentials, getRoundControl, importRoundProblems, downloadRoundProblemSample,
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
   endRoundOne, openWildcardApplications, closeWildcardApplications,
   confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding,
   getAdminSubmissions, openSubmissions, closeSubmissions, ApiError,
+  getJudging, saveJudgingWinners, publishJudgingResults,
   getAdminHealth, runPreflight, getRecoveryState, resumeRecoveryTimer, reloadRecoveryState,
   resyncClients, retryCurrentTransition, getActivityLog, developmentReset, resetEventData,
 } from "./services/api";
@@ -114,7 +116,7 @@ function AdminApplication({ onLogout }) {
         <div className="sidebar-brand"><div className="sidebar-logo">♠</div><div><strong>Bid to Build</strong><span>Admin control</span></div></div>
         <nav className="sidebar-nav">
           <span className="sidebar-section-title">Event</span>
-          {[["dashboard", "Overview", "⌂"], ["round1", "Round 1", "1"], ["wildcard", "Wildcard", "W"], ["submission", "Submission", "S"], ["recovery", "Recovery", "R"]].map(([id, label, icon]) => (
+          {[["dashboard", "Overview", "⌂"], ["round1", "Round 1", "1"], ["wildcard", "Wildcard", "W"], ["submission", "Submission", "S"], ["judging", "Judging", "J"], ["recovery", "Recovery", "R"]].map(([id, label, icon]) => (
             <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
           ))}
           <span className="sidebar-section-title sidebar-section-title--management">Management</span>
@@ -134,6 +136,7 @@ function AdminApplication({ onLogout }) {
           {page === "round1" && <RoundControlPage round="round-1" state={state} config={config} remaining={remaining} onConfig={setConfig} />}
           {page === "wildcard" && <WildcardControlPage state={state} config={config} remaining={remaining} onConfig={setConfig} />}
           {page === "submission" && <SubmissionAdminPage />}
+          {page === "judging" && <JudgingAdminPage onGlobalSync={load} />}
           {page === "teams" && <Teams teams={teams} onAction={action} />}
           {page === "problems" && <Problems problems={problems} state={state} onAction={action} />}
           {page === "imports" && <RegistrationImport onAction={action} />}
@@ -187,7 +190,7 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   return <section className="round-console">
     <header className="round-console__header">
       <div><span className="eyebrow">EVENT / {isWildcard ? "WILDCARD" : "ROUND 1"}</span><h2>{isWildcard ? "Wildcard" : "Round 1"}</h2><p>{isWildcard ? "Manage applications, wildcard problems, and bidding." : "Manage problem preview, bidding, and team assignments."}</p></div>
-      <a className="round-leaderboard-button" href={`/leaderboard/${round}`} target="_blank" rel="noreferrer">Open round leaderboard ↗</a>
+      <a className="round-leaderboard-button" href="/leaderboard" target="_blank" rel="noreferrer">Open public leaderboard ↗</a>
     </header>
 
     {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
@@ -205,7 +208,7 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
     <div className="round-console__live">
       <article className="round-current-problem">
         <span className="eyebrow">CURRENT PROBLEM</span>
-        {current ? <><strong className="round-problem-number">Problem #{current.problem_number}</strong><p>{current.problem_statement}</p><span className={`round-status round-status--${data.status.toLowerCase()}`}>{data.status}</span></> : <div className="round-empty"><strong>No problem selected</strong><p>Choose any available problem from the bank below.</p></div>}
+        {current ? <><strong className="round-problem-number">Problem #{current.problem_number}</strong><h3 className="round-current-title">{current.title}</h3><p className="round-current-description">{current.description}</p><span className={`round-status round-status--${data.status.toLowerCase()}`}>{data.status}</span></> : <div className="round-empty"><strong>No problem selected</strong><p>Choose any available problem from the bank below.</p></div>}
       </article>
       <article className="round-live-controls">
         <div><span className="eyebrow">LIVE CONTROLS</span><h3>{data.status === "PREVIEW" ? "Problem preview" : data.status === "BIDDING" ? `${isWildcard ? "Wildcard" : "Round 1"} — live bidding` : "Ready"}</h3></div>
@@ -221,19 +224,20 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
       </article>
     </div>
 
-    <section className="round-problem-bank">
+    <section className={`round-problem-bank ${!isWildcard ? "round-problem-bank--round1" : ""}`}>
       <div className="round-section-heading"><div><span className="eyebrow">{isWildcard ? "WILDCARD" : "ROUND 1"} PROBLEMS</span><h3>Problem bank</h3></div><div className="round-inline-actions"><label className="secondary-button round-upload">Upload XLSX / CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-button" onClick={() => void downloadSample()}>Download sample CSV</button>{file && <button className="primary-button" disabled={working} onClick={() => run(() => importRoundProblems(round, file), `${file.name} imported.`)}>Import {file.name}</button>}</div></div>
-      <div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><p>{problem.problem_statement}</p><span>{problem.status}</span>{problem.status === "AVAILABLE" && !data.ended && !current && <button className="secondary-button" onClick={() => run(() => selectRoundProblem(round, problem.id), `Problem #${problem.problem_number} selected.`)}>Select</button>}</article>) : <div className="round-empty"><strong>No problems imported</strong><p>Upload the organizer&apos;s XLSX or CSV problem bank.</p></div>}</div>
+      <div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><div className="round-problem-copy"><b>{problem.title}</b><p title={problem.description}>{problem.description}</p></div><span>{problem.status}</span>{problem.status === "AVAILABLE" && !data.ended && !current && <button className="secondary-button" onClick={() => run(() => selectRoundProblem(round, problem.id), `Problem #${problem.problem_number} selected.`)}>Select</button>}</article>) : <div className="round-empty"><strong>No problems imported</strong><p>Upload the organizer&apos;s XLSX or CSV problem bank.</p></div>}</div>
     </section>
 
-    <section className="round-settings">
+    <section className={`round-settings ${!isWildcard ? "round-settings--round1" : ""}`}>
       <div><span className="eyebrow">SETTINGS</span><h3>{isWildcard ? "Wildcard configuration" : "Round settings"}</h3><p>Change durations before the corresponding timer starts.</p></div>
       {config && <div className="round-settings__fields">
         {isWildcard && <label>Application duration<input type="number" min="1" value={config.wildcard_application_seconds} onChange={(event) => onConfig({ ...config, wildcard_application_seconds: Number(event.target.value) })} /></label>}
         <label>Preview duration<input type="number" min="1" value={config[isWildcard ? "wildcard_preview_seconds" : "round1_preview_seconds"]} onChange={(event) => onConfig({ ...config, [isWildcard ? "wildcard_preview_seconds" : "round1_preview_seconds"]: Number(event.target.value) })} /></label>
         <label>Bidding duration<input type="number" min="1" value={config[isWildcard ? "wildcard_bid_seconds" : "round1_bid_seconds"]} onChange={(event) => onConfig({ ...config, [isWildcard ? "wildcard_bid_seconds" : "round1_bid_seconds"]: Number(event.target.value) })} /></label>
+        {!isWildcard && <label>Participant bid cooldown<input type="number" min="0" max="60" value={config.bid_cooldown_seconds} onChange={(event) => onConfig({ ...config, bid_cooldown_seconds: Number(event.target.value) })} /></label>}
         {isWildcard && <label>Wildcard slots<input type="number" min="1" value={config.wildcard_slots} onChange={(event) => onConfig({ ...config, wildcard_slots: Number(event.target.value) })} /></label>}
-        <button className="secondary-button" onClick={saveSettings}>Save settings</button>
+        <button className={`${isWildcard ? "secondary-button" : "primary-button"} round-settings__save`} disabled={working} onClick={saveSettings}>{working ? "Saving…" : "Save settings"}</button>
       </div>}
       {!isWildcard && <button className="danger-link round-end" disabled={data.ended || working} onClick={() => window.confirm("End Round 1? No further Round 1 selection or bidding will be allowed.") && run(endRoundOne, "Round 1 ended. Wildcard can now be opened.")}>{data.ended ? "Round 1 ended" : "End Round 1"}</button>}
     </section>
@@ -288,7 +292,7 @@ function WildcardControlPage({ state, config, remaining, onConfig }) {
   }[data.status] || data.status;
 
   return <section className="round-console wildcard-console">
-    <header className="round-console__header"><div><span className="eyebrow">EVENT / WILDCARD</span><h2>Wildcard</h2><p>Applications, one slot auction, then ranked problem selection.</p></div><a className="round-leaderboard-button" href="/leaderboard/wildcard" target="_blank" rel="noreferrer">Open public leaderboard ↗</a></header>
+    <header className="round-console__header"><div><span className="eyebrow">EVENT / WILDCARD</span><h2>Wildcard</h2><p>Applications, one slot auction, then ranked problem selection.</p></div><a className="round-leaderboard-button" href="/leaderboard" target="_blank" rel="noreferrer">Open public leaderboard ↗</a></header>
     {error && <div className="global-error" role="alert"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
     {notice && <div className="admin-notice">{notice}</div>}
     <section className="wildcard-stage-banner"><div><span className="eyebrow">CURRENT STATUS</span><h3>{stageCopy}</h3></div><strong>{data.status.replaceAll("_", " ")}</strong></section>
@@ -309,7 +313,7 @@ function WildcardControlPage({ state, config, remaining, onConfig }) {
 
     {tab === "selection" && <div className="wildcard-panel-grid">
       <section className="wildcard-stage-card wildcard-selection-progress"><div className="round-section-heading"><div><span className="eyebrow">SEQUENTIAL SELECTION</span><h3>{data.status === "COMPLETE" ? "All problems selected" : data.selection.current_team ? `${data.selection.current_team} is choosing` : "Waiting for selection"}</h3></div>{data.selection.current_rank && <span className="wildcard-slot-badge">RANK #{data.selection.current_rank}</span>}</div>{data.selection.pool_frozen && <div className="active-pool"><strong>Active pool · {data.selection.pool.length} frozen problems</strong><span>{data.selection.pool.map((entry) => `#${entry.problem.problem_number}${entry.selected ? " selected" : ""}`).join(" · ")}</span><small>Later uploads and refreshes cannot change this selection pool.</small></div>}<div className="wildcard-qualification-list">{data.selection.qualifications.length ? data.selection.qualifications.map((row) => <article key={row.team_id}><strong>#{row.rank}</strong><div><b>{row.team_name}</b><span>{row.problem ? `Problem #${row.problem.problem_number}` : `${row.winning_bid} coin winning bid`}</span></div><em className={`selection-status selection-status--${row.status.toLowerCase()}`}>{row.status}</em></article>) : <div className="round-empty"><strong>No qualified teams</strong><p>Close slot bidding to determine the selection order.</p></div>}</div></section>
-      <section className="round-problem-bank wildcard-stage-card"><div className="round-section-heading"><div><span className="eyebrow">WILDCARD PROBLEMS</span><h3>Separate problem bank</h3></div><div className="round-inline-actions"><label className="secondary-button round-upload">Upload XLSX / CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-button" onClick={() => void downloadSample()}>Download sample CSV</button>{file && <button className="primary-button" disabled={working} onClick={() => run(() => importRoundProblems("wildcard", file), `${file.name} imported.`)}>Import {file.name}</button>}</div></div><div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><p>{problem.problem_statement}</p><span>{problem.status}</span></article>) : <div className="round-empty"><strong>No wildcard problems imported</strong><p>Upload XLSX or CSV before confirming slots.</p></div>}</div></section>
+      <section className="round-problem-bank wildcard-stage-card"><div className="round-section-heading"><div><span className="eyebrow">WILDCARD PROBLEMS</span><h3>Separate problem bank</h3></div><div className="round-inline-actions"><label className="secondary-button round-upload">Upload XLSX / CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-button" onClick={() => void downloadSample()}>Download sample CSV</button>{file && <button className="primary-button" disabled={working} onClick={() => run(() => importRoundProblems("wildcard", file), `${file.name} imported.`)}>Import {file.name}</button>}</div></div><div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><div className="round-problem-copy"><b>{problem.title}</b><p title={problem.description}>{problem.description}</p></div><span>{problem.status}</span></article>) : <div className="round-empty"><strong>No wildcard problems imported</strong><p>Upload XLSX or CSV before confirming slots.</p></div>}</div></section>
     </div>}
   </section>;
 }
@@ -326,6 +330,74 @@ function SubmissionAdminPage() {
   const rows = (data?.rows || []).filter((row) => row.team_name.toLowerCase().includes(query.trim().toLowerCase()));
   if (!data) return <div className="loading-screen"><div className="loader" />Loading submissions…</div>;
   return <section className="submission-admin"><header className="submission-admin__header"><div><span className="eyebrow">EVENT / SUBMISSION</span><h2>Submission monitor</h2><p>Open or close the window and track each team’s final GitHub repository.</p></div><button className={data.open ? "danger-button" : "primary-button"} disabled={working} onClick={() => run(data.open ? closeSubmissions : openSubmissions, data.open ? "Submissions closed." : "Submissions opened.")}>{data.open ? "Close submissions" : "Open submissions"}</button></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}<div className="submission-stats"><Stat label="WINDOW" value={data.open ? "OPEN" : "CLOSED"} /><Stat label="TOTAL TEAMS" value={data.total} /><Stat label="SUBMITTED" value={data.submitted} /><Stat label="PENDING" value={data.pending} /></div><div className="submission-table-panel"><div className="submission-toolbar"><div><h3>Team repositories</h3><span>{data.open ? "Live monitoring every three seconds." : "Closed window checks every thirty seconds."}</span></div><input aria-label="Search teams" placeholder="Search team…" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>FINAL PROBLEM</th><th>STATUS</th><th>GITHUB URL</th><th>SUBMITTED BY</th><th>UPDATED</th></tr></thead><tbody>{rows.map((row) => <tr key={row.team_id}><td><strong>{row.team_name}</strong></td><td>{row.final_problem ? `#${row.final_problem.ps_number} · ${row.final_problem.title}` : "—"}</td><td><span className={`table-status ${row.status === "SUBMITTED" ? "active" : "pending"}`}>{row.status}</span></td><td>{row.github_url ? <a href={row.github_url} target="_blank" rel="noreferrer">Open repository ↗</a> : "—"}</td><td>{row.submitted_by || "—"}</td><td>{row.updated_at || row.submitted_at ? new Date(row.updated_at || row.submitted_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div></div></section>;
+}
+
+function SearchableTeamSelector({ label, teams, value, onChange, disabled }) {
+  const selected = teams.find((team) => team.team_id === value);
+  const [query, setQuery] = useState(selected?.team_name || "");
+  useEffect(() => { setQuery(selected?.team_name || ""); }, [selected?.team_name]);
+  const listId = `judging-${label.toLowerCase().replaceAll(" ", "-")}`;
+  const update = (next) => {
+    setQuery(next);
+    const exact = teams.find((team) => team.team_name.toLowerCase() === next.trim().toLowerCase());
+    onChange(exact?.team_id || null);
+  };
+  return <label className="judging-selector"><span>{label}</span><input type="search" list={listId} value={query} onChange={(event) => update(event.target.value)} placeholder="Search registered teams…" autoComplete="off" disabled={disabled} aria-invalid={Boolean(query && !value)} /><datalist id={listId}>{teams.map((team) => <option key={team.team_id} value={team.team_name} />)}</datalist>{query && !value && <small>Select an exact registered team from the list.</small>}</label>;
+}
+
+function JudgingAdminPage({ onGlobalSync }) {
+  const [data, setData] = useState(null);
+  const [winners, setWinners] = useState({ first: null, second: null, third: null });
+  const [working, setWorking] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const load = useCallback(async () => {
+    try {
+      const result = await getJudging();
+      setData(result);
+      setWinners({ first: result.first_place?.team_id || null, second: result.second_place?.team_id || null, third: result.third_place?.team_id || null });
+      setError("");
+    } catch (cause) { setError(cause.message || "Judging data could not be loaded."); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  if (!data) return <div className="loading-screen"><div className="loader" />Loading judging…</div>;
+  const selectedIds = [winners.first, winners.second, winners.third];
+  const complete = selectedIds.every(Boolean);
+  const unique = complete && new Set(selectedIds).size === 3;
+  const published = data.result_status === "PUBLISHED";
+  const savedIds = [data.first_place?.team_id, data.second_place?.team_id, data.third_place?.team_id];
+  const selectionsMatchSaved = complete && selectedIds.every((id, index) => id === savedIds[index]);
+  const teamName = (id) => data.teams.find((team) => team.team_id === id)?.team_name || "—";
+  const save = async () => {
+    if (!complete || !unique) { setError(complete ? "Each place must use a different registered team." : "Select a registered team for all three places."); return; }
+    setWorking(true); setError(""); setNotice("");
+    try {
+      const result = await saveJudgingWinners({ first_place_team_id: winners.first, second_place_team_id: winners.second, third_place_team_id: winners.third });
+      setData((current) => ({ ...current, ...result }));
+      setNotice("Winners saved privately. Participants and the public display still show judging in progress.");
+    } catch (cause) { setError(cause.message || "Winners could not be saved."); }
+    finally { setWorking(false); }
+  };
+  const publish = async () => {
+    setWorking(true); setError(""); setNotice("");
+    try {
+      const result = await publishJudgingResults();
+      setData((current) => ({ ...current, ...result }));
+      setConfirming(false);
+      setNotice("Final results are now visible to participants and the public leaderboard.");
+      await onGlobalSync();
+    } catch (cause) { setError(cause.message || "Results could not be displayed."); }
+    finally { setWorking(false); }
+  };
+  return <section className="judging-admin">
+    <header className="judging-admin__header"><div><h2>Judging</h2><p>Judging is currently being conducted offline.</p></div><a className="round-leaderboard-button" href="/leaderboard" target="_blank" rel="noreferrer">Open public leaderboard ↗</a></header>
+    {error && <div className="global-error" role="alert">{error}</div>}
+    {notice && <div className="admin-notice" role="status">{notice}</div>}
+    <section className="judging-status"><span>Status</span><strong>{published ? "RESULTS PUBLISHED" : "WAITING FOR JUDGING"}</strong></section>
+    <section className="judging-winners"><div><h3>Final winners</h3><p>Save keeps these selections private. Display Results publishes them to every participant and the TV route.</p></div><div className="judging-selector-grid"><SearchableTeamSelector label="1st Place" teams={data.teams} value={winners.first} onChange={(first) => setWinners((current) => ({ ...current, first }))} disabled={published} /><SearchableTeamSelector label="2nd Place" teams={data.teams} value={winners.second} onChange={(second) => setWinners((current) => ({ ...current, second }))} disabled={published} /><SearchableTeamSelector label="3rd Place" teams={data.teams} value={winners.third} onChange={(third) => setWinners((current) => ({ ...current, third }))} disabled={published} /></div><div className="judging-actions"><button className="secondary-button" disabled={working || published || !complete || !unique} onClick={() => void save()}>{working ? "Saving…" : "Save winners"}</button><button className="primary-button" disabled={working || published || !data.saved_at || !selectionsMatchSaved} onClick={() => setConfirming(true)}>{published ? "Results displayed" : "Display results"}</button></div></section>
+    {confirming && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="publish-results-title"><h3 id="publish-results-title">Display final results?</h3><p>This immediately reveals the winners to all participants and the public leaderboard.</p><ol><li><span>1st</span><strong>{teamName(winners.first)}</strong></li><li><span>2nd</span><strong>{teamName(winners.second)}</strong></li><li><span>3rd</span><strong>{teamName(winners.third)}</strong></li></ol><div><button className="secondary-button" disabled={working} onClick={() => setConfirming(false)}>Cancel</button><button className="primary-button" disabled={working} onClick={() => void publish()}>{working ? "Displaying…" : "Display results"}</button></div></section></div>}
+  </section>;
 }
 
 function RecoveryPage({ onGlobalSync, onNavigate }) {
@@ -453,6 +525,9 @@ function RegistrationImport() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
+  const [resetConfirmation, setResetConfirmation] = useState("");
+  const [resetResult, setResetResult] = useState(null);
+  const [resetError, setResetError] = useState("");
   const runImport = async () => {
     if (!file) return;
     setWorking(true); setError(""); setResult(null);
@@ -489,6 +564,15 @@ function RegistrationImport() {
       setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (cause) { setError(cause.message || "Demo CSV download failed."); }
   };
+  const resetCredentials = async () => {
+    setWorking(true); setResetError(""); setResetResult(null);
+    try {
+      const response = await resetRegistrationCredentials(resetConfirmation);
+      setResetResult(response);
+      setResetConfirmation(""); setFile(null); setResult(null);
+    } catch (cause) { setResetError(cause.message || "Participant credentials could not be reset."); }
+    finally { setWorking(false); }
+  };
   const summaryRows = result ? [
     ["Teams processed", result.teams_processed], ["Teams created", result.teams_created],
     ["Teams updated", result.teams_updated], ["Leader accounts", result.leaders_created],
@@ -522,6 +606,13 @@ function RegistrationImport() {
         </> : <div className="registration-result-empty"><span>Import results pending</span><p>Select a registration sheet to begin.</p></div>}
       </section>
     </div>
+    <section className="participant-credential-reset">
+      <div><strong>Participant credential reset</strong><h3>Reset imported participant credentials</h3><p>Remove imported participant accounts and allow registration to be imported again with new generated passwords.</p><p>Permanent Admin and Demo Leader accounts will remain.</p></div>
+      <label>Type RESET CREDENTIALS<input value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value)} autoComplete="off" /></label>
+      <button className="danger-button" disabled={working || resetConfirmation !== "RESET CREDENTIALS"} onClick={() => window.confirm("Reset all imported participant credentials? Use Event Data Reset instead if teams have active event data.") && void resetCredentials()}>Reset participant credentials</button>
+      {resetError && <p className="participant-credential-reset__error" role="alert">{resetError}</p>}
+      {resetResult && <div className="participant-credential-reset__result" role="status"><strong>Credential reset complete</strong><span>Imported participant accounts: {resetResult.deleted.participant_accounts} removed · Permanent system accounts: {resetResult.preserved.system_accounts} preserved</span></div>}
+    </section>
   </section>;
 }
 

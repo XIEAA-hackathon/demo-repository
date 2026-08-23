@@ -1,5 +1,5 @@
 from app.core.security import get_password_hash
-from app.models.models import ProblemStatement, RoundControl, Submission, Team, User
+from app.models.models import GameConfig, ProblemStatement, RoundControl, Submission, Team, User
 
 
 def _team(db, name, email, problem):
@@ -62,6 +62,8 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
     assert rows["Team Beta"]["status"] == "PENDING"
 
     assert client.post("/admin/submissions/close", headers=admin_headers).status_code == 200
+    db.expire_all()
+    assert db.query(GameConfig).first().state == "JUDGING_WAIT"
     assert client.put(
         "/submissions/me", headers=alpha_headers,
         json={"repository_url": "https://github.com/team-alpha/updated"},

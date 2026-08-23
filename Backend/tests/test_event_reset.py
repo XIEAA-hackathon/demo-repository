@@ -1,10 +1,17 @@
 import csv
 import io
+from datetime import datetime, timedelta, timezone
 
+import pytest
+
+from app.api import operations
 from app.core.security import get_password_hash
+from app.core.config import settings
 from app.models.models import (
     Bid,
     EventActivityLog,
+    EventConfig,
+    ExchangeRequest,
     GameConfig,
     Member,
     ProblemStatement,
@@ -15,7 +22,9 @@ from app.models.models import (
     Wildcard,
     WildcardBid,
     WildcardSelectionPool,
+    WalletTransaction,
 )
+from app.services.demo_seed import provision_demo_accounts
 
 
 def _team(db, name, email, *, system=False):
@@ -49,8 +58,103 @@ def _login(client, email, password="temp-pass"):
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+def _display_login(client):
+    response = client.post(
+        "/leaderboard/login",
+        data={"username": settings.LEADERBOARD_DISPLAY_EMAIL, "password": settings.LEADERBOARD_DISPLAY_PASSWORD},
+    )
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+@pytest.mark.parametrize("active_state", ["ROUND1_BIDDING", "WILDCARD_BIDDING", "SUBMISSION", "RESULTS"])
+def test_event_reset_is_allowed_from_every_active_stage(client, admin_headers, db, active_state):
+    _leader, team = _team(db, f"{active_state} Team", f"{active_state.lower()}@reset.test")
+    problem = ProblemStatement(ps_number=f"{active_state}-PS", title="Active", description="Active", round=1, status="current")
+    db.add(problem)
+    db.flush()
+    team.ps_id = problem.id
+    team.round1_problem_id = problem.id
+    db.add(Bid(team_id=team.id, ps_id=problem.id, amount=100, round=1))
+    db.add(Submission(team_id=team.id, problem_id=problem.id, repository_url="https://github.com/example/active-reset"))
+
+    game = db.query(GameConfig).first()
+    game.state = active_state
+    game.current_round = 2 if active_state == "WILDCARD_BIDDING" else 1
+    game.phase_started_at = datetime.now(timezone.utc)
+    game.auction_timer_end = datetime.now(timezone.utc) + timedelta(minutes=5)
+    game.timer_paused = True
+    game.timer_paused_remaining_seconds = 120
+    event = db.query(EventConfig).first()
+    event.submissions_open = active_state == "SUBMISSION"
+    db.commit()
+
+    recovery = client.get("/admin/recovery", headers=admin_headers)
+    assert recovery.status_code == 200
+    assert recovery.json()["event_data_reset_allowed"] is True
+    assert recovery.json()["event_data_reset_block_reason"] is None
+
+    reset = client.post("/admin/event-data/reset", headers=admin_headers, json={"confirmation": "RESET EVENT"})
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["event_state"] == "WAITING"
+
+    db.expire_all()
+    game = db.query(GameConfig).first()
+    assert game.state == "WAITING"
+    assert game.phase_started_at is None
+    assert game.auction_timer_end is None
+    assert game.timer_paused is False
+    assert game.timer_paused_remaining_seconds is None
+    assert db.query(EventConfig).first().submissions_open is False
+    assert db.query(Bid).count() == 0
+    assert db.query(Submission).count() == 0
+    assert db.query(Team).filter(Team.is_system_team.is_(False)).count() == 0
+
+
+def test_event_reset_rolls_back_if_any_step_fails(client, admin_headers, db, monkeypatch):
+    _leader, team = _team(db, "Rollback Team", "rollback@reset.test")
+    problem = ProblemStatement(ps_number="ROLLBACK-PS", title="Rollback", round=1, status="current")
+    db.add(problem)
+    db.flush()
+    db.add(Bid(team_id=team.id, ps_id=problem.id, amount=100, round=1))
+    game = db.query(GameConfig).first()
+    game.state = "ROUND1_BIDDING"
+    db.commit()
+
+    def fail_mid_reset(transaction, **_kwargs):
+        transaction.query(Bid).delete(synchronize_session=False)
+        transaction.query(GameConfig).first().state = "WAITING"
+        raise RuntimeError("forced reset failure")
+
+    monkeypatch.setattr(operations, "reset_event_and_imported_participants", fail_mid_reset)
+    with pytest.raises(RuntimeError, match="forced reset failure"):
+        client.post("/admin/event-data/reset", headers=admin_headers, json={"confirmation": "RESET EVENT"})
+
+    db.expire_all()
+    assert db.query(GameConfig).first().state == "ROUND1_BIDDING"
+    assert db.query(Bid).count() == 1
+    assert db.query(Team).filter(Team.id == team.id).count() == 1
+
+
 def test_event_data_reset_preserves_system_access_and_supports_fresh_import(client, admin_headers, db):
-    system_leader, system_team = _team(db, "Demo Team", "leader@demo.example.com", system=True)
+    del admin_headers  # Initializes the singleton event configuration used by this test.
+    provisioned = provision_demo_accounts(db)
+    db.commit()
+    system_leader = db.query(User).filter(User.email == settings.DEMO_LEADER_EMAIL).one()
+    system_team = db.query(Team).filter(Team.team_name == settings.DEMO_TEAM_NAME).one()
+    demo_admin_headers = _login(client, settings.DEMO_ADMIN_EMAIL, settings.DEMO_ADMIN_PASSWORD)
+    assert _login(client, settings.DEMO_LEADER_EMAIL, settings.DEMO_LEADER_PASSWORD)
+    assert provisioned == {
+        "team": "Demo Team",
+        "leader": "leader@demo.example.com",
+        "admin": "admin.demo@bidtobuild.example.com",
+        "display": "leaderboard@bidtobuild.example.com",
+    }
+    display_headers = _display_login(client)
+    assert client.get("/leaderboard/round-1").status_code == 401
+    assert client.get("/leaderboard/wildcard").status_code == 401
+    assert client.get("/leaderboard/round-1", headers=display_headers).status_code == 200
+    assert client.get("/leaderboard/wildcard", headers=display_headers).status_code == 200
     imported_alpha, alpha_team = _team(db, "Imported Team Alpha", "alpha@reset.test")
     imported_alpha_email = imported_alpha.email
     _imported_beta, beta_team = _team(db, "Imported Team Beta", "beta@reset.test")
@@ -71,20 +175,27 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
         Wildcard(team_id=beta_team.id, status="selected", rank=1, winning_bid=300, problem_id=wildcard_problem.id),
         WildcardBid(team_id=beta_team.id, amount=300),
         WildcardSelectionPool(position=1, problem_id=wildcard_problem.id, selected_by_team_id=beta_team.id),
+        ExchangeRequest(
+            requester_team_id=alpha_team.id,
+            receiver_team_id=beta_team.id,
+            requester_ps_id=round1.id,
+            receiver_ps_id=wildcard_problem.id,
+        ),
+        WalletTransaction(team_id=alpha_team.id, transaction_type="TEST", amount=-10, description="Reset test"),
         Submission(team_id=alpha_team.id, problem_id=round1.id, submitted_by_user_id=imported_alpha.id, repository_url="https://github.com/example/reset"),
-        RoundControl(round_type="ROUND1", status="READY", current_problem_id=round1.id),
-        RoundControl(round_type="WILDCARD", status="COMPLETE", ended=True, slot_count=1),
     ])
+    round1_control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one()
+    round1_control.status = "READY"
+    round1_control.current_problem_id = round1.id
+    wildcard_control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    wildcard_control.status = "COMPLETE"
+    wildcard_control.ended = True
+    wildcard_control.slot_count = 1
     game = db.query(GameConfig).first()
     game.state = "ROUND1_BIDDING"
     db.commit()
 
-    blocked = client.post("/admin/event-data/reset", headers=admin_headers, json={"confirmation": "RESET EVENT"})
-    assert blocked.status_code == 409
-    game.state = "WAITING"
-    db.commit()
-
-    reset = client.post("/admin/event-data/reset", headers=admin_headers, json={"confirmation": "RESET EVENT"})
+    reset = client.post("/admin/event-data/reset", headers=demo_admin_headers, json={"confirmation": "RESET EVENT"})
     assert reset.status_code == 200, reset.text
     body = reset.json()
     assert body["status"] == "reset_complete"
@@ -102,6 +213,8 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
     assert db.query(Wildcard).count() == 0
     assert db.query(WildcardBid).count() == 0
     assert db.query(WildcardSelectionPool).count() == 0
+    assert db.query(ExchangeRequest).count() == 0
+    assert db.query(WalletTransaction).count() == 0
     assert db.query(Submission).count() == 0
     assert db.query(EventActivityLog).count() == 1
     controls = {row.round_type: row for row in db.query(RoundControl).all()}
@@ -110,10 +223,15 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
     assert db.query(GameConfig).first().auction_timer_end is None
 
     # Existing Admin bearer token and permanent demo leader credentials remain valid.
-    assert client.get("/admin/state", headers=admin_headers).status_code == 200
-    assert _login(client, system_leader.email)
+    assert client.get("/admin/state", headers=demo_admin_headers).status_code == 200
+    assert _login(client, system_leader.email, settings.DEMO_LEADER_PASSWORD)
+    assert _login(client, settings.DEMO_ADMIN_EMAIL, settings.DEMO_ADMIN_PASSWORD)
     assert client.post("/login", data={"username": imported_alpha_email, "password": "temp-pass"}).status_code == 401
     assert db.query(Team).filter(Team.id == system_team.id, Team.is_system_team.is_(True)).count() == 1
+    assert db.query(User).filter(User.id == system_leader.id, User.is_system_account.is_(True)).count() == 1
+    assert client.get("/leaderboard/round-1", headers=display_headers).status_code == 200
+    assert client.get("/leaderboard/wildcard", headers=display_headers).status_code == 200
+    assert _display_login(client)
 
     registration = (
         "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email,Member 2 Name,Member 2 Email\n"
@@ -121,14 +239,14 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
     ).encode()
     imported = client.post(
         "/admin/registration/import",
-        headers=admin_headers,
+        headers=_login(client, settings.DEMO_ADMIN_EMAIL, settings.DEMO_ADMIN_PASSWORD),
         files={"file": ("real-event.csv", registration, "text/csv")},
     )
     assert imported.status_code == 200, imported.text
     assert imported.json()["teams_created"] == 1
     download = client.get(
         f"/admin/registration/import/download/{imported.json()['download_token']}",
-        headers=admin_headers,
+        headers=_login(client, settings.DEMO_ADMIN_EMAIL, settings.DEMO_ADMIN_PASSWORD),
     )
     assert download.status_code == 200
     row = next(csv.DictReader(io.StringIO(download.content.decode("utf-8-sig"))))

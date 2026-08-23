@@ -32,8 +32,14 @@ export default function SubmissionPage() {
   return (
     <div className="stack">
       <PageHeading eyebrow="Final submission" title={submitted ? 'Submission received' : 'Submit your repository'}>
-        {dashboard.finalProblem ? `Problem #${String(dashboard.finalProblem.number).padStart(2, '0')} · ${dashboard.finalProblem.title}` : 'Your team needs a final problem before submitting.'}
+        {dashboard.finalProblem ? 'Submit the repository built for your team’s final problem.' : 'Your team needs a final problem before submitting.'}
       </PageHeading>
+
+      {dashboard.finalProblem && <Card className="submission-problem">
+        <small>Problem #{String(dashboard.finalProblem.number).padStart(2, '0')}</small>
+        <h2>{dashboard.finalProblem.title}</h2>
+        <p>{dashboard.finalProblem.description}</p>
+      </Card>}
 
       <Card>
         {submitted && dashboard.submission && !dashboard.submissionsOpen ? (

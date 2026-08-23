@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from openpyxl import load_workbook
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_current_active_admin, get_current_user
+from app.api.auth import get_current_active_admin, get_current_active_display, get_current_user
 from app.api.websockets import manager
 from app.core.database import get_db
 from app.models.models import Bid, GameConfig, ProblemStatement, RoundControl, Team, WalletTransaction, Wildcard
@@ -33,7 +33,8 @@ ROUND_META = {
     "wildcard": {"type": "WILDCARD", "number": 2, "prefix": "WC", "label": "Wildcard"},
 }
 NUMBER_HEADERS = {"problemnumber", "problemno", "problemid", "number", "id"}
-STATEMENT_HEADERS = {"problemstatement", "statement", "description", "problem"}
+TITLE_HEADERS = {"title", "problemtitle", "name", "problemname"}
+DESCRIPTION_HEADERS = {"description", "problemdescription", "problemstatement", "statement", "problem"}
 
 
 def _meta(round_slug: str) -> dict:
@@ -47,7 +48,7 @@ def _normalized(value: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").strip().lower())
 
 
-def _read_problem_rows(filename: str, content: bytes) -> list[tuple[int, str]]:
+def _read_problem_rows(filename: str, content: bytes) -> list[tuple[int, str, str]]:
     suffix = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     if suffix not in {"csv", "xlsx"}:
         raise HTTPException(status_code=400, detail="Unsupported file. Upload an .xlsx or .csv file.")
@@ -71,18 +72,22 @@ def _read_problem_rows(filename: str, content: bytes) -> list[tuple[int, str]]:
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
     headers = [_normalized(value) for value in rows[0]]
     number_index = next((index for index, value in enumerate(headers) if value in NUMBER_HEADERS), None)
-    statement_index = next((index for index, value in enumerate(headers) if value in STATEMENT_HEADERS), None)
+    title_index = next((index for index, value in enumerate(headers) if value in TITLE_HEADERS), None)
+    description_index = next((index for index, value in enumerate(headers) if value in DESCRIPTION_HEADERS), None)
     if number_index is None:
         raise HTTPException(status_code=400, detail="Missing problem number column.")
-    if statement_index is None:
-        raise HTTPException(status_code=400, detail="Missing problem statement column.")
+    if title_index is None:
+        raise HTTPException(status_code=400, detail="Missing problem title column.")
+    if description_index is None:
+        raise HTTPException(status_code=400, detail="Missing problem description column.")
 
-    parsed: list[tuple[int, str]] = []
+    parsed: list[tuple[int, str, str]] = []
     seen: set[int] = set()
     errors: list[str] = []
     for source_row, row in enumerate(rows[1:], start=2):
         raw_number = row[number_index] if number_index < len(row) else None
-        statement = str(row[statement_index] if statement_index < len(row) else "").strip()
+        title = str(row[title_index] if title_index < len(row) else "").strip()
+        description = str(row[description_index] if description_index < len(row) else "").strip()
         try:
             number = int(raw_number)
             if number <= 0:
@@ -92,10 +97,12 @@ def _read_problem_rows(filename: str, content: bytes) -> list[tuple[int, str]]:
             continue
         if number in seen:
             errors.append(f"Row {source_row}: duplicate problem number {number}.")
-        if not statement:
-            errors.append(f"Row {source_row}: problem statement is required.")
-        if number not in seen and statement:
-            parsed.append((number, statement))
+        if not title:
+            errors.append(f"Row {source_row}: problem title is required.")
+        if not description:
+            errors.append(f"Row {source_row}: problem description is required.")
+        if number not in seen and title and description:
+            parsed.append((number, title, description))
         seen.add(number)
     if not parsed and not errors:
         errors.append("The file contains headers but no problems.")
@@ -118,6 +125,8 @@ def _problem_payload(problem: ProblemStatement, control: RoundControl) -> dict:
     return {
         "id": problem.id,
         "problem_number": _display_number(problem),
+        "title": problem.title,
+        "description": problem.description,
         "problem_statement": problem.description or problem.title,
         "status": status,
     }
@@ -168,18 +177,18 @@ async def import_problems(round_slug: str, file: UploadFile = File(...), db: Ses
     meta = _meta(round_slug)
     rows = _read_problem_rows(file.filename or "", await file.read())
     created = updated = 0
-    for number, statement in rows:
+    for number, title, description in rows:
         internal_number = f"{meta['prefix']}-{number}"
         problem = db.query(ProblemStatement).filter(ProblemStatement.ps_number == internal_number).first()
         if problem and problem.status in {"current", "completed", "allocated"}:
             raise HTTPException(status_code=409, detail=f"Problem {number} is already current or completed and cannot be overwritten.")
         if problem:
-            problem.title = statement
-            problem.description = statement
+            problem.title = title
+            problem.description = description
             problem.status = "available"
             updated += 1
         else:
-            db.add(ProblemStatement(ps_number=internal_number, title=statement, description=statement, round=meta["number"], status="available"))
+            db.add(ProblemStatement(ps_number=internal_number, title=title, description=description, round=meta["number"], status="available"))
             created += 1
     control = get_or_create_round_control(db, meta["type"])
     if meta["type"] == "ROUND1" and control.status == "IDLE":
@@ -193,7 +202,12 @@ async def import_problems(round_slug: str, file: UploadFile = File(...), db: Ses
 @router.get("/admin/rounds/{round_slug}/problems/sample.csv")
 def problem_sample(round_slug: str, current_user=Depends(get_current_active_admin)):
     meta = _meta(round_slug)
-    sample = "Problem Number,Problem Statement\r\n1,\"Develop an AI-enabled solution for ...\"\r\n2,\"Design a system that ...\"\r\n3,\"Build a platform that ...\"\r\n"
+    sample = (
+        "Problem Number,Title,Description\r\n"
+        "1,\"Adaptive Noise Cancellation\",\"Develop an AI/ML-enabled adaptive noise cancellation system...\"\r\n"
+        "2,\"Tropical Cyclone Prediction\",\"Develop a system using multi-source satellite data...\"\r\n"
+        "3,\"Emergency Communication\",\"Build a lightweight emergency communication solution...\"\r\n"
+    )
     return Response(sample, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={round_slug}-problems-sample.csv"})
 
 
@@ -384,7 +398,13 @@ async def close_applications(db: Session = Depends(get_db), current_user=Depends
 
 
 @router.get("/leaderboard/{round_slug}")
-def public_round_leaderboard(round_slug: str, response: FastAPIResponse, db: Session = Depends(get_db)):
+def public_round_leaderboard(
+    round_slug: str,
+    response: FastAPIResponse,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_display),
+):
+    del current_user
     meta = _meta(round_slug)
     response.headers["Cache-Control"] = "no-store"
     if meta["type"] == "WILDCARD":

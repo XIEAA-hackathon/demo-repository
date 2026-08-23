@@ -18,16 +18,24 @@ interface RawDashboard {
   wildcardBidAmount: number | null
   wildcard: { status: string; rank: number | null; winning_bid: number | null; problem_id: number | null; current_selection_rank: number | null; current_selection_team: string | null; is_selection_turn: boolean; available_problem_count: number; slot_count: number | null } | null
   submission: { id: number; problem_id: number; repository_url: string; submitted_at: string; updated_at: string | null; submitted_by_name: string | null } | null
+  finalResults: { first_place: RawWinner; second_place: RawWinner; third_place: RawWinner } | null
+  bidCooldownRemainingSeconds: number
   isLeader: boolean
   round1Assigned: boolean
   wildcardEligible: boolean
   wildcardApplicationsOpen: boolean
   submissionsOpen: boolean
   gameConfig: {
-    round1_winner_count: number; round1_preview_seconds: number; round1_bid_seconds: number
+    round1_winner_count: number; round1_bid_increment: number; round1_preview_seconds: number; round1_bid_seconds: number
     wildcard_slots: number; wildcard_application_seconds: number; wildcard_preview_seconds: number; wildcard_bid_seconds: number; coding_duration_seconds: number
+    bid_cooldown_seconds: number
   }
   timing: { server_time: string; started_at: string | null; ends_at: string | null; paused: boolean; paused_remaining_seconds: number | null }
+}
+
+interface RawWinner {
+  team_id: number
+  team_name: string
 }
 
 interface RawProblem {
@@ -93,17 +101,25 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
       repositoryUrl: raw.submission.repository_url, submittedAt: raw.submission.submitted_at,
       updatedAt: raw.submission.updated_at, submittedByName: raw.submission.submitted_by_name, status: 'SUBMITTED',
     } : null,
+    finalResults: raw.finalResults ? {
+      firstPlace: { teamId: String(raw.finalResults.first_place.team_id), teamName: raw.finalResults.first_place.team_name },
+      secondPlace: { teamId: String(raw.finalResults.second_place.team_id), teamName: raw.finalResults.second_place.team_name },
+      thirdPlace: { teamId: String(raw.finalResults.third_place.team_id), teamName: raw.finalResults.third_place.team_name },
+    } : null,
+    bidCooldownRemainingSeconds: raw.bidCooldownRemainingSeconds,
     isLeader: raw.isLeader,
     round1Assigned: raw.round1Assigned,
     wildcardEligible: raw.wildcardEligible,
     wildcardApplicationsOpen: raw.wildcardApplicationsOpen,
     submissionsOpen: raw.submissionsOpen,
     gameConfig: {
-      round1WinnerCount: raw.gameConfig.round1_winner_count, round1PreviewSeconds: raw.gameConfig.round1_preview_seconds,
+      round1WinnerCount: raw.gameConfig.round1_winner_count, round1BidIncrement: raw.gameConfig.round1_bid_increment,
+      round1PreviewSeconds: raw.gameConfig.round1_preview_seconds,
       round1BidSeconds: raw.gameConfig.round1_bid_seconds, wildcardSlots: raw.gameConfig.wildcard_slots,
       wildcardApplicationSeconds: raw.gameConfig.wildcard_application_seconds,
       wildcardPreviewSeconds: raw.gameConfig.wildcard_preview_seconds, wildcardBidSeconds: raw.gameConfig.wildcard_bid_seconds,
       codingDurationSeconds: raw.gameConfig.coding_duration_seconds,
+      bidCooldownSeconds: raw.gameConfig.bid_cooldown_seconds,
     },
     timing: {
       serverTime: raw.timing.server_time, receivedAt: Date.now(), startedAt: raw.timing.started_at, endsAt: raw.timing.ends_at,

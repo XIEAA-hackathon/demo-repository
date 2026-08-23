@@ -57,7 +57,7 @@ export default function WildcardSelectionPage() {
         {problems.map((item) => (
           <label key={item.id} className={`card selectable ${selected === item.id ? 'is-selected' : ''}`}>
             <input type="radio" name="problem" checked={selected === item.id} onChange={() => setSelected(item.id)} disabled={!permissions.canSelectWildcardProblem || !wildcard.isSelectionTurn} />
-            <span><small>Problem #{String(item.number).padStart(2, '0')}</small><strong>{item.title}</strong><small>{item.summary}</small></span>
+            <span><small>Problem #{String(item.number).padStart(2, '0')}</small><strong>{item.title}</strong><small className="wildcard-problem-description">{item.description}</small></span>
           </label>
         ))}
       </div>

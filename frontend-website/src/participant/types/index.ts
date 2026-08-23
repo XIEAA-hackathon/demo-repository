@@ -104,6 +104,17 @@ export interface RoundOneSettlement {
   finalizedAt: string | null
 }
 
+export interface FinalWinner {
+  teamId: Id
+  teamName: string
+}
+
+export interface FinalResults {
+  firstPlace: FinalWinner
+  secondPlace: FinalWinner
+  thirdPlace: FinalWinner
+}
+
 export interface ParticipantDashboard {
   team: Team
   currentUserId: Id
@@ -125,6 +136,8 @@ export interface ParticipantDashboard {
   wildcardApplication: WildcardApplication | null
   wildcard: WildcardState | null
   submission: Submission | null
+  finalResults: FinalResults | null
+  bidCooldownRemainingSeconds: number
   isLeader: boolean
   round1Assigned: boolean
   wildcardEligible: boolean
@@ -132,6 +145,7 @@ export interface ParticipantDashboard {
   submissionsOpen: boolean
   gameConfig: {
     round1WinnerCount: number
+    round1BidIncrement: number
     round1PreviewSeconds: number
     round1BidSeconds: number
     wildcardSlots: number
@@ -139,6 +153,7 @@ export interface ParticipantDashboard {
     wildcardPreviewSeconds: number
     wildcardBidSeconds: number
     codingDurationSeconds: number
+    bidCooldownSeconds: number
   }
   timing: EventTiming
 }
