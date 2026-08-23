@@ -145,7 +145,8 @@ fi
 
 stage="STAGING"
 log "Preparing isolated Backend and frontend trees"
-install -d -m 0700 "$source_root" "$frontend_root" "$next_static/public" "$next_static/admin" "$next_static/participant"
+install -d -m 0700 "$source_root" "$frontend_root"
+install -d -m 0755 "$next_static/public" "$next_static/admin" "$next_static/participant"
 git -C "$REPO_ROOT" archive "$deploy_sha" Backend | tar -x -C "$source_root"
 tar -xzf "$frontend_archive" -C "$frontend_root"
 test -s "$source_root/Backend/app/main.py"
