@@ -270,9 +270,9 @@ log "Nginx configuration validated and reloaded"
 
 stage="HEALTH CHECK"
 test "$(curl --fail --silent --show-error http://127.0.0.1:8000/health)" = '{"status":"ok"}'
-test "$(curl --header 'Host: bidtobuild.dev' --fail --silent --show-error http://127.0.0.1/api/health)" = '{"status":"ok"}'
+test "$(curl --noproxy '*' --resolve 'bidtobuild.dev:443:127.0.0.1' --fail --silent --show-error https://bidtobuild.dev/api/health)" = '{"status":"ok"}'
 for path in / /admin/ /participant/ /leaderboard/problem; do
-  curl --header 'Host: bidtobuild.dev' --fail --silent --show-error "http://127.0.0.1$path" | grep -qi '<div id="root"></div>'
+  curl --noproxy '*' --resolve 'bidtobuild.dev:443:127.0.0.1' --fail --silent --show-error "https://bidtobuild.dev$path" | grep -qi '<div id="root"></div>'
 done
 
 stage="LIVE"

@@ -137,15 +137,15 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          base="http://127.0.0.1"
-          host="bidtobuild.dev"
+          base="https://bidtobuild.dev"
+          resolve="bidtobuild.dev:443:127.0.0.1"
           verified=0
           for _ in {1..12}; do
-            if [[ $(curl --header "Host: $host" --max-time 15 --silent --show-error "$base/api/health" || true) == '{"status":"ok"}' ]] \
-              && curl --header "Host: $host" --max-time 15 --fail --silent --show-error "$base/" | grep -qi '<div id="root"></div>' \
-              && curl --header "Host: $host" --max-time 15 --fail --silent --show-error "$base/admin/" | grep -qi '<div id="root"></div>' \
-              && curl --header "Host: $host" --max-time 15 --fail --silent --show-error "$base/participant/" | grep -qi '<div id="root"></div>' \
-              && curl --header "Host: $host" --max-time 15 --fail --silent --show-error "$base/leaderboard/problem" | grep -qi '<div id="root"></div>'; then
+            if [[ $(curl --noproxy '*' --resolve "$resolve" --max-time 15 --silent --show-error "$base/api/health" || true) == '{"status":"ok"}' ]] \
+              && curl --noproxy '*' --resolve "$resolve" --max-time 15 --fail --silent --show-error "$base/" | grep -qi '<div id="root"></div>' \
+              && curl --noproxy '*' --resolve "$resolve" --max-time 15 --fail --silent --show-error "$base/admin/" | grep -qi '<div id="root"></div>' \
+              && curl --noproxy '*' --resolve "$resolve" --max-time 15 --fail --silent --show-error "$base/participant/" | grep -qi '<div id="root"></div>' \
+              && curl --noproxy '*' --resolve "$resolve" --max-time 15 --fail --silent --show-error "$base/leaderboard/problem" | grep -qi '<div id="root"></div>'; then
               verified=1
               break
             fi
