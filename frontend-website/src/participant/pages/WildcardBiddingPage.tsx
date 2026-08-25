@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParticipant } from '../ParticipantContext'
 import type { BidIncrement, LeaderboardEntry } from '../types'
 import AdvanceButton from '../components/AdvanceButton'
@@ -17,11 +17,36 @@ export default function WildcardBiddingPage() {
   const [highSpendConfirmed, setHighSpendConfirmed] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const cooldownRemaining = useBidCooldown(dashboard?.bidCooldownRemainingSeconds ?? 0)
-  const loadLeaderboard = useCallback(() => service.getLeaderboard('WILDCARD').then(setEntries), [service])
+  const leaderboardInFlight = useRef<Promise<void> | null>(null)
+  const loadLeaderboard = useCallback(() => {
+    if (leaderboardInFlight.current) return leaderboardInFlight.current
+    const request = service.getLeaderboard('WILDCARD').then(setEntries)
+    leaderboardInFlight.current = request
+    const release = () => {
+      if (leaderboardInFlight.current === request) leaderboardInFlight.current = null
+    }
+    void request.then(release, release)
+    return request
+  }, [service])
   useEffect(() => {
-    void loadLeaderboard()
-    const id = setInterval(() => void loadLeaderboard(), 2000)
-    return () => clearInterval(id)
+    let stopped = false
+    let timer: number | undefined
+    const schedule = (delay: number) => {
+      if (timer !== undefined) window.clearTimeout(timer)
+      timer = window.setTimeout(async () => {
+        if (stopped) return
+        try { await loadLeaderboard() } catch { /* The next fallback poll retries. */ }
+        schedule(document.hidden ? 30_000 : 2_000)
+      }, delay)
+    }
+    const onVisibility = () => { if (!document.hidden) schedule(0) }
+    schedule(0)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stopped = true
+      if (timer !== undefined) window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [loadLeaderboard])
 
   if (!dashboard) return null

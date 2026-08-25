@@ -41,8 +41,11 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
 
     _assert_state(config.state, config, ["ROUND1_BIDDING"])
 
-    if team.ps_id is not None:
-        raise HTTPException(status_code=409, detail="Round 1 is complete for your team. Assigned teams cannot bid again.")
+    if team.round1_problem_id is not None or team.ps_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Your team already has a Round 1 problem and cannot participate in another Round 1 auction.",
+        )
 
     team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
     ps = db.query(ProblemStatement).filter(ProblemStatement.id == bid.ps_id).with_for_update().first()
@@ -140,7 +143,7 @@ async def finalize_round_one(
         if len(winners) >= winner_count:
             break
         winner_team = db.query(Team).filter(Team.id == bid.team_id).first()
-        if not winner_team or winner_team.ps_id is not None:
+        if not winner_team or winner_team.round1_problem_id is not None or winner_team.ps_id is not None:
             continue  # team already has a problem; skip
         if winner_team.coins < bid.amount:
             continue

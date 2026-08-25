@@ -13,7 +13,7 @@ export interface ParticipantService {
   getParticipantDashboard(): Promise<ParticipantDashboard>
   getCurrentProblem(): Promise<Problem | WildcardProblem | null>
   getProblems(round: 1 | 2): Promise<WildcardProblem[]>
-  placeBid(problemId: Id, increment: BidIncrement): Promise<Bid>
+  placeBid(problemId: Id, increment: BidIncrement): Promise<number>
   getLeaderboard(round?: Bid['round']): Promise<LeaderboardEntry[]>
   applyForWildcard(): Promise<WildcardApplication>
   declineWildcard(): Promise<void>

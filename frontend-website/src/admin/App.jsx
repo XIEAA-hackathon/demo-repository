@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Login from "./pages/Login";
 import {
   addTime, approveTeam, clearToken, deleteTeam, downloadRegistrationAssignments, downloadRegistrationCredentials, downloadRegistrationDemo, downloadRegistrationSample, finalizeProblem,
@@ -7,6 +7,7 @@ import {
   importRegistrations, removeTime, resetParticipantPassword, resumeTimer, setProblemVisibility,
   resetRegistrationCredentials,
   updateAdminConfig, createTeamCredentials, getRoundControl, importRoundProblems, downloadRoundProblemSample,
+  downloadRoundOneAssignments, downloadWildcardAssignments,
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
   endRoundOne, openWildcardApplications, closeWildcardApplications,
   confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding, endWildcardSelectionTurn,
@@ -75,20 +76,30 @@ function AdminApplication({ onLogout }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
+  const loadInFlight = useRef(null);
+  const lastSuccessfulLoadStartedAt = useRef(0);
 
-  const load = useCallback(async () => {
-    try {
-      const [teamRows, problemRows, bidRows, board, eventState, eventConfig] = await Promise.all([
-        getTeams(), getProblemStatements(), getBidHistory(), getLeaderboard(), getAdminState(), getAdminConfig(),
-      ]);
-      let serverHealth = { backend: "connected", database: "healthy" };
-      try { serverHealth = { ...serverHealth, ...await getAdminHealth() }; } catch { /* Core API requests above remain authoritative. */ }
-      setTeams(teamRows); setProblems(problemRows); setBids(bidRows); setLeaderboard(board.teams || board);
-      const syncedAt = Date.now();
-      setState({ ...eventState, timing: { ...eventState.timing, received_at: syncedAt } }); setConfig(eventConfig); setHealth(serverHealth); setLastSyncAt(syncedAt); setApiStatus("connected"); setError("");
-      return true;
-    } catch (cause) { setApiStatus("reconnecting"); setError(cause.message || "Unable to load event data."); return false; }
-    finally { setLoading(false); }
+  const load = useCallback(() => {
+    if (loadInFlight.current) return loadInFlight.current;
+    const startedAt = Date.now();
+    const request = (async () => {
+      try {
+        const [teamRows, problemRows, bidRows, board, eventState, eventConfig] = await Promise.all([
+          getTeams(), getProblemStatements(), getBidHistory(), getLeaderboard(), getAdminState(), getAdminConfig(),
+        ]);
+        let serverHealth = { backend: "connected", database: "healthy" };
+        try { serverHealth = { ...serverHealth, ...await getAdminHealth() }; } catch { /* Core API requests above remain authoritative. */ }
+        setTeams(teamRows); setProblems(problemRows); setBids(bidRows); setLeaderboard(board.teams || board);
+        const syncedAt = Date.now();
+        setState({ ...eventState, timing: { ...eventState.timing, received_at: syncedAt } }); setConfig(eventConfig); setHealth(serverHealth); setLastSyncAt(syncedAt); setApiStatus("connected"); setError("");
+        lastSuccessfulLoadStartedAt.current = startedAt;
+        return true;
+      } catch (cause) { setApiStatus("reconnecting"); setError(cause.message || "Unable to load event data."); return false; }
+      finally { setLoading(false); }
+    })();
+    loadInFlight.current = request;
+    void request.finally(() => { if (loadInFlight.current === request) loadInFlight.current = null; });
+    return request;
   }, []);
 
   useEffect(() => { const id = setTimeout(() => void load(), 0); return () => clearTimeout(id); }, [load]);
@@ -100,7 +111,23 @@ function AdminApplication({ onLogout }) {
     schedule(5000); document.addEventListener("visibilitychange", onVisibility);
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
   }, [load]);
-  useEffect(() => connectAuctionSocket({ onStatus: (status) => { setSocketStatus(status); if (status === "reconnected") void load(); }, onMessage: () => void load() }), [load]);
+  useEffect(() => {
+    let timer;
+    let latestEventAt = 0;
+    const queueLoad = () => {
+      if (document.hidden) return;
+      latestEventAt = Date.now();
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (lastSuccessfulLoadStartedAt.current < latestEventAt) void load();
+      }, 300);
+    };
+    const disconnect = connectAuctionSocket({
+      onStatus: (status) => { setSocketStatus(status); if (status === "reconnected") queueLoad(); },
+      onMessage: queueLoad,
+    });
+    return () => { clearTimeout(timer); disconnect(); };
+  }, [load]);
   useEffect(() => { const timer = setInterval(() => setClockNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   const remaining = useServerCountdown(state?.timing);
   const staleSeconds = lastSyncAt ? Math.floor((clockNow - lastSyncAt) / 1000) : null;
@@ -184,6 +211,17 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
       setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (cause) { setError(cause.message); }
   };
+  const downloadAssignments = async () => {
+    setWorking(true); setError("");
+    try {
+      const blob = await downloadRoundOneAssignments();
+      const url = URL.createObjectURL(blob); const link = document.createElement("a");
+      link.href = url; link.download = "bid_to_build_round_1_assignments.xlsx"; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setNotice("Round 1 assignments downloaded.");
+    } catch (cause) { setError(cause.message || "Round 1 assignments could not be downloaded."); }
+    finally { setWorking(false); }
+  };
   const saveSettings = () => run(() => updateAdminConfig(config), `${isWildcard ? "Wildcard" : "Round 1"} timer settings saved.`);
   const current = data?.current_problem;
   const eventState = data?.event?.event_state;
@@ -246,6 +284,7 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
       </div>}
       {!isWildcard && <button className="danger-link round-end" disabled={data.ended || working} onClick={() => window.confirm("End Round 1? No further Round 1 selection or bidding will be allowed.") && run(endRoundOne, "Round 1 ended. Wildcard can now be opened.")}>{data.ended ? "Round 1 ended" : "End Round 1"}</button>}
     </section>
+    {!isWildcard && <div className="round-export-action"><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>DOWNLOAD ROUND 1 ASSIGNMENTS</button></div>}
   </section>;
 }
 
@@ -283,6 +322,17 @@ function WildcardControlPage({ state, config, remaining, onConfig }) {
       const link = document.createElement("a"); link.href = url; link.download = "wildcard-problems-sample.csv"; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (cause) { setError(cause.message); }
+  };
+  const downloadAssignments = async () => {
+    setWorking(true); setError("");
+    try {
+      const blob = await downloadWildcardAssignments();
+      const url = URL.createObjectURL(blob); const link = document.createElement("a");
+      link.href = url; link.download = "bid_to_build_wildcard_assignments.xlsx"; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setNotice("Wildcard assignments downloaded.");
+    } catch (cause) { setError(cause.message || "Wildcard assignments could not be downloaded."); }
+    finally { setWorking(false); }
   };
   if (!data) return <div className="loading-screen"><div className="loader" />Loading wildcard controls…</div>;
   const maxSlots = data.slots.maximum || 0;
@@ -329,6 +379,7 @@ function WildcardControlPage({ state, config, remaining, onConfig }) {
       <section className="wildcard-stage-card wildcard-selection-progress"><div className="round-section-heading"><div><span className="eyebrow">SEQUENTIAL SELECTION</span><h3>{data.status === "COMPLETE" ? "All problems selected" : data.selection.current_team ? `${data.selection.current_team} is choosing` : "Waiting for selection"}</h3></div>{data.selection.current_rank && <span className="wildcard-slot-badge">RANK #{data.selection.current_rank}</span>}</div>{data.selection.current_team && <div className="wildcard-current-turn"><div><span>Current turn</span><strong>Rank #{data.selection.current_rank}</strong><b>{data.selection.current_team}</b></div><div><span>Time remaining</span><strong>{formatTime(selectionRemaining).slice(3)}</strong></div><div><span>Remaining problems</span><strong>{data.selection.available_problems.length}</strong></div><button className="danger-button" disabled={working || !nextAutomaticProblem} onClick={endTurn}>End turn</button></div>}{data.selection.pool_frozen && <div className="active-pool"><strong>Active pool · {data.selection.pool.length} frozen problems</strong><span>{data.selection.pool.map((entry) => `#${entry.problem.problem_number}${entry.selected ? " selected" : ""}`).join(" · ")}</span><small>Later uploads and refreshes cannot change this selection pool.</small></div>}<div className="wildcard-qualification-list">{data.selection.qualifications.length ? data.selection.qualifications.map((row) => <article key={row.team_id}><strong>#{row.rank}</strong><div><b>{row.team_name}</b><span>{row.problem ? `Selected Problem #${row.problem.problem_number}` : `${row.winning_bid} coin winning bid`}</span></div><em className={`selection-status selection-status--${row.status.toLowerCase()}`}>{row.status === "CHOOSING" ? "CHOOSING NOW" : row.status}</em></article>) : <div className="round-empty"><strong>No qualified teams</strong><p>Close slot bidding to determine the selection order.</p></div>}</div></section>
       <section className="round-problem-bank wildcard-stage-card"><div className="round-section-heading"><div><span className="eyebrow">WILDCARD PROBLEMS</span><h3>Separate problem bank</h3></div><div className="round-inline-actions"><label className="secondary-button round-upload">Upload XLSX / CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-button" onClick={() => void downloadSample()}>Download sample CSV</button>{file && <button className="primary-button" disabled={working} onClick={() => run(() => importRoundProblems("wildcard", file), `${file.name} imported.`)}>Import {file.name}</button>}</div></div><div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><div className="round-problem-copy"><b>{problem.title}</b><p title={problem.description}>{problem.description}</p></div><span>{problem.status}</span></article>) : <div className="round-empty"><strong>No wildcard problems imported</strong><p>Upload XLSX or CSV before confirming slots.</p></div>}</div></section>
     </div>}
+    <div className="round-export-action"><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>DOWNLOAD WILDCARD ASSIGNMENTS</button></div>
   </section>;
 }
 

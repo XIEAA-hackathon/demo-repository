@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { participantService } from './services/apiParticipantService'
 import type { ParticipantService } from './services/participantService'
@@ -24,23 +24,37 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null)
   const [socketStatus, setSocketStatus] = useState('connecting')
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
+  const refreshInFlight = useRef<Promise<ParticipantDashboard | null> | null>(null)
+  const dashboardRef = useRef<ParticipantDashboard | null>(null)
+  const lastSuccessfulRefreshStartedAt = useRef(0)
   const navigate = useNavigate()
 
-  const refresh = useCallback(async () => {
-    try {
-      setError(null)
-      const next = await participantService.getParticipantDashboard()
-      setDashboard(next)
-      setLastSyncAt(Date.now())
-      setSocketStatus((current) => current === 'reconnected' ? current : 'connected')
-      return next
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Participant data could not be loaded.')
-      setSocketStatus('reconnecting')
-      return null
-    } finally {
-      setLoading(false)
-    }
+  const refresh = useCallback(() => {
+    if (refreshInFlight.current) return refreshInFlight.current
+    const startedAt = Date.now()
+    const request = (async () => {
+      try {
+        setError(null)
+        const next = await participantService.getParticipantDashboard()
+        setDashboard(next)
+        dashboardRef.current = next
+        lastSuccessfulRefreshStartedAt.current = startedAt
+        setLastSyncAt(Date.now())
+        setSocketStatus((current) => current === 'reconnected' ? current : 'connected')
+        return next
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'Participant data could not be loaded.')
+        setSocketStatus('reconnecting')
+        return null
+      } finally {
+        setLoading(false)
+      }
+    })()
+    refreshInFlight.current = request
+    void request.finally(() => {
+      if (refreshInFlight.current === request) refreshInFlight.current = null
+    })
+    return request
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
@@ -57,6 +71,10 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     const schedule = (delay: number) => {
       timer = window.setTimeout(async () => {
         if (stopped) return
+        if (document.hidden) {
+          schedule(30_000)
+          return
+        }
         const next = await refresh()
         failures = next ? 0 : failures + 1
         schedule(next ? 5_000 : Math.min(30_000, 1_000 * 2 ** failures))
@@ -74,15 +92,38 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     }
   }, [refresh])
 
-  useEffect(() => connectEventSocket(async (message) => {
-    const next = await refresh()
-    if (next && (message.type === 'event_snapshot' || message.type === 'event_state_changed')) {
-      navigate(getStageRoute(next.eventState).path, { replace: true })
+  useEffect(() => {
+    let timer: number | undefined
+    let navigateAfterRefresh = false
+    let latestEventAt = 0
+    const queueRefresh = (shouldNavigate = false) => {
+      navigateAfterRefresh = navigateAfterRefresh || shouldNavigate
+      latestEventAt = Date.now()
+      if (document.hidden) return
+      if (timer !== undefined) window.clearTimeout(timer)
+      timer = window.setTimeout(async () => {
+        timer = undefined
+        const shouldNavigateNow = navigateAfterRefresh
+        const eventAt = latestEventAt
+        navigateAfterRefresh = false
+        latestEventAt = 0
+        const next = lastSuccessfulRefreshStartedAt.current >= eventAt
+          ? dashboardRef.current
+          : await refresh()
+        if (next && shouldNavigateNow) navigate(getStageRoute(next.eventState).path, { replace: true })
+      }, 300)
     }
-  }, (status) => {
-    setSocketStatus(status)
-    if (status === 'reconnected') void refresh()
-  }), [navigate, refresh])
+    const disconnect = connectEventSocket((message) => {
+      queueRefresh(message.type === 'event_snapshot' || message.type === 'event_state_changed')
+    }, (status) => {
+      setSocketStatus(status)
+      if (status === 'reconnected') queueRefresh()
+    })
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer)
+      disconnect()
+    }
+  }, [navigate, refresh])
 
   const value = useMemo(
     () => ({ dashboard, loading, error, socketStatus, lastSyncAt, service: participantService, refresh }),

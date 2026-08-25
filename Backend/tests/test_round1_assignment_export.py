@@ -1,14 +1,16 @@
 import csv
 import io
 
+from openpyxl import load_workbook
+
 from app.models.models import EventConfig, Team
 
 
-def _ten_team_registration() -> bytes:
+def _twelve_team_registration() -> bytes:
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(["Team Name", "Leader Name", "Leader Email", "Organizer Notes"])
-    for index, letter in enumerate("ABCDEFGHIJ", start=1):
+    for index, letter in enumerate("ABCDEFGHIJKL", start=1):
         writer.writerow([f"Team {letter}", f"Leader {letter}", f"leader{index}@example.com", f"Preserve note {letter}"])
     return output.getvalue().encode("utf-8")
 
@@ -51,11 +53,24 @@ def _assignment_rows(response) -> list[dict[str, str]]:
     return list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
 
 
+def _assignment_workbook_rows(response) -> list[dict[str, object]]:
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    workbook = load_workbook(io.BytesIO(response.content), read_only=True, data_only=True)
+    try:
+        sheet = workbook["Participant Assignments"]
+        values = list(sheet.iter_rows(values_only=True))
+        headers = [str(value) for value in values[0]]
+        return [dict(zip(headers, row)) for row in values[1:]]
+    finally:
+        workbook.close()
+
+
 def test_top_five_lockout_base_prices_and_current_assignment_export(
     client, admin_headers, display_headers, db,
 ):
-    credentials = _credentials(client, admin_headers, _ten_team_registration())
-    headers_by_index = {index: _login(client, credentials, index) for index in range(1, 11)}
+    credentials = _credentials(client, admin_headers, _twelve_team_registration())
+    headers_by_index = {index: _login(client, credentials, index) for index in range(1, 13)}
     configured = client.put(
         "/admin/config",
         headers=admin_headers,
@@ -98,6 +113,12 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert first_by_team["Team A"]["Final Problem Number"] == "R1-1"
     assert first_by_team["Team F"]["Round 1 Problem Number"] == ""
     assert "Leader Password" not in first_by_team["Team A"]
+    round_one_workbook = client.get("/admin/rounds/round-1/assignments/export", headers=admin_headers)
+    assert 'filename="bid_to_build_round_1_assignments.xlsx"' in round_one_workbook.headers["content-disposition"]
+    round_one_rows = _assignment_workbook_rows(round_one_workbook)
+    round_one_by_team = {row["Team Name"]: row for row in round_one_rows}
+    assert round_one_by_team["Team A"]["Round 1 Problem Title"] == "Round One Problem"
+    assert round_one_by_team["Team F"]["Round 1 Problem Number"] in (None, "")
 
     updated = client.put("/admin/config", headers=admin_headers, json={"round1_minimum_bid": 200})
     assert updated.status_code == 200, updated.text
@@ -106,6 +127,7 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert client.post("/admin/rounds/round-1/bidding/start", headers=admin_headers).status_code == 200
     locked = client.post("/bid", headers=headers_by_index[1], json={"ps_id": second_problem["id"], "increment": 25})
     assert locked.status_code == 409
+    assert "already has a Round 1 problem" in locked.json()["detail"]
     assert client.post("/bid", headers=headers_by_index[6], json={"ps_id": second_problem["id"], "amount": 199}).status_code == 422
     for index in (10, 9, 8, 7, 6):
         response = client.post("/bid", headers=headers_by_index[index], json={"ps_id": second_problem["id"], "increment": 5})
@@ -113,6 +135,8 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert client.post("/admin/rounds/round-1/bidding/close", headers=admin_headers).status_code == 200
     second_assigned = client.post("/admin/rounds/round-1/assign-winners", headers=admin_headers)
     assert [winner["team_name"] for winner in second_assigned.json()["winners"]] == [f"Team {letter}" for letter in "FGHIJ"]
+    db.expire_all()
+    assert db.query(Team).filter(Team.team_name.in_(["Team K", "Team L"]), Team.round1_problem_id.is_not(None)).count() == 0
 
     assert client.post("/admin/rounds/round-1/end", headers=admin_headers).status_code == 200
     assert client.post("/admin/rounds/wildcard/applications/open", headers=admin_headers).status_code == 200
@@ -151,6 +175,13 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert team_h["Wildcard Problem Title"] == "Emergency Network"
     assert team_h["Final Problem Number"] == "WC-2"
     assert team_h["Final Problem Description"] == "Wildcard description"
+    wildcard_workbook = client.get("/admin/rounds/wildcard/assignments/export", headers=admin_headers)
+    assert 'filename="bid_to_build_wildcard_assignments.xlsx"' in wildcard_workbook.headers["content-disposition"]
+    wildcard_rows = _assignment_workbook_rows(wildcard_workbook)
+    wildcard_by_team = {row["Team Name"]: row for row in wildcard_rows}
+    assert wildcard_by_team["Team H"]["Round 1 Problem Number"] == "R1-2"
+    assert wildcard_by_team["Team H"]["Wildcard Problem Number"] == "WC-2"
+    assert wildcard_by_team["Team A"]["Wildcard Problem Number"] in (None, "")
 
     reset = client.post("/admin/event-data/reset", headers=admin_headers, json={"confirmation": "RESET EVENT"})
     assert reset.status_code == 200, reset.text

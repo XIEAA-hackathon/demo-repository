@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.database import get_db
+from app.core.database import SessionLocal
 from app.models.models import User
 from app.services.event_service import event_snapshot, get_team_for_user
 
@@ -63,33 +63,41 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-def _authenticate_socket(token: str | None, db: Session) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def _authenticate_socket(
+    token: str | None,
+    session_factory: Callable[[], Session],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if not token:
         return None, None
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         email = payload.get("sub")
         session_id = payload.get("session_id")
-        user = db.query(User).filter(User.email == email).first()
-        if not user or (user.session_id and user.session_id != session_id):
-            return None, None
-        team = get_team_for_user(db, user) if user.role != "admin" else None
-        identity = {
-            "user_id": user.id,
-            "email": user.email,
-            "role": user.role,
-            "team_id": team.id if team else None,
-        }
-        snapshot = event_snapshot(db)
-        snapshot["identity"] = {"role": user.role, "team_id": team.id if team else None}
-        return identity, snapshot
+        # Authentication and the initial snapshot are the only database work
+        # needed by this socket. Close the session before accepting the
+        # long-lived connection so an idle socket never occupies the pool.
+        with session_factory() as db:
+            user = db.query(User).filter(User.email == email).first()
+            if not user or (user.session_id and user.session_id != session_id):
+                return None, None
+            team = get_team_for_user(db, user) if user.role != "admin" else None
+            identity = {
+                "user_id": user.id,
+                "email": user.email,
+                "role": user.role,
+                "team_id": team.id if team else None,
+            }
+            snapshot = event_snapshot(db)
+            snapshot["identity"] = {"role": user.role, "team_id": team.id if team else None}
+            return identity, snapshot
     except JWTError:
         return None, None
 
 
 @router.websocket("/ws/auction")
-async def websocket_auction(websocket: WebSocket, db: Session = Depends(get_db)):
-    identity, snapshot = _authenticate_socket(websocket.query_params.get("token"), db)
+async def websocket_auction(websocket: WebSocket):
+    session_factory = getattr(websocket.app.state, "session_factory", SessionLocal)
+    identity, snapshot = _authenticate_socket(websocket.query_params.get("token"), session_factory)
     if not identity or not snapshot:
         await websocket.close(code=4401, reason="Valid access token required")
         return

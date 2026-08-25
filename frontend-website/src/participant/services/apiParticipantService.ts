@@ -145,10 +145,8 @@ class ApiParticipantService implements ParticipantService {
     return raw.map((problem) => ({ ...mapProblem(problem), available: problem.available ?? true }))
   }
   async placeBid(problemId: string, increment: BidIncrement) {
-    await apiRequest('/bid', { method: 'POST', body: JSON.stringify({ ps_id: Number(problemId), increment }) })
-    const bid = (await this.getParticipantDashboard()).latestBid
-    if (!bid) throw new Error('The bid was accepted but could not be reloaded.')
-    return bid
+    const result = await apiRequest<{ amount: number }>('/bid', { method: 'POST', body: JSON.stringify({ ps_id: Number(problemId), increment }) })
+    return result.amount
   }
   async getLeaderboard() {
     const rows = await apiRequest<Array<{ rank: number; team_id: number; team_name: string; bid_amount: number | null }>>('/participant/leaderboard')

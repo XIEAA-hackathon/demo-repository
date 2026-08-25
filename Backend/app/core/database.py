@@ -165,6 +165,16 @@ def initialize_database() -> None:
                 connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_operation ON wallet_transactions(team_id, transaction_type, description)"))
                 connection.execute(text("UPDATE game_config SET last_state_update = CURRENT_TIMESTAMP WHERE last_state_update IS NULL"))
 
+        # These cover the participant dashboard's member lookup and the live
+        # bid-ranking access path. ``IF NOT EXISTS`` keeps startup safe for
+        # both existing SQLite deployments and PostgreSQL installations.
+        with engine.begin() as connection:
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_members_team_id ON members(team_id)"))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_bids_problem_round_rank "
+                "ON bids(ps_id, round, amount DESC, timestamp ASC, team_id ASC)"
+            ))
+
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
         required_tables = {

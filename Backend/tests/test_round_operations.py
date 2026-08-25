@@ -63,7 +63,7 @@ def test_round_one_import_arbitrary_selection_and_team_lockout(client, admin_hea
     client.post("/admin/rounds/round-1/bidding/start", headers=admin_headers)
     locked = client.post("/bid", headers=alpha_headers, json={"ps_id": problem_one["id"], "increment": 25})
     assert locked.status_code == 409
-    assert "cannot bid again" in locked.json()["detail"]
+    assert "already has a Round 1 problem" in locked.json()["detail"]
     assert client.post("/bid", headers=beta_headers, json={"ps_id": problem_one["id"], "increment": 10}).status_code == 200
 
 

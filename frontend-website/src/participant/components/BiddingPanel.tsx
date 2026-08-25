@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParticipant } from '../ParticipantContext'
 import type { Bid, BidIncrement, LeaderboardEntry, Problem, WildcardProblem } from '../types'
 import Countdown from './Countdown'
@@ -23,12 +23,37 @@ export default function BiddingPanel({
   const [submitting, setSubmitting] = useState(false)
   const [highSpendConfirmed, setHighSpendConfirmed] = useState(false)
   const cooldownRemaining = useBidCooldown(dashboard?.bidCooldownRemainingSeconds ?? 0)
-  const loadLeaderboard = useCallback(() => service.getLeaderboard(round).then(setEntries), [round, service])
+  const leaderboardInFlight = useRef<Promise<void> | null>(null)
+  const loadLeaderboard = useCallback(() => {
+    if (leaderboardInFlight.current) return leaderboardInFlight.current
+    const request = service.getLeaderboard(round).then(setEntries)
+    leaderboardInFlight.current = request
+    const release = () => {
+      if (leaderboardInFlight.current === request) leaderboardInFlight.current = null
+    }
+    void request.then(release, release)
+    return request
+  }, [round, service])
 
   useEffect(() => {
-    void loadLeaderboard()
-    const id = setInterval(() => void loadLeaderboard(), 2000)
-    return () => clearInterval(id)
+    let stopped = false
+    let timer: number | undefined
+    const schedule = (delay: number) => {
+      if (timer !== undefined) window.clearTimeout(timer)
+      timer = window.setTimeout(async () => {
+        if (stopped) return
+        try { await loadLeaderboard() } catch { /* The next fallback poll retries. */ }
+        schedule(document.hidden ? 30_000 : 2_000)
+      }, delay)
+    }
+    const onVisibility = () => { if (!document.hidden) schedule(0) }
+    schedule(0)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stopped = true
+      if (timer !== undefined) window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [loadLeaderboard])
   useEffect(() => setHighSpendConfirmed(false), [problem.id])
 
@@ -54,7 +79,7 @@ export default function BiddingPanel({
     try {
       const accepted = isWildcard
         ? await service.placeWildcardBid(increment)
-        : (await service.placeBid(problem.id, increment)).amount
+        : await service.placeBid(problem.id, increment)
       await Promise.all([refresh(), loadLeaderboard()])
       setMessage({ type: 'success', text: `Bid accepted at ${accepted} coins. Coins are not deducted until finalization.` })
     } catch (cause) {

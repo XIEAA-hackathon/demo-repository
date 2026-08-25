@@ -100,6 +100,8 @@ export const importRegistrations = (file) => {
 export const resetRegistrationCredentials = (confirmation) => request("/admin/registration/credentials/reset", { method: "POST", body: JSON.stringify({ confirmation }) });
 export const downloadRegistrationCredentials = (token) => request(`/admin/registration/import/download/${encodeURIComponent(token)}`, { responseType: "blob" });
 export const downloadRegistrationAssignments = () => request("/admin/registration/assignments", { responseType: "blob" });
+export const downloadRoundOneAssignments = () => request("/admin/rounds/round-1/assignments/export", { responseType: "blob" });
+export const downloadWildcardAssignments = () => request("/admin/rounds/wildcard/assignments/export", { responseType: "blob" });
 export const downloadRegistrationSample = () => request("/admin/registration/sample.csv", { responseType: "blob" });
 export const downloadRegistrationDemo = () => request("/admin/registration/demo.csv", { responseType: "blob" });
 export const createTeamCredentials = (payload) => request("/admin/teams/credentials", { method: "POST", body: JSON.stringify(payload) });

@@ -320,7 +320,7 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
         if len(winners) >= winner_limit:
             break
         team = db.query(Team).filter(Team.id == bid.team_id).first()
-        if not team or team.ps_id is not None or team.coins < bid.amount:
+        if not team or team.round1_problem_id is not None or team.ps_id is not None or team.coins < bid.amount:
             continue
         if meta["number"] == 2:
             application = db.query(Wildcard).filter(Wildcard.team_id == team.id, Wildcard.status == "applied").first()

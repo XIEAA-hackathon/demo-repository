@@ -2338,6 +2338,8 @@ td strong {
 .round-settings--round1 .round-settings__fields input { width: 164px; min-height: 48px; padding: 11px 13px; border-color: rgba(205,105,251,.36); font-size: 13px; font-variant-numeric: tabular-nums; }
 .round-settings__save { min-width: 154px; min-height: 48px; }
 .round-end { align-self: center; }
+.round-export-action { display: flex; justify-content: flex-end; padding: 0 2px; }
+.round-export-action .secondary-button { min-height: 34px; padding: 8px 13px; font-size: 9px; }
 .round-applications { display: grid; grid-template-columns: 1fr auto minmax(300px, auto); align-items: center; gap: 24px; }
 .round-application-clock { display: grid; text-align: right; }
 .round-application-clock strong { color: #efc86b; font-variant-numeric: tabular-nums; font-size: 28px; }

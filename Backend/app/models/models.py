@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
@@ -65,7 +65,7 @@ class Member(Base):
     __tablename__ = "members"
 
     id = Column(Integer, primary_key=True, index=True)
-    team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"))
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), index=True)
     member_name = Column(String, nullable=False)
     email = Column(String, nullable=True)
 
@@ -84,6 +84,16 @@ class Bid(Base):
 
     team = relationship("Team", back_populates="bids")
     problem_statement = relationship("ProblemStatement")
+
+
+Index(
+    "ix_bids_problem_round_rank",
+    Bid.ps_id,
+    Bid.round,
+    Bid.amount.desc(),
+    Bid.timestamp.asc(),
+    Bid.team_id.asc(),
+)
 
 class Wildcard(Base):
     __tablename__ = "wildcards"

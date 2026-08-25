@@ -93,6 +93,7 @@ def client(engine, session_factory):
     app.include_router(operations.router)
     app.include_router(judging.router)
     app.include_router(management.router)
+    app.state.session_factory = session_factory
 
     def override_get_db():
         db = session_factory()

@@ -843,6 +843,35 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], st
     return headers, output_rows, suffix
 
 
+def _assignment_workbook_response(db: Session, filename: str) -> StreamingResponse:
+    headers, rows, _suffix = _assignment_export_data(db)
+    if not rows:
+        raise HTTPException(status_code=409, detail="No imported participant registration data is available to export.")
+    return StreamingResponse(
+        BytesIO(build_registration_assignment_workbook(headers, rows)),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/admin/rounds/round-1/assignments/export")
+def download_round_one_assignments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    del current_user
+    return _assignment_workbook_response(db, "bid_to_build_round_1_assignments.xlsx")
+
+
+@router.get("/admin/rounds/wildcard/assignments/export")
+def download_wildcard_assignments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    del current_user
+    return _assignment_workbook_response(db, "bid_to_build_wildcard_assignments.xlsx")
+
+
 @router.get("/admin/registration/assignments")
 def download_registration_assignments(
     db: Session = Depends(get_db),

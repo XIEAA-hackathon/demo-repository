@@ -16,6 +16,10 @@ function ProblemStatementDisplay({ token, onUnauthorized, onLogout }) {
     let active = true;
     let timer;
     let failures = 0;
+    const schedule = (delay) => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(load, delay);
+    };
     const load = async () => {
       try {
         const response = await fetch(`${API_URL}/public/leaderboard`, {
@@ -39,13 +43,16 @@ function ProblemStatementDisplay({ token, onUnauthorized, onLogout }) {
           setConnection("reconnecting");
         }
       } finally {
-        if (active) timer = window.setTimeout(load, failures ? Math.min(30_000, 1000 * 2 ** failures) : 2000);
+        if (active) schedule(failures ? Math.min(30_000, 1000 * 2 ** failures) : document.hidden ? 30_000 : 2000);
       }
     };
+    const onVisibility = () => { if (!document.hidden) schedule(0); };
     void load();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       active = false;
       if (timer) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [onUnauthorized, token]);
 
