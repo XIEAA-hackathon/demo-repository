@@ -4,6 +4,7 @@ set -Eeuo pipefail
 REPO_ROOT=/home/ec2-user/demo-repository
 BACKEND_ROOT="$REPO_ROOT/Backend"
 VENV_ROOT="$BACKEND_ROOT/venv"
+DATABASE_PATH="$BACKEND_ROOT/casino_hackathon.db"
 STATIC_ROOT=/opt/casino_hackathon/current/static
 STAGING_ROOT=/home/ec2-user/deploy-staging
 BACKUP_ROOT=/opt/casino_hackathon/main1-backups
@@ -198,6 +199,24 @@ rsync -a \
   "$BACKEND_ROOT/" "$backup/backend/"
 rsync -a "$STATIC_ROOT/" "$backup/static/"
 printf '%s\n' "$previous_sha" > "$backup/deployed-sha"
+if [[ -f $DATABASE_PATH ]]; then
+  database_backup="$backup/database/casino_hackathon.db"
+  install -d -m 0750 "$(dirname "$database_backup")"
+  log "Creating and validating SQLite backup before startup schema upgrades"
+  "$VENV_ROOT/bin/python" - "$DATABASE_PATH" "$database_backup" <<'PY'
+import sqlite3
+import sys
+
+source_path, backup_path = sys.argv[1:]
+with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as source:
+    with sqlite3.connect(backup_path) as target:
+        source.backup(target)
+        result = target.execute("PRAGMA quick_check").fetchone()
+if result != ("ok",):
+    raise SystemExit(f"SQLite backup validation failed: {result!r}")
+PY
+  test -s "$database_backup"
+fi
 
 stage="BACKEND DEPENDENCIES"
 backend_changed=1
@@ -251,9 +270,9 @@ log "Nginx configuration validated and reloaded"
 
 stage="HEALTH CHECK"
 test "$(curl --fail --silent --show-error http://127.0.0.1:8000/health)" = '{"status":"ok"}'
-test "$(curl --fail --silent --show-error http://127.0.0.1/api/health)" = '{"status":"ok"}'
-for path in / /admin/ /participant/ /leaderboard; do
-  curl --fail --silent --show-error "http://127.0.0.1$path" | grep -qi '<div id="root"></div>'
+test "$(curl --header 'Host: bidtobuild.dev' --fail --silent --show-error http://127.0.0.1/api/health)" = '{"status":"ok"}'
+for path in / /admin/ /participant/ /leaderboard/problem; do
+  curl --header 'Host: bidtobuild.dev' --fail --silent --show-error "http://127.0.0.1$path" | grep -qi '<div id="root"></div>'
 done
 
 stage="LIVE"
