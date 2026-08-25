@@ -138,9 +138,31 @@ if [[ ! $previous_sha =~ ^[0-9a-f]{40}$ ]] || ! git -C "$REPO_ROOT" cat-file -e 
   previous_sha=$(git -C "$REPO_ROOT" rev-parse HEAD)
 fi
 if ! git -C "$REPO_ROOT" diff --quiet "$previous_sha" -- Backend; then
-  echo "Backend contains tracked changes relative to the last deployed commit; refusing to overwrite them." >&2
-  git -C "$REPO_ROOT" diff --name-status "$previous_sha" -- Backend >&2
-  exit 1
+  mapfile -t backend_drift < <(git -C "$REPO_ROOT" diff --name-status "$previous_sha" -- Backend)
+  restore_paths=()
+  drift_is_safe=1
+  for record in "${backend_drift[@]}"; do
+    status=${record%%$'\t'*}
+    path=${record#*$'\t'}
+    if [[ $status != D || $path != Backend/* ]] \
+      || ! git -C "$REPO_ROOT" cat-file -e "$previous_sha:$path" 2>/dev/null \
+      || ! git -C "$REPO_ROOT" diff --quiet "$previous_sha" "$deploy_sha" -- "$path"; then
+      drift_is_safe=0
+      break
+    fi
+    restore_paths+=("$path")
+  done
+
+  if [[ $drift_is_safe -eq 1 && ${#restore_paths[@]} -gt 0 ]]; then
+    log "Restoring unchanged tracked Backend files missing from the server checkout"
+    git -C "$REPO_ROOT" restore --source="$previous_sha" --worktree -- "${restore_paths[@]}"
+  fi
+
+  if ! git -C "$REPO_ROOT" diff --quiet "$previous_sha" -- Backend; then
+    echo "Backend contains tracked changes relative to the last deployed commit; refusing to overwrite them." >&2
+    git -C "$REPO_ROOT" diff --name-status "$previous_sha" -- Backend >&2
+    exit 1
+  fi
 fi
 
 stage="STAGING"
