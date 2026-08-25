@@ -155,7 +155,7 @@ if ! git -C "$REPO_ROOT" diff --quiet "$previous_sha" -- Backend; then
 
   if [[ $drift_is_safe -eq 1 && ${#restore_paths[@]} -gt 0 ]]; then
     log "Restoring unchanged tracked Backend files missing from the server checkout"
-    git -C "$REPO_ROOT" restore --source="$previous_sha" --worktree -- "${restore_paths[@]}"
+    git -C "$REPO_ROOT" archive "$previous_sha" -- "${restore_paths[@]}" | tar -x -C "$REPO_ROOT"
   fi
 
   if ! git -C "$REPO_ROOT" diff --quiet "$previous_sha" -- Backend; then
