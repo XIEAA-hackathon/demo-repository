@@ -1,6 +1,6 @@
 """Wildcard slot auction, ranked selection, history, and deterministic ties."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -26,6 +26,7 @@ from app.models.models import (
     WildcardBid,
     WildcardSelectionPool,
 )
+from app.services.wildcard_service import reconcile_wildcard_selection
 
 
 def _team(db, index: int, *, round1_problem=None):
@@ -118,9 +119,8 @@ def _run_slot_flow(client, admin_headers, db, *, applicants: int, slots: int, pr
 
     started = client.post("/admin/rounds/wildcard/bidding/start", headers=admin_headers)
     assert started.status_code == 200, started.text
-    for index, team_headers in enumerate(headers):
-        amount = 900 - index * 50
-        response = client.post("/wildcard/bid", params={"amount": amount}, headers=team_headers)
+    for team_headers in reversed(headers):
+        response = client.post("/wildcard/bid", json={"increment": 5}, headers=team_headers)
         assert response.status_code == 200, response.text
 
     closed = client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers)
@@ -162,9 +162,38 @@ def _run_slot_flow(client, admin_headers, db, *, applicants: int, slots: int, pr
     return teams, headers, choice_counts, round1_problem
 
 
+def _prepare_active_selection(client, admin_headers, db, *, slots=3, problems=5):
+    _prepare_round(db)
+    config = db.query(EventConfig).first()
+    config.wildcard_selection_seconds = 10
+    db.commit()
+    teams, headers = [], []
+    for index in range(1, slots + 1):
+        team, email, password = _team(db, index)
+        teams.append(team)
+        headers.append(_login(client, email, password))
+    assert client.post("/admin/rounds/wildcard/applications/open", headers=admin_headers).status_code == 200
+    for team_headers in headers:
+        assert client.post("/wildcard/apply", headers=team_headers).status_code == 200
+    assert client.post("/admin/rounds/wildcard/applications/close", headers=admin_headers).status_code == 200
+    assert client.post(
+        "/admin/rounds/wildcard/problems/import",
+        headers=admin_headers,
+        files={"file": ("wildcard.csv", _problem_csv(problems), "text/csv")},
+    ).status_code == 200
+    assert client.post("/admin/rounds/wildcard/slots", headers=admin_headers, json={"slots": slots}).status_code == 200
+    assert client.post("/admin/rounds/wildcard/bidding/start", headers=admin_headers).status_code == 200
+    for team_headers in reversed(headers):
+        assert client.post("/wildcard/bid", json={"increment": 5}, headers=team_headers).status_code == 200
+    closed = client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers)
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["selection"]["duration_seconds"] == 10
+    return teams, headers
+
+
 def test_five_slot_ranked_selection_and_problem_history(client, admin_headers, db):
     teams, headers, choice_counts, round1_problem = _run_slot_flow(
-        client, admin_headers, db, applicants=8, slots=5, problems=5, preserve_history=True,
+        client, admin_headers, db, applicants=8, slots=5, problems=7, preserve_history=True,
     )
     assert choice_counts == [5, 4, 3, 2, 1]
     db.expire_all()
@@ -180,6 +209,119 @@ def test_three_slot_ranked_selection_is_not_hardcoded(client, admin_headers, db)
         client, admin_headers, db, applicants=3, slots=3, problems=5,
     )
     assert choice_counts == [3, 2, 1]
+
+
+def test_wildcard_selection_timer_configuration_range(client, admin_headers):
+    configured = client.put("/admin/config", headers=admin_headers, json={"wildcard_selection_seconds": 10})
+    assert configured.status_code == 200, configured.text
+    assert configured.json()["wildcard_selection_seconds"] == 10
+    assert client.put("/admin/config", headers=admin_headers, json={"wildcard_selection_seconds": 4}).status_code == 400
+    assert client.put("/admin/config", headers=admin_headers, json={"wildcard_selection_seconds": 301}).status_code == 400
+
+
+def test_selection_timeout_assigns_first_frozen_problem_and_starts_fresh_timer(client, admin_headers, db):
+    teams, headers = _prepare_active_selection(client, admin_headers, db)
+    db.expire_all()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    control.selection_ends_at = datetime.utcnow() - timedelta(seconds=1)
+    db.commit()
+
+    background_result = reconcile_wildcard_selection(db)
+    assert background_result is not None
+    assert background_result["method"] == "timeout"
+    db.expire_all()
+    first_application = db.query(Wildcard).filter(Wildcard.team_id == teams[0].id).one()
+    first_pool_row = db.query(WildcardSelectionPool).order_by(WildcardSelectionPool.position.asc()).first()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    assert first_application.problem_id == first_pool_row.problem_id
+    assert first_application.selection_method == "timeout"
+    assert first_pool_row.selected_by_team_id == teams[0].id
+    assert control.current_selection_rank == 2
+    assert control.selection_duration_seconds == 10
+    assert round((control.selection_ends_at - control.selection_started_at).total_seconds()) == 10
+
+
+def test_admin_end_turn_assigns_first_problem_and_advances(client, admin_headers, db):
+    teams, _headers = _prepare_active_selection(client, admin_headers, db)
+    state = client.get("/admin/rounds/wildcard", headers=admin_headers).json()
+    response = client.post(
+        "/admin/rounds/wildcard/selection/end-turn",
+        headers=admin_headers,
+        json={"expected_rank": state["selection"]["current_rank"], "expected_team_id": state["selection"]["current_team_id"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["assignment"]["method"] == "admin_end_turn"
+    db.expire_all()
+    first_application = db.query(Wildcard).filter(Wildcard.team_id == teams[0].id).one()
+    first_pool_row = db.query(WildcardSelectionPool).order_by(WildcardSelectionPool.position.asc()).first()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    assert first_application.problem_id == first_pool_row.problem_id
+    assert control.current_selection_rank == 2
+    assert control.selection_duration_seconds == 10
+
+
+def test_manual_submit_at_expiry_has_exactly_one_assignment(client, admin_headers, db):
+    teams, headers = _prepare_active_selection(client, admin_headers, db)
+    choices = client.get("/participant/problems?round=2", headers=headers[0]).json()
+    requested_problem_id = choices[-1]["id"]
+    db.expire_all()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    control.selection_ends_at = datetime.utcnow() - timedelta(milliseconds=1)
+    db.commit()
+
+    response = client.post(f"/wildcard/select/{requested_problem_id}", headers=headers[0])
+    assert response.status_code == 200, response.text
+    assert response.json()["selection_method"] == "timeout"
+    db.expire_all()
+    application = db.query(Wildcard).filter(Wildcard.team_id == teams[0].id).one()
+    claims = db.query(WildcardSelectionPool).filter(WildcardSelectionPool.selected_by_team_id == teams[0].id).all()
+    assert len(claims) == 1
+    assert application.problem_id == claims[0].problem_id
+    assert application.problem_id != requested_problem_id
+
+
+def test_manual_selection_just_before_expiry_wins_once(client, admin_headers, db):
+    teams, headers = _prepare_active_selection(client, admin_headers, db)
+    choices = client.get("/participant/problems?round=2", headers=headers[0]).json()
+    requested_problem_id = choices[-1]["id"]
+    deadline_base = datetime.now(timezone.utc)
+    db.expire_all()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    control.selection_ends_at = deadline_base + timedelta(seconds=1)
+    db.commit()
+
+    response = client.post(f"/wildcard/select/{requested_problem_id}", headers=headers[0])
+    assert response.status_code == 200, response.text
+    assert response.json()["selection_method"] == "manual"
+    assert reconcile_wildcard_selection(db, now=deadline_base + timedelta(seconds=2)) is None
+    db.expire_all()
+    application = db.query(Wildcard).filter(Wildcard.team_id == teams[0].id).one()
+    claims = db.query(WildcardSelectionPool).filter(WildcardSelectionPool.selected_by_team_id == teams[0].id).all()
+    assert len(claims) == 1
+    assert application.problem_id == requested_problem_id == claims[0].problem_id
+
+
+@pytest.mark.parametrize("first_actor", ["participant", "admin"])
+def test_admin_end_turn_and_participant_selection_cannot_both_win(client, admin_headers, db, first_actor):
+    teams, headers = _prepare_active_selection(client, admin_headers, db, slots=2, problems=3)
+    state = client.get("/admin/rounds/wildcard", headers=admin_headers).json()
+    choices = client.get("/participant/problems?round=2", headers=headers[0]).json()
+    participant_request = lambda: client.post(f"/wildcard/select/{choices[-1]['id']}", headers=headers[0])
+    admin_request = lambda: client.post(
+        "/admin/rounds/wildcard/selection/end-turn",
+        headers=admin_headers,
+        json={"expected_rank": state["selection"]["current_rank"], "expected_team_id": state["selection"]["current_team_id"]},
+    )
+
+    first = participant_request() if first_actor == "participant" else admin_request()
+    second = admin_request() if first_actor == "participant" else participant_request()
+    assert first.status_code == 200, first.text
+    assert second.status_code == 409, second.text
+    db.expire_all()
+    application = db.query(Wildcard).filter(Wildcard.team_id == teams[0].id).one()
+    claims = db.query(WildcardSelectionPool).filter(WildcardSelectionPool.selected_by_team_id == teams[0].id).all()
+    assert application.status == "selected"
+    assert len(claims) == 1
 
 
 def test_only_current_rank_can_select_and_slots_are_validated(client, admin_headers, db):
@@ -201,8 +343,8 @@ def test_only_current_rank_can_select_and_slots_are_validated(client, admin_head
     assert too_many.status_code == 422
     assert client.post("/admin/rounds/wildcard/slots", headers=admin_headers, json={"slots": 2}).status_code == 200
     client.post("/admin/rounds/wildcard/bidding/start", headers=admin_headers)
-    client.post("/wildcard/bid", params={"amount": 500}, headers=headers1)
-    client.post("/wildcard/bid", params={"amount": 400}, headers=headers2)
+    client.post("/wildcard/bid", json={"increment": 5}, headers=headers2)
+    client.post("/wildcard/bid", json={"increment": 5}, headers=headers1)
     client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers)
 
     available = client.get("/participant/problems?round=2", headers=headers1).json()
@@ -232,8 +374,11 @@ def test_equal_slot_bids_use_earlier_final_bid_timestamp(client, admin_headers, 
     game.auction_timer_end = datetime.utcnow() + timedelta(seconds=60)
     db.commit()
 
-    assert client.post("/wildcard/bid", params={"amount": 500}, headers=headers1).status_code == 200
-    assert client.post("/wildcard/bid", params={"amount": 500}, headers=headers2).status_code == 200
+    db.add_all([
+        WildcardBid(team_id=team1.id, amount=500, timestamp=datetime.utcnow() - timedelta(seconds=1)),
+        WildcardBid(team_id=team2.id, amount=500, timestamp=datetime.utcnow()),
+    ])
+    db.commit()
     result = client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers)
     assert result.status_code == 200
     assert result.json()["winners"][0]["team_id"] == team1.id
@@ -287,8 +432,8 @@ def test_simultaneous_wildcard_choices_allow_exactly_one_claim(tmp_path):
     assert client.post("/admin/rounds/wildcard/slots", headers=admin_headers, json={"slots": 2}).status_code == 200
     started = client.post("/admin/rounds/wildcard/bidding/start", headers=admin_headers)
     assert started.status_code == 200, started.text
-    assert client.post("/wildcard/bid", params={"amount": 500}, headers=headers1).status_code == 200
-    assert client.post("/wildcard/bid", params={"amount": 400}, headers=headers2).status_code == 200
+    assert client.post("/wildcard/bid", json={"increment": 5}, headers=headers2).status_code == 200
+    assert client.post("/wildcard/bid", json={"increment": 5}, headers=headers1).status_code == 200
     assert client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers).status_code == 200
 
     choices = client.get("/participant/problems?round=2", headers=headers1).json()

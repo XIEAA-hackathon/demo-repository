@@ -122,7 +122,7 @@ def _default_password() -> str:
 def parse_registration_file(filename: str, content: bytes, simple_mode: bool = False) -> Dict[str, Any]:
     """Parse and validate an uploaded registration workbook without mutating data."""
     lower_name = filename.lower()
-    empty_result = {"rows": [], "warnings": [], "errors": [], "row_errors": [], "detected_columns": {}}
+    empty_result = {"rows": [], "warnings": [], "errors": [], "row_errors": [], "detected_columns": {}, "source_headers": []}
     try:
         if lower_name.endswith((".xlsx", ".xlsm")):
             data = _read_xlsx(content)
@@ -137,13 +137,17 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
         return {**empty_result, "errors": ["The file contains no rows."]}
 
     headers = [str(value).strip() if value is not None else "" for value in data[0]]
+    password_column_indexes = {
+        index for index, header in enumerate(headers)
+        if _norm_header(header) in {"leaderpassword", "leaderloginpassword", "temporarypassword"}
+    }
     mapping, header_errors = _detect_columns(headers)
     errors = list(header_errors)
     warnings: List[str] = []
     row_errors: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
     if header_errors:
-        return {**empty_result, "errors": errors, "detected_columns": mapping}
+        return {**empty_result, "errors": errors, "detected_columns": mapping, "source_headers": headers}
 
     seen_teams: Dict[str, int] = {}
     seen_leaders: Dict[str, int] = {}
@@ -238,6 +242,10 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
             "members": members,
             "warnings": [],
             "status": "new",
+            "source_values": [
+                "EXISTING ACCOUNT" if index in password_column_indexes and value else value
+                for index, value in enumerate(cells)
+            ],
         })
 
     return {
@@ -246,6 +254,7 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
         "errors": errors,
         "row_errors": row_errors,
         "detected_columns": mapping,
+        "source_headers": headers,
     }
 
 def _read_csv(content: bytes) -> List[List[str]]:
@@ -327,6 +336,51 @@ def build_registration_credential_csv(
         credential = leader_credentials.get(row_number, {"email": "", "password": ""})
         writer.writerow([*row, credential["email"], credential["password"]])
     return output.getvalue().encode("utf-8-sig")
+
+
+ASSIGNMENT_HEADERS = [
+    "Round 1 Problem Number",
+    "Round 1 Problem Title",
+    "Round 1 Problem Description",
+    "Wildcard Problem Number",
+    "Wildcard Problem Title",
+    "Wildcard Problem Description",
+    "Final Problem Number",
+    "Final Problem Title",
+    "Final Problem Description",
+]
+
+
+def build_registration_assignment_csv(headers: List[str], rows: List[List[Any]]) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(headers)
+    writer.writerows(rows)
+    return output.getvalue().encode("utf-8-sig")
+
+
+def build_registration_assignment_workbook(headers: List[str], rows: List[List[Any]]) -> bytes:
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Participant Assignments"
+    sheet.append(headers)
+    for row in rows:
+        sheet.append(row)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for column in sheet.columns:
+        values = [str(cell.value or "") for cell in column]
+        sheet.column_dimensions[column[0].column_letter].width = min(60, max(12, max(map(len, values), default=0) + 2))
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
 
 def generate_credentials(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """Produce one credential per leader account from parsed rows (passwords NOT persisted)."""

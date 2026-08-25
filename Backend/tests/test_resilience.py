@@ -59,7 +59,7 @@ def test_expired_round_one_bidding_rejects_late_bid_and_marks_ready(client, db):
     db.commit()
 
     headers = _login(client, user.email, "temp-pass")
-    response = client.post("/bid", headers=headers, json={"ps_id": problem.id, "amount": 100})
+    response = client.post("/bid", headers=headers, json={"ps_id": problem.id, "increment": 5})
     assert response.status_code == 409
     db.expire_all()
     assert db.query(GameConfig).first().state == "ROUND1_RESULT"

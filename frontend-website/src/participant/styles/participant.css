@@ -231,6 +231,9 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 .bid-current span { margin-bottom: .3rem; color: var(--muted); font-size: .65rem; letter-spacing: .12em; text-transform: uppercase; }
 .bid-current strong { color: var(--gold-bright); font: 600 1.15rem 'JetBrains Mono', monospace; }
 .bid-controls { display: grid; grid-template-columns: minmax(9rem, .45fr) minmax(0, 1fr); align-items: end; gap: 1rem; }
+.quick-bid-buttons { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .65rem; }
+.quick-bid-buttons .button { width: 100%; }
+.bid-current small { display: block; margin-top: .35rem; color: var(--muted); font-size: .68rem; }
 .bid-rules { margin-top: .65rem; margin-bottom: 0; font-size: .76rem; }
 .bid-cooldown { margin: .65rem 0 0; color: var(--gold-bright); font-size: .8rem; font-variant-numeric: tabular-nums; }
 .bid-cooldown strong { color: var(--text); }
@@ -315,6 +318,11 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 .confirmation-mark--muted { border-color: var(--muted); color: var(--muted); box-shadow: none; }
 
 /* ============ Wildcard selection ============ */
+.wildcard-selection-timer { display: flex; align-items: center; gap: 1rem; padding: 1rem 1.2rem; }
+.wildcard-selection-timer > span { color: var(--muted); font-size: .68rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+.wildcard-selection-timer .countdown { margin-left: auto; }
+.wildcard-selection-timer small { color: var(--danger); font-weight: 700; }
+.wildcard-selection-timer.is-warning { border-color: rgba(255,82,121,.5); box-shadow: 0 0 24px rgba(255,82,121,.1); }
 .problem-swap { display: grid; grid-template-columns: 1fr auto 1fr; gap: 1rem; align-items: center; }
 .problem-swap > div { padding: .8rem; border: 1px solid rgba(255,255,255,.09); border-radius: .6rem; }
 .problem-swap__tag { display: block; margin-bottom: .3rem; color: var(--muted); font-size: .62rem; letter-spacing: .14em; text-transform: uppercase; }

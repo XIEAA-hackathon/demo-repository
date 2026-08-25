@@ -134,11 +134,11 @@ def test_only_team_leader_controls_mutations(client, admin_headers, db):
 
     assert client.get("/participant/dashboard", headers=member_headers).status_code == 200
     assert client.get("/participant/leaderboard", headers=member_headers).status_code == 200
-    assert client.post("/bid", headers=member_headers, json={"ps_id": round_one.id, "amount": 100}).status_code == 403
-    leader_bid = client.post("/bid", headers=leader_headers, json={"ps_id": round_one.id, "amount": 100})
+    assert client.post("/bid", headers=member_headers, json={"ps_id": round_one.id, "increment": 5}).status_code == 403
+    leader_bid = client.post("/bid", headers=leader_headers, json={"ps_id": round_one.id, "increment": 25})
     assert leader_bid.status_code == 200, leader_bid.text
     member_dashboard = client.get("/participant/dashboard", headers=member_headers).json()
-    assert member_dashboard["currentBid"]["amount"] == 100
+    assert member_dashboard["currentBid"]["amount"] == 50
     assert member_dashboard["isLeader"] is False
 
     config.state = "WILDCARD_APPLICATION"
@@ -159,8 +159,8 @@ def test_only_team_leader_controls_mutations(client, admin_headers, db):
     wildcard_control.applications_open = False
     bonus.status = "current"
     db.commit()
-    assert client.post("/wildcard/bid?amount=150", headers=member_headers).status_code == 403
-    assert client.post("/wildcard/bid?amount=150", headers=leader_headers).status_code == 200
+    assert client.post("/wildcard/bid", headers=member_headers, json={"increment": 5}).status_code == 403
+    assert client.post("/wildcard/bid", headers=leader_headers, json={"increment": 5}).status_code == 200
 
     team.ps_id = round_one.id
     team.round1_problem_id = round_one.id
@@ -208,7 +208,7 @@ def test_cross_team_id_injection_cannot_redirect_a_leaders_bid(client, admin_hea
     response = client.post(
         "/bid",
         headers=headers,
-        json={"ps_id": problem.id, "amount": 100, "team_id": beta["team_id"]},
+        json={"ps_id": problem.id, "increment": 5, "team_id": beta["team_id"]},
     )
     assert response.status_code == 200, response.text
     bid = db.query(Bid).one()
@@ -237,9 +237,9 @@ def test_teammate_websocket_receives_leaders_live_bid(client, admin_headers, db)
         assert snapshot["type"] == "event_snapshot"
         assert snapshot["payload"]["identity"]["role"] == "member"
 
-        response = client.post("/bid", headers=leader_headers, json={"ps_id": problem.id, "amount": 420})
+        response = client.post("/bid", headers=leader_headers, json={"ps_id": problem.id, "increment": 25})
         assert response.status_code == 200, response.text
         update = socket.receive_json()
         assert update["type"] == "bid_updated"
         assert update["payload"]["team_id"] == result["team_id"]
-        assert update["payload"]["amount"] == 420
+        assert update["payload"]["amount"] == 50

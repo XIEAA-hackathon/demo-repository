@@ -19,7 +19,13 @@ from app.services.event_service import (
     ensure_leader, event_snapshot, event_timing, transition_event_state,
 )
 from app.api.websockets import manager
-from app.services.wildcard_service import available_wildcard_problems, current_selection, ranked_wildcard_bids
+from app.services.wildcard_service import (
+    available_wildcard_problems,
+    current_selection,
+    ranked_wildcard_bids,
+    reconcile_wildcard_selection,
+    selection_remaining_seconds,
+)
 from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_remaining
 
@@ -46,6 +52,7 @@ def _valid_github_url(value: str) -> bool:
 
 @router.get("/participant/dashboard", response_model=ParticipantDashboardResponse)
 def get_participant_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
+    reconcile_wildcard_selection(db)
     team = get_team_for_user(db, current_user)
     if not team:
         raise HTTPException(status_code=404, detail="No team linked to this account")
@@ -111,11 +118,16 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             winning_bid=wildcard.winning_bid,
             problem_id=wildcard.problem_id,
             selected_at=wildcard.selected_at,
+            selection_method=wildcard.selection_method,
             current_selection_rank=active_selection[0].rank if active_selection else None,
             current_selection_team=active_selection[1].team_name if active_selection else None,
             is_selection_turn=bool(active_selection and active_selection[1].id == team.id),
             available_problem_count=len(available_wildcard_problems(db)),
             slot_count=wildcard_control.slot_count,
+            selection_started_at=wildcard_control.selection_started_at,
+            selection_ends_at=wildcard_control.selection_ends_at,
+            selection_duration_seconds=wildcard_control.selection_duration_seconds,
+            selection_remaining_seconds=selection_remaining_seconds(wildcard_control),
         )
 
     submission = db.query(Submission).filter(Submission.team_id == team.id).first()
@@ -194,8 +206,10 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             wildcard_slots=event_config.wildcard_slots,
             wildcard_application_seconds=event_config.wildcard_application_seconds,
             wildcard_starting_bid=event_config.wildcard_starting_bid,
+            wildcard_bid_increment=event_config.wildcard_bid_increment,
             wildcard_preview_seconds=event_config.wildcard_preview_seconds,
             wildcard_bid_seconds=event_config.wildcard_bid_seconds,
+            wildcard_selection_seconds=event_config.wildcard_selection_seconds,
             coding_duration_seconds=event_config.coding_duration_seconds,
             bid_cooldown_seconds=event_config.bid_cooldown_seconds,
         ),
@@ -230,6 +244,7 @@ def get_participant_problems(
     event_config = get_or_create_event_config(db)
     starting_bid = event_config.round1_minimum_bid if round == 1 else 0
     if round == 2:
+        reconcile_wildcard_selection(db)
         team = get_team_for_user(db, current_user)
         active = current_selection(db)
         if not team or not active or active[1].id != team.id:

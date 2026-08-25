@@ -1,5 +1,5 @@
 import type {
-  Bid,
+  Bid, BidIncrement,
   Id,
   LeaderboardEntry,
   ParticipantDashboard,
@@ -13,12 +13,12 @@ export interface ParticipantService {
   getParticipantDashboard(): Promise<ParticipantDashboard>
   getCurrentProblem(): Promise<Problem | WildcardProblem | null>
   getProblems(round: 1 | 2): Promise<WildcardProblem[]>
-  placeBid(problemId: Id, amount: number): Promise<Bid>
+  placeBid(problemId: Id, increment: BidIncrement): Promise<Bid>
   getLeaderboard(round?: Bid['round']): Promise<LeaderboardEntry[]>
   applyForWildcard(): Promise<WildcardApplication>
   declineWildcard(): Promise<void>
   getWildcardProblems(): Promise<WildcardProblem[]>
-  placeWildcardBid(amount: number): Promise<void>
+  placeWildcardBid(increment: BidIncrement): Promise<number>
   selectWildcardProblem(problemId: Id): Promise<WildcardProblem>
   submitGitHubRepository(repositoryUrl: string): Promise<Submission>
 }

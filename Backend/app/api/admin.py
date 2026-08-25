@@ -38,10 +38,13 @@ from app.services.event_service import (
 from app.services.registration_import import (
     parse_registration_file, generate_credentials, _default_password, _is_valid_email,
     build_registration_credential_csv, build_registration_credential_workbook,
+    build_registration_assignment_csv, build_registration_assignment_workbook,
+    ASSIGNMENT_HEADERS,
 )
 from app.services.reset_service import reset_event_and_imported_participants
 from app.services.activity_log import record_event
 from app.core.security import get_password_hash
+from app.core.event_constants import ROUND1_WINNER_COUNT
 import json
 
 router = APIRouter()
@@ -134,12 +137,18 @@ async def update_event_config_admin(
     for field in ["round1_preview_seconds", "round1_bid_seconds", "wildcard_application_seconds", "wildcard_preview_seconds", "wildcard_bid_seconds"]:
         if field in data and data[field] <= 0:
             raise HTTPException(status_code=400, detail=f"{field} must be > 0")
-    if "round1_winner_count" in data and data["round1_winner_count"] <= 0:
-        raise HTTPException(status_code=400, detail="round1_winner_count must be > 0")
+    if "wildcard_selection_seconds" in data and not 5 <= data["wildcard_selection_seconds"] <= 300:
+        raise HTTPException(status_code=400, detail="wildcard_selection_seconds must be between 5 and 300")
+    if "round1_winner_count" in data and data["round1_winner_count"] != ROUND1_WINNER_COUNT:
+        raise HTTPException(status_code=400, detail=f"round1_winner_count must be exactly {ROUND1_WINNER_COUNT}")
     if "round1_minimum_bid" in data and data["round1_minimum_bid"] < 0:
         raise HTTPException(status_code=400, detail="round1_minimum_bid must be >= 0")
     if "round1_bid_increment" in data and data["round1_bid_increment"] <= 0:
         raise HTTPException(status_code=400, detail="round1_bid_increment must be > 0")
+    if "wildcard_starting_bid" in data and data["wildcard_starting_bid"] < 0:
+        raise HTTPException(status_code=400, detail="wildcard_starting_bid must be >= 0")
+    if "wildcard_bid_increment" in data and data["wildcard_bid_increment"] <= 0:
+        raise HTTPException(status_code=400, detail="wildcard_bid_increment must be > 0")
     if "wildcard_slots" in data and data["wildcard_slots"] < 0:
         raise HTTPException(status_code=400, detail="wildcard_slots must be >= 0")
     if "wildcard_problem_count" in data and data["wildcard_problem_count"] < 0:
@@ -539,6 +548,15 @@ async def import_registrations(
     leader_credentials: dict[int, dict[str, str]] = {}
 
     try:
+        import_record = RegistrationImport(
+            filename=filename,
+            status="committed",
+            committed_at=datetime.now(timezone.utc),
+            source_name=filename,
+            source_headers_json=json.dumps(parsed.get("source_headers") or []),
+        )
+        db.add(import_record)
+        db.flush()
         for row in valid_rows:
             team = db.query(Team).filter(func.lower(Team.team_name) == row["team_name"].lower()).first()
             if team:
@@ -597,6 +615,18 @@ async def import_registrations(
                 "email": leader_email,
                 "password": leader_password,
             }
+            db.add(RegistrationImportRow(
+                import_id=import_record.id,
+                row_number=row["row_number"],
+                team_name=row["team_name"],
+                leader_name=row["leader_name"],
+                leader_email=leader_email,
+                members_json=json.dumps(row["members"]),
+                status="committed",
+                warnings_json=json.dumps(row.get("warnings") or []),
+                source_values_json=json.dumps(row.get("source_values") or []),
+                team_id=team.id,
+            ))
 
         if any(not leader_credentials[row["row_number"]]["password"] for row in valid_rows):
             raise RuntimeError("A leader credential output value was not generated.")
@@ -722,6 +752,116 @@ def download_registration_credentials(
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
+
+def _assignment_problem_values(problem: ProblemStatement | None) -> list[str]:
+    if not problem:
+        return ["", "", ""]
+    return [problem.ps_number, problem.title, problem.description or ""]
+
+
+def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], str]:
+    latest_import = (
+        db.query(RegistrationImport)
+        .filter(RegistrationImport.status == "committed")
+        .order_by(RegistrationImport.committed_at.desc(), RegistrationImport.id.desc())
+        .first()
+    )
+    source_headers = json.loads(latest_import.source_headers_json or "[]") if latest_import else []
+    stored_rows = (
+        db.query(RegistrationImportRow)
+        .filter(RegistrationImportRow.import_id == latest_import.id)
+        .order_by(RegistrationImportRow.row_number.asc())
+        .all()
+        if latest_import else []
+    )
+
+    if source_headers and stored_rows:
+        headers = [str(header) for header in source_headers]
+        source_rows = []
+        for stored in stored_rows:
+            values = [str(value or "") for value in json.loads(stored.source_values_json or "[]")]
+            values.extend([""] * (len(headers) - len(values)))
+            team = db.query(Team).filter(Team.id == stored.team_id).first() if stored.team_id else None
+            if not team and stored.leader_email:
+                leader = db.query(User).filter(func.lower(User.email) == stored.leader_email.lower()).first()
+                if leader:
+                    team = db.query(Team).filter(or_(Team.id == leader.team_id, Team.leader_id == leader.id)).first()
+            if not team:
+                team = db.query(Team).filter(func.lower(Team.team_name) == stored.team_name.lower()).first()
+            source_rows.append((values[:len(headers)], team, stored.leader_email))
+        suffix = ".xlsx" if latest_import.filename.lower().endswith((".xlsx", ".xlsm")) else ".csv"
+    else:
+        teams = db.query(Team).filter(Team.is_system_team.is_(False)).order_by(Team.team_name.asc()).all()
+        max_members = max((len(team.members) for team in teams), default=0)
+        headers = ["Team Name", "Leader Name", "Leader Email"]
+        for position in range(1, max_members + 1):
+            headers.extend([f"Member {position} Name", f"Member {position} Email"])
+        source_rows = []
+        for team in teams:
+            leader = db.query(User).filter(User.id == team.leader_id).first()
+            values = [team.team_name, leader.name if leader else "", leader.email if leader else ""]
+            for member in team.members:
+                values.extend([member.member_name, member.email or ""])
+            values.extend([""] * (len(headers) - len(values)))
+            source_rows.append((values, team, leader.email if leader else ""))
+        suffix = ".csv"
+
+    normalized_headers = ["".join(character for character in header.lower() if character.isalnum()) for header in headers]
+
+    def ensure_column(label: str) -> int:
+        normalized = "".join(character for character in label.lower() if character.isalnum())
+        if normalized in normalized_headers:
+            return normalized_headers.index(normalized)
+        headers.append(label)
+        normalized_headers.append(normalized)
+        return len(headers) - 1
+
+    login_index = ensure_column("Leader Login Email")
+    assignment_indexes = [ensure_column(label) for label in ASSIGNMENT_HEADERS]
+    password_indexes = [
+        index for index, normalized in enumerate(normalized_headers)
+        if normalized in {"leaderpassword", "leaderloginpassword", "temporarypassword"}
+    ]
+
+    output_rows: list[list[str]] = []
+    for source_values, team, leader_email in source_rows:
+        values = [*source_values, *([""] * (len(headers) - len(source_values)))]
+        values[login_index] = leader_email
+        for index in password_indexes:
+            values[index] = "EXISTING ACCOUNT" if team else ""
+        round1 = db.query(ProblemStatement).filter(ProblemStatement.id == team.round1_problem_id).first() if team and team.round1_problem_id else None
+        wildcard = db.query(ProblemStatement).filter(ProblemStatement.id == team.wildcard_problem_id).first() if team and team.wildcard_problem_id else None
+        final = wildcard or round1
+        assignment_values = [
+            *_assignment_problem_values(round1),
+            *_assignment_problem_values(wildcard),
+            *_assignment_problem_values(final),
+        ]
+        for index, value in zip(assignment_indexes, assignment_values):
+            values[index] = value
+        output_rows.append(values)
+    return headers, output_rows, suffix
+
+
+@router.get("/admin/registration/assignments")
+def download_registration_assignments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    headers, rows, suffix = _assignment_export_data(db)
+    if not rows:
+        raise HTTPException(status_code=409, detail="No imported participant registration data is available to export.")
+    content = (
+        build_registration_assignment_workbook(headers, rows)
+        if suffix == ".xlsx" else build_registration_assignment_csv(headers, rows)
+    )
+    filename = f"bid_to_build_updated_registration_{datetime.utcnow().year}{suffix}"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type=XLSX_MEDIA_TYPE if suffix == ".xlsx" else "text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 @router.post("/admin/registration/import/preview", response_model=ImportPreviewResponse, deprecated=True)
 async def preview_registration_import(
     file: UploadFile = File(...),
@@ -768,6 +908,7 @@ async def preview_registration_import(
         filename=file.filename or "registration.csv",
         status="pending",
         source_name=file.filename or "registration.csv",
+        source_headers_json=json.dumps(parsed.get("source_headers") or []),
     )
     db.add(import_record)
     db.flush()
@@ -782,6 +923,7 @@ async def preview_registration_import(
             members_json=json.dumps(row["members"]),
             status="new",
             warnings_json=json.dumps(row.get("warnings") or []),
+            source_values_json=json.dumps(row.get("source_values") or []),
         )
         db.add(row_record)
     db.commit()
@@ -897,6 +1039,7 @@ async def confirm_registration_import(
             db.add(Member(team_id=team.id, member_name=member_name, email=login_id))
 
         team.is_approved = True
+        row.team_id = team.id
 
     import_record.status = "committed"
     import_record.committed_at = datetime.now(timezone.utc)

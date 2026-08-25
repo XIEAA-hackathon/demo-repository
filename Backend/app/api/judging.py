@@ -14,6 +14,7 @@ from app.schemas.schemas import JudgingWinnersUpdate
 from app.services.activity_log import record_event
 from app.services.event_service import (
     event_snapshot,
+    get_or_create_event_config,
     get_or_create_game_config,
     get_or_create_round_control,
     sync_expired_event_state,
@@ -136,6 +137,7 @@ def public_event_display(
     response.headers["Cache-Control"] = "no-store"
     sync_expired_event_state(db)
     game = get_or_create_game_config(db)
+    event_config = get_or_create_event_config(db)
     result = db.query(FinalResult).filter(FinalResult.result_status == "PUBLISHED").first()
     timing = event_snapshot(db)["timing"]
     if result:
@@ -164,6 +166,7 @@ def public_event_display(
             } if problem else None),
             "rows": board["rows"],
             "slot_count": None,
+            "base_price": event_config.round1_minimum_bid,
             "results": None,
             "timing": timing,
         }
@@ -177,6 +180,7 @@ def public_event_display(
             "problem": None,
             "rows": board["rows"],
             "slot_count": board["slot_count"],
+            "base_price": event_config.wildcard_starting_bid,
             "results": None,
             "timing": timing,
         }

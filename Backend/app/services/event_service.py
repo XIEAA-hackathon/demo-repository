@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.models.models import EventConfig, GameConfig, RoundControl, Team, User
+from app.core.event_constants import ROUND1_WINNER_COUNT
 from app.schemas.schemas import EVENT_STATES
 from app.services.activity_log import record_event
 
@@ -16,8 +17,12 @@ STATE_TRANSITIONS = {
 def get_or_create_event_config(db: Session) -> EventConfig:
     config = db.query(EventConfig).first()
     if not config:
-        config = EventConfig()
+        config = EventConfig(round1_winner_count=ROUND1_WINNER_COUNT)
         db.add(config)
+        db.commit()
+        db.refresh(config)
+    elif config.round1_winner_count != ROUND1_WINNER_COUNT:
+        config.round1_winner_count = ROUND1_WINNER_COUNT
         db.commit()
         db.refresh(config)
     return config

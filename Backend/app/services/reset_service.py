@@ -24,6 +24,7 @@ from app.models.models import (
 )
 from app.services.activity_log import record_event
 from app.services.event_service import get_or_create_event_config, get_or_create_game_config
+from app.core.event_constants import ROUND1_BASE_BID_DEFAULT, ROUND1_WINNER_COUNT, WILDCARD_BASE_BID_DEFAULT
 
 
 def reset_event_and_imported_participants(db: Session, *, actor: User, action: str) -> dict:
@@ -31,7 +32,7 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
 
     Imported participants, problem uploads, and their registration records are
     removed to preserve the existing Reset Event contract. Marked system/demo
-    accounts and teams, plus global EventConfig values, are retained.
+    accounts and teams, plus unrelated global EventConfig values, are retained.
     """
     event = get_or_create_event_config(db)
     game = get_or_create_game_config(db)
@@ -112,6 +113,9 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
     game.wildcards_visible = False
     game.last_state_update = now
     event.submissions_open = False
+    event.round1_winner_count = ROUND1_WINNER_COUNT
+    event.round1_minimum_bid = ROUND1_BASE_BID_DEFAULT
+    event.wildcard_starting_bid = WILDCARD_BASE_BID_DEFAULT
 
     record_event(
         db,

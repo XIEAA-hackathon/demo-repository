@@ -1,6 +1,7 @@
 """Registration import: teams/members/leaders, idempotency, credentials."""
 import csv
 import io
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
@@ -402,6 +403,103 @@ def test_registration_credential_reset_allows_fresh_passwords_and_preserves_syst
         assert client.post("/login", data={"username": email, "password": password}).status_code == 200
 
 
+def test_assignment_export_preserves_xlsx_format_and_original_columns(client, admin_headers):
+    imported = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("registrations.xlsx", _registration_xlsx(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert imported.status_code == 200, imported.text
+    exported = client.get("/admin/registration/assignments", headers=admin_headers)
+    assert exported.status_code == 200, exported.text
+    assert exported.headers["content-type"].startswith("application/vnd.openxmlformats")
+    workbook = load_workbook(BytesIO(exported.content), data_only=True)
+    sheet = workbook.active
+    headers = [cell.value for cell in sheet[1]]
+    row = {header: sheet.cell(row=2, column=index + 1).value for index, header in enumerate(headers)}
+    workbook.close()
+    assert row["Organizer Notes"] == "Keep alpha note"
+    assert row["Leader Login Email"] == "alpha@example.com"
+    assert "Round 1 Problem Number" in headers
+    assert "Wildcard Problem Description" in headers
+    assert "Final Problem Title" in headers
+
+
+def test_updated_registration_export_reflects_three_team_round_and_wildcard_assignments(client, admin_headers, db):
+    source = (
+        "Team Name,Leader Name,Leader Email,Organizer Notes\n"
+        "Team A,Leader A,leader.a@example.com,Keep A\n"
+        "Team B,Leader B,leader.b@example.com,Keep B\n"
+        "Team C,Leader C,leader.c@example.com,Keep C\n"
+    ).encode()
+    imported = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("registrations.csv", source, "text/csv")},
+    )
+    assert imported.status_code == 200, imported.text
+
+    round_problems = [
+        ProblemStatement(ps_number=f"R1-{index}", title=f"Round title {index}", description=f"Round description {index}", round=1, status="allocated")
+        for index in range(1, 4)
+    ]
+    wildcard_problem = ProblemStatement(
+        ps_number="WC-5", title="Wildcard title 5", description="Wildcard description 5", round=2, status="allocated",
+    )
+    db.add_all([*round_problems, wildcard_problem])
+    db.flush()
+    teams = {team.team_name: team for team in db.query(Team).filter(Team.team_name.in_(("Team A", "Team B", "Team C"))).all()}
+    for index, team_name in enumerate(("Team A", "Team B", "Team C")):
+        teams[team_name].round1_problem_id = round_problems[index].id
+        teams[team_name].ps_id = round_problems[index].id
+    teams["Team B"].wildcard_problem_id = wildcard_problem.id
+    teams["Team B"].ps_id = wildcard_problem.id
+    db.commit()
+
+    exported = client.get("/admin/registration/assignments", headers=admin_headers)
+    assert exported.status_code == 200, exported.text
+    reader = csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig")))
+    rows = {row["Team Name"]: row for row in reader}
+    assert reader.fieldnames[:4] == ["Team Name", "Leader Name", "Leader Email", "Organizer Notes"]
+    assert [rows[name]["Organizer Notes"] for name in ("Team A", "Team B", "Team C")] == ["Keep A", "Keep B", "Keep C"]
+
+    assert rows["Team A"]["Round 1 Problem Number"] == "R1-1"
+    assert rows["Team A"]["Round 1 Problem Title"] == "Round title 1"
+    assert rows["Team A"]["Round 1 Problem Description"] == "Round description 1"
+    assert rows["Team A"]["Wildcard Problem Number"] == ""
+    assert rows["Team A"]["Final Problem Number"] == "R1-1"
+
+    assert rows["Team B"]["Round 1 Problem Number"] == "R1-2"
+    assert rows["Team B"]["Round 1 Problem Title"] == "Round title 2"
+    assert rows["Team B"]["Wildcard Problem Number"] == "WC-5"
+    assert rows["Team B"]["Wildcard Problem Title"] == "Wildcard title 5"
+    assert rows["Team B"]["Wildcard Problem Description"] == "Wildcard description 5"
+    assert rows["Team B"]["Final Problem Number"] == "WC-5"
+
+    assert rows["Team C"]["Round 1 Problem Number"] == "R1-3"
+    assert rows["Team C"]["Round 1 Problem Title"] == "Round title 3"
+    assert rows["Team C"]["Round 1 Problem Description"] == "Round description 3"
+    assert rows["Team C"]["Wildcard Problem Number"] == ""
+    assert rows["Team C"]["Final Problem Number"] == "R1-3"
+
+
+def test_assignment_export_never_replays_uploaded_plaintext_password(client, admin_headers):
+    source = (
+        "Team Name,Leader Name,Leader Email,Leader Password\n"
+        "Secure Team,Secure Leader,secure@example.com,DoNotReplay123!\n"
+    ).encode()
+    imported = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("registrations.csv", source, "text/csv")},
+    )
+    assert imported.status_code == 200, imported.text
+    exported = client.get("/admin/registration/assignments", headers=admin_headers)
+    row = next(csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig"))))
+    assert row["Leader Password"] == "EXISTING ACCOUNT"
+    assert "DoNotReplay123!" not in exported.text
+
+
 def test_registration_credential_reset_clears_active_event_data(client, admin_headers, db):
     provision_demo_accounts(db)
     db.commit()
@@ -422,6 +520,15 @@ def test_registration_credential_reset_clears_active_event_data(client, admin_he
     db.add(Bid(team_id=team.id, ps_id=problem.id, amount=100, round=1))
     game = db.query(GameConfig).first()
     game.state = "ROUND1_BIDDING"
+    wildcard_control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").first()
+    if wildcard_control is None:
+        wildcard_control = RoundControl(round_type="WILDCARD")
+        db.add(wildcard_control)
+    wildcard_control.status = "PROBLEM_SELECTION"
+    wildcard_control.current_selection_rank = 1
+    wildcard_control.selection_started_at = datetime.now(timezone.utc)
+    wildcard_control.selection_ends_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+    wildcard_control.selection_duration_seconds = 30
     db.commit()
 
     reset = client.post(
@@ -440,6 +547,9 @@ def test_registration_credential_reset_clears_active_event_data(client, admin_he
     controls = {control.round_type: control for control in db.query(RoundControl).all()}
     assert controls["ROUND1"].status == "IDLE"
     assert controls["WILDCARD"].status == "NOT_STARTED"
+    assert controls["WILDCARD"].current_selection_rank is None
+    assert controls["WILDCARD"].selection_started_at is None
+    assert controls["WILDCARD"].selection_ends_at is None
     assert client.post("/login", data={"username": settings.DEMO_LEADER_EMAIL, "password": settings.DEMO_LEADER_PASSWORD}).status_code == 200
     assert client.post("/login", data={"username": settings.DEMO_ADMIN_EMAIL, "password": settings.DEMO_ADMIN_PASSWORD}).status_code == 200
 

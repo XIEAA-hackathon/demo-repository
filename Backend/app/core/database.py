@@ -33,6 +33,26 @@ def initialize_database() -> None:
         if "bid_cooldown_seconds" not in event_columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE event_config ADD COLUMN bid_cooldown_seconds INTEGER DEFAULT 5"))
+        if "wildcard_selection_seconds" not in event_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE event_config ADD COLUMN wildcard_selection_seconds INTEGER DEFAULT 30"))
+
+        datetime_type = "TIMESTAMP WITH TIME ZONE" if database_backend == "postgresql" else "DATETIME"
+        round_control_columns = {column["name"] for column in inspect(engine).get_columns("round_controls")}
+        for column_name, definition in {
+            "current_selection_rank": "INTEGER",
+            "selection_started_at": datetime_type,
+            "selection_ends_at": datetime_type,
+            "selection_duration_seconds": "INTEGER",
+        }.items():
+            if column_name not in round_control_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(f"ALTER TABLE round_controls ADD COLUMN {column_name} {definition}"))
+
+        wildcard_columns = {column["name"] for column in inspect(engine).get_columns("wildcards")}
+        if "selection_method" not in wildcard_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE wildcards ADD COLUMN selection_method VARCHAR"))
 
         user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
         if "created_at" not in user_columns:
@@ -41,6 +61,19 @@ def initialize_database() -> None:
                 connection.execute(text(f"ALTER TABLE users ADD COLUMN created_at {created_at_type}"))
         with engine.begin() as connection:
             connection.execute(text("UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"))
+
+        registration_import_columns = {column["name"] for column in inspect(engine).get_columns("registration_imports")}
+        if "source_headers_json" not in registration_import_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE registration_imports ADD COLUMN source_headers_json TEXT NOT NULL DEFAULT '[]'"))
+        registration_row_columns = {column["name"] for column in inspect(engine).get_columns("registration_import_rows")}
+        for column_name, definition in {
+            "source_values_json": "TEXT NOT NULL DEFAULT '[]'",
+            "team_id": "INTEGER",
+        }.items():
+            if column_name not in registration_row_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(f"ALTER TABLE registration_import_rows ADD COLUMN {column_name} {definition}"))
 
         # ``create_all`` does not add columns to an existing SQLite database.
         # Keep this small migration-less project upgrade-safe for local users.

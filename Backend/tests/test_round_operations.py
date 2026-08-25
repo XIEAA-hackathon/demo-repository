@@ -25,9 +25,6 @@ def _problem_csv(prefix="Problem"):
 
 
 def test_round_one_import_arbitrary_selection_and_team_lockout(client, admin_headers, db, login_headers_factory):
-    config = db.query(EventConfig).first()
-    config.round1_winner_count = 1
-    db.commit()
     alpha = _team(db, "Team Alpha", "alpha@round.test")
     beta = _team(db, "Team Beta", "beta@round.test")
     alpha_headers = login_headers_factory("alpha@round.test")
@@ -46,8 +43,7 @@ def test_round_one_import_arbitrary_selection_and_team_lockout(client, admin_hea
 
     assert client.post("/admin/rounds/round-1/preview/start", headers=admin_headers).status_code == 200
     assert client.post("/admin/rounds/round-1/bidding/start", headers=admin_headers).status_code == 200
-    assert client.post("/bid", headers=alpha_headers, json={"ps_id": problem_two["id"], "amount": 150}).status_code == 200
-    assert client.post("/bid", headers=beta_headers, json={"ps_id": problem_two["id"], "amount": 100}).status_code == 200
+    assert client.post("/bid", headers=alpha_headers, json={"ps_id": problem_two["id"], "increment": 25}).status_code == 200
     assert client.post("/admin/rounds/round-1/bidding/close", headers=admin_headers).status_code == 200
     assigned = client.post("/admin/rounds/round-1/assign-winners", headers=admin_headers)
     assert assigned.status_code == 200, assigned.text
@@ -65,10 +61,10 @@ def test_round_one_import_arbitrary_selection_and_team_lockout(client, admin_hea
     assert client.post(f"/admin/rounds/round-1/problems/{problem_one['id']}/select", headers=admin_headers).status_code == 200
     client.post("/admin/rounds/round-1/preview/start", headers=admin_headers)
     client.post("/admin/rounds/round-1/bidding/start", headers=admin_headers)
-    locked = client.post("/bid", headers=alpha_headers, json={"ps_id": problem_one["id"], "amount": 200})
+    locked = client.post("/bid", headers=alpha_headers, json={"ps_id": problem_one["id"], "increment": 25})
     assert locked.status_code == 409
     assert "cannot bid again" in locked.json()["detail"]
-    assert client.post("/bid", headers=beta_headers, json={"ps_id": problem_one["id"], "amount": 120}).status_code == 200
+    assert client.post("/bid", headers=beta_headers, json={"ps_id": problem_one["id"], "increment": 10}).status_code == 200
 
 
 def test_wildcard_applications_and_separate_problem_pool(client, admin_headers, db, login_headers_factory):
@@ -167,16 +163,16 @@ def test_round_one_live_board_uses_current_problem_and_reflects_bid_updates(clie
     db.query(EventConfig).first().bid_cooldown_seconds = 0
     db.commit()
 
-    first = client.post("/bid", headers=headers, json={"ps_id": current_problem.id, "amount": 200})
+    first = client.post("/bid", headers=headers, json={"ps_id": current_problem.id, "increment": 5})
     assert first.status_code == 200, first.text
     board = client.get("/leaderboard/round-1", headers=display_headers)
     assert board.headers["cache-control"] == "no-store"
-    assert board.json()["rows"][0]["value"] == 200
+    assert board.json()["rows"][0]["value"] == 30
 
-    updated = client.post("/bid", headers=headers, json={"ps_id": current_problem.id, "amount": 275})
+    updated = client.post("/bid", headers=headers, json={"ps_id": current_problem.id, "increment": 25})
     assert updated.status_code == 200, updated.text
     refreshed = client.get("/leaderboard/round-1", headers=display_headers).json()
-    assert refreshed["rows"][0]["value"] == 275
+    assert refreshed["rows"][0]["value"] == 55
 
 
 def test_problem_samples_round_trip_with_title_and_description(client, admin_headers):

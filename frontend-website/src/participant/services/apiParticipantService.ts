@@ -1,6 +1,6 @@
 import { apiRequest } from './apiClient'
 import type {
-  Bid, LeaderboardEntry, ParticipantDashboard, ParticipantEventState, Problem,
+  Bid, BidIncrement, LeaderboardEntry, ParticipantDashboard, ParticipantEventState, Problem,
   Submission, WildcardApplication, WildcardProblem,
 } from '../types'
 import type { ParticipantService } from './participantService'
@@ -16,7 +16,7 @@ interface RawDashboard {
   finalProblem: RawProblem | null
   currentBid: { id: number; team_id: number; ps_id: number; amount: number; round: number; timestamp: string } | null
   wildcardBidAmount: number | null
-  wildcard: { status: string; rank: number | null; winning_bid: number | null; problem_id: number | null; current_selection_rank: number | null; current_selection_team: string | null; is_selection_turn: boolean; available_problem_count: number; slot_count: number | null } | null
+  wildcard: { status: string; rank: number | null; winning_bid: number | null; problem_id: number | null; selection_method: 'manual' | 'timeout' | 'admin_end_turn' | null; current_selection_rank: number | null; current_selection_team: string | null; is_selection_turn: boolean; available_problem_count: number; slot_count: number | null; selection_started_at: string | null; selection_ends_at: string | null; selection_duration_seconds: number | null; selection_remaining_seconds: number | null } | null
   submission: { id: number; problem_id: number; repository_url: string; submitted_at: string; updated_at: string | null; submitted_by_name: string | null } | null
   finalResults: { first_place: RawWinner; second_place: RawWinner; third_place: RawWinner } | null
   bidCooldownRemainingSeconds: number
@@ -26,8 +26,8 @@ interface RawDashboard {
   wildcardApplicationsOpen: boolean
   submissionsOpen: boolean
   gameConfig: {
-    round1_winner_count: number; round1_bid_increment: number; round1_preview_seconds: number; round1_bid_seconds: number
-    wildcard_slots: number; wildcard_application_seconds: number; wildcard_preview_seconds: number; wildcard_bid_seconds: number; coding_duration_seconds: number
+    starting_coins: number; round1_winner_count: number; round1_minimum_bid: number; round1_bid_increment: number; round1_preview_seconds: number; round1_bid_seconds: number
+    wildcard_slots: number; wildcard_application_seconds: number; wildcard_starting_bid: number; wildcard_bid_increment: number; wildcard_preview_seconds: number; wildcard_bid_seconds: number; wildcard_selection_seconds: number; coding_duration_seconds: number
     bid_cooldown_seconds: number
   }
   timing: { server_time: string; started_at: string | null; ends_at: string | null; paused: boolean; paused_remaining_seconds: number | null }
@@ -92,9 +92,14 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
     wildcard: raw.wildcard ? {
       status: raw.wildcard.status, rank: raw.wildcard.rank, winningBid: raw.wildcard.winning_bid,
       selectedProblemId: raw.wildcard.problem_id == null ? null : String(raw.wildcard.problem_id),
+      selectionMethod: raw.wildcard.selection_method,
       currentSelectionRank: raw.wildcard.current_selection_rank, currentSelectionTeam: raw.wildcard.current_selection_team,
       isSelectionTurn: raw.wildcard.is_selection_turn, availableProblemCount: raw.wildcard.available_problem_count,
       slotCount: raw.wildcard.slot_count,
+      selectionStartedAt: raw.wildcard.selection_started_at,
+      selectionEndsAt: raw.wildcard.selection_ends_at,
+      selectionDurationSeconds: raw.wildcard.selection_duration_seconds,
+      selectionRemainingSeconds: raw.wildcard.selection_remaining_seconds,
     } : null,
     submission: raw.submission ? {
       id: String(raw.submission.id), teamId: String(raw.team.id), problemId: String(raw.submission.problem_id),
@@ -113,11 +118,15 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
     wildcardApplicationsOpen: raw.wildcardApplicationsOpen,
     submissionsOpen: raw.submissionsOpen,
     gameConfig: {
-      round1WinnerCount: raw.gameConfig.round1_winner_count, round1BidIncrement: raw.gameConfig.round1_bid_increment,
+      startingCoins: raw.gameConfig.starting_coins,
+      round1WinnerCount: raw.gameConfig.round1_winner_count, round1BaseBidPrice: raw.gameConfig.round1_minimum_bid,
+      round1BidIncrement: raw.gameConfig.round1_bid_increment,
       round1PreviewSeconds: raw.gameConfig.round1_preview_seconds,
       round1BidSeconds: raw.gameConfig.round1_bid_seconds, wildcardSlots: raw.gameConfig.wildcard_slots,
+      wildcardBaseBidPrice: raw.gameConfig.wildcard_starting_bid, wildcardBidIncrement: raw.gameConfig.wildcard_bid_increment,
       wildcardApplicationSeconds: raw.gameConfig.wildcard_application_seconds,
       wildcardPreviewSeconds: raw.gameConfig.wildcard_preview_seconds, wildcardBidSeconds: raw.gameConfig.wildcard_bid_seconds,
+      wildcardSelectionSeconds: raw.gameConfig.wildcard_selection_seconds,
       codingDurationSeconds: raw.gameConfig.coding_duration_seconds,
       bidCooldownSeconds: raw.gameConfig.bid_cooldown_seconds,
     },
@@ -135,8 +144,8 @@ class ApiParticipantService implements ParticipantService {
     const raw = await apiRequest<RawProblem[]>(`/participant/problems?round=${round}`)
     return raw.map((problem) => ({ ...mapProblem(problem), available: problem.available ?? true }))
   }
-  async placeBid(problemId: string, amount: number) {
-    await apiRequest('/bid', { method: 'POST', body: JSON.stringify({ ps_id: Number(problemId), amount }) })
+  async placeBid(problemId: string, increment: BidIncrement) {
+    await apiRequest('/bid', { method: 'POST', body: JSON.stringify({ ps_id: Number(problemId), increment }) })
     const bid = (await this.getParticipantDashboard()).latestBid
     if (!bid) throw new Error('The bid was accepted but could not be reloaded.')
     return bid
@@ -152,8 +161,9 @@ class ApiParticipantService implements ParticipantService {
   }
   async declineWildcard() { await apiRequest('/wildcard/decline', { method: 'POST' }) }
   async getWildcardProblems() { return (await this.getProblems(2)) as WildcardProblem[] }
-  async placeWildcardBid(amount: number) {
-    await apiRequest(`/wildcard/bid?amount=${amount}`, { method: 'POST' })
+  async placeWildcardBid(increment: BidIncrement) {
+    const result = await apiRequest<{ amount: number }>('/wildcard/bid', { method: 'POST', body: JSON.stringify({ increment }) })
+    return result.amount
   }
   async selectWildcardProblem(problemId: string) {
     await apiRequest(`/wildcard/select/${encodeURIComponent(problemId)}`, { method: 'POST' })

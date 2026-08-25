@@ -3,6 +3,7 @@ import { useParticipant } from '../ParticipantContext'
 import { getParticipantPermissions } from '../permissions'
 import type { WildcardProblem } from '../types'
 import Modal from '../components/Modal'
+import Countdown from '../components/Countdown'
 import WaitingState from '../components/WaitingState'
 import { Button, Card, PageHeading } from '../components/ui'
 
@@ -46,13 +47,18 @@ export default function WildcardSelectionPage() {
   if (!dashboard) return null
   const permissions = getParticipantPermissions(dashboard)
   const wildcard = dashboard.wildcard
-  if (wildcard?.status === 'selected' && dashboard.wildcardProblem) return <div className="stack"><PageHeading eyebrow="Wildcard · Problem selection" title="Final problem confirmed" /><Card className="center-card"><span className="confirmation-mark">✓</span><h2>Problem #{String(dashboard.wildcardProblem.number).padStart(2, '0')}</h2><p>{dashboard.wildcardProblem.title}</p><p className="muted">{dashboard.wildcardProblem.description}</p></Card></div>
+  if (wildcard?.status === 'selected' && dashboard.wildcardProblem) {
+    const automatic = wildcard.selectionMethod === 'timeout' || wildcard.selectionMethod === 'admin_end_turn'
+    return <div className="stack"><PageHeading eyebrow="Wildcard · Problem selection" title={wildcard.selectionMethod === 'timeout' ? 'Time expired' : automatic ? 'Selection turn ended' : 'Final problem confirmed'} /><Card className="center-card"><span className="confirmation-mark">{automatic ? '!' : '✓'}</span>{automatic && <p className="eyebrow">Problem automatically assigned</p>}<h2>Problem #{String(dashboard.wildcardProblem.number).padStart(2, '0')}</h2><p>{dashboard.wildcardProblem.title}</p><p className="muted">{dashboard.wildcardProblem.description}</p></Card></div>
+  }
   if (wildcard?.status === 'eliminated') return <div className="stack"><PageHeading eyebrow="Wildcard · Result" title="Outside the qualifying slots" /><Card className="center-card"><p>Your slot bid did not finish in the top {wildcard.slotCount ?? dashboard.gameConfig.wildcardSlots}.</p></Card></div>
   if (wildcard?.status !== 'qualified') return <div className="stack"><PageHeading eyebrow="Wildcard · Problem selection" title="Selection in progress" /><Card className="center-card"><WaitingState text="Qualified teams are selecting their problems in rank order." /></Card></div>
-  if (!wildcard.isSelectionTurn) return <div className="stack"><PageHeading eyebrow={`Wildcard · Rank #${wildcard.rank}`} title="Your selection slot is secured" /><Card className="center-card"><h2>{wildcard.currentSelectionTeam ?? 'The next team'} is choosing now</h2><p>Your winning bid was {wildcard.winningBid} coins. Your team’s balance has been updated.</p><WaitingState text="Your problem choices will unlock when it is your turn." /></Card></div>
+  if (!wildcard.isSelectionTurn) return <div className="stack"><PageHeading eyebrow={`Wildcard · Rank #${wildcard.rank}`} title="Your selection slot is secured" /><Card className="center-card"><h2>{wildcard.currentSelectionTeam ?? 'The next team'} is choosing now</h2><p>Your winning bid was {wildcard.winningBid} coins. Your team’s balance has been updated.</p><WaitingState text={`Waiting for Rank #${wildcard.currentSelectionRank ?? 1} to choose.`} /></Card></div>
+  const selectionTiming = { ...dashboard.timing, startedAt: wildcard.selectionStartedAt, endsAt: wildcard.selectionEndsAt }
   return (
     <div className="stack">
       <PageHeading eyebrow={`Wildcard · Rank #${wildcard.rank}`} title="Choose your final problem">It is your turn. Once confirmed, the next ranked team can choose.</PageHeading>
+      <Card className={`wildcard-selection-timer${(wildcard.selectionRemainingSeconds ?? 99) <= 10 ? ' is-warning' : ''}`}><span>Time remaining</span><Countdown timing={selectionTiming} />{(wildcard.selectionRemainingSeconds ?? 99) <= 10 && <small>10 seconds remaining — choose now.</small>}</Card>
       <div className="problem-grid">
         {problems.map((item) => (
           <label key={item.id} className={`card selectable ${selected === item.id ? 'is-selected' : ''}`}>

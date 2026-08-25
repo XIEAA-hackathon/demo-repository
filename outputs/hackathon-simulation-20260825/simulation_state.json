@@ -1,0 +1,533 @@
+{
+  "admin_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbi5kZW1vQGJpZHRvYnVpbGQuZXhhbXBsZS5jb20iLCJyb2xlIjoiYWRtaW4iLCJzZXNzaW9uX2lkIjoiYmFhOGI1YmUxYjBjNGEyOTgwZjRkNDY1YjdhZjM0YmIiLCJleHAiOjE3ODc3NDYyMzd9.sbotjZpMu2INj2XXcawsUE8g33n2i8o0zRGqZ-pWF_Q",
+  "display_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXJib2FyZEBiaWR0b2J1aWxkLmV4YW1wbGUuY29tIiwicm9sZSI6ImRpc3BsYXkiLCJzZXNzaW9uX2lkIjoiNWIwMTE1YjY5OGRhNDIwZDhhNTgwN2FiZWQ0M2QyOWUiLCJleHAiOjE3ODc3NDYyMzd9.jYlLBgesHOSDuN9yMip8GNyXUDp_gu2xj7wIspZ0lG8",
+  "config": {
+    "starting_coins": 1000,
+    "round1_preview_seconds": 300,
+    "round1_bid_seconds": 300,
+    "round1_winner_count": 5,
+    "round1_minimum_bid": 25,
+    "round1_bid_increment": 1,
+    "wildcard_enabled": true,
+    "wildcard_slots": 3,
+    "wildcard_application_seconds": 300,
+    "wildcard_problem_count": 3,
+    "wildcard_preview_seconds": 120,
+    "wildcard_bid_seconds": 300,
+    "wildcard_selection_seconds": 5,
+    "wildcard_starting_bid": 150,
+    "wildcard_bid_increment": 1,
+    "submissions_open": false,
+    "coding_duration_seconds": 300,
+    "bid_cooldown_seconds": 5,
+    "royalty_coins_per_point": 10,
+    "royalty_max_points": 100,
+    "id": 1
+  },
+  "import": {
+    "teams_processed": 30,
+    "teams_created": 30,
+    "teams_updated": 0,
+    "leaders_created": 30,
+    "existing_leaders": 0,
+    "members_imported": 0,
+    "rows_failed": 0,
+    "errors": [],
+    "download_token": "4ZfdZxx-N-hg7ig7U4rwWzyN60mPHto2",
+    "download_filename": "bid_to_build_registration_credentials_2026.xlsx"
+  },
+  "leaders": [
+    {
+      "team": "Team 01",
+      "email": "leader01@example.com",
+      "password": "APg@SuMZt9dXm@",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIwMUBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMTZjYWViMDcyMDFhNDUyNTgyMWYyNmUzZmVkYzk3ZTkiLCJleHAiOjE3ODc3NDYyNDR9.OJwV7GmtFIscytIDYt3fKpnqcdxd_mxQLYVOv9-0Kis",
+      "team_id": 2
+    },
+    {
+      "team": "Team 02",
+      "email": "leader02@example.com",
+      "password": "5@u%CfE#W42xR9",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIwMkBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMmU2YTMzMjc1NDk5NGNjNmE2NzE0OGFlNzljNzYxNGIiLCJleHAiOjE3ODc3NDYyNDV9.lO-tNliLADze4f5AlwYyIoUVkTcXETUT_bcbV6eNP1A",
+      "team_id": 3
+    },
+    {
+      "team": "Team 03",
+      "email": "leader03@example.com",
+      "password": "HWH30#wrCwvEIa",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIwM0BleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNTRhMmQ0M2IwNTRiNDgzMmEwZWQ0YzZmZjRmMWI2YzciLCJleHAiOjE3ODc3NDYyNDV9.xlGBB5KeEY-Y9-QxRF_PMsVJY1hHC7Yx6nZOk0RPSCc",
+      "team_id": 4
+    },
+    {
+      "team": "Team 04",
+      "email": "leader04@example.com",
+      "password": "ov65!1RAP$h70Q",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIwNEBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiZTRmNTcxOTgzMDg1NDgyMTg4NDY5NWFhNWJlNTY4NDkiLCJleHAiOjE3ODc3NDYyNDZ9.Y34W0bJzcBNJPrS76SAepQCr6dC0IRDi4JvWr8B8L3g",
+      "team_id": 5
+    },
+    {
+      "team": "Team 05",
+      "email": "leader05@example.com",
+      "password": "IVRMxIzlASq2!O",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIwNUBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiN2FmNTMzYzMxZDg1NDgyMmEyYmM1NGQxNzg5Y2Y0ZTEiLCJleHAiOjE3ODc3NDYyNDZ9.5h88fdzzL3wn54P7Uyb6gxXxuEy3QeF9f6WiUijO3og",
+      "team_id": 6
+    },
+    {
+      "team": "Team 06",
+      "email": "leader06@example.com",
+      "password": "eVl#Sy0q!wL3cQ",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIwNkBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMjc3ZmUzYzlmMWNjNGMxZTgzNmI4YTc2NDM5OWYzY2UiLCJleHAiOjE3ODc3NDYyNDd9.ajki75c9zL0BSr_GW16DCAhKh1RcU7lVB_a1D8prt8I",
+      "team_id": 7
+    },
+    {
+      "team": "Team 07",
+      "email": "leader07@example.com",
+      "password": "72f4PW6nP@LqK@",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIwN0BleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNTYxNDI3MzhkYTRkNGVhNmJiZTJmYmIzZDY0MjVmYmYiLCJleHAiOjE3ODc3NDYyNDh9.vp0sFhUpc9PjncYcoJPhzzii4D8_8_3nGD1jAQb1gD4",
+      "team_id": 8
+    },
+    {
+      "team": "Team 08",
+      "email": "leader08@example.com",
+      "password": "xi!@yOZ93l80GC",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIwOEBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNDI5ODlmNzBmNjQ0NGJhNmJkZmIyNjBhNzE5ODE4MTYiLCJleHAiOjE3ODc3NDYyNDh9.dzaWg_YUqtEFkukx53nCqt-2uDhkE7qlZRZPcki_JKg",
+      "team_id": 9
+    },
+    {
+      "team": "Team 09",
+      "email": "leader09@example.com",
+      "password": "ITnA1$N0z#llC%",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIwOUBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiZTI3YzJhNWVjMzA3NDI5ZjljZTZlNjE1MGE0MjA0NmQiLCJleHAiOjE3ODc3NDYyNDl9.GOaISptXoT3KQPrxDxfecDZEh6r15wPnwyWOJ8kmzDM",
+      "team_id": 10
+    },
+    {
+      "team": "Team 10",
+      "email": "leader10@example.com",
+      "password": "DySz@9@IJL4tuH",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIxMEBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMDI0NjU0MjJkYTgyNGYwNzllZWFmYmFmOGMyOTgxZmQiLCJleHAiOjE3ODc3NDYyNDl9.VDmd6YiBAMYyf7R6sYZmEyOJ5_Se633NQwVBVlXDjOQ",
+      "team_id": 11
+    },
+    {
+      "team": "Team 11",
+      "email": "leader11@example.com",
+      "password": "VcdkVB#x6h5JFr",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIxMUBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMDA3YmRkNmQwYTUwNDgzOTk4NDY5YjJlZmVjZjI4OWIiLCJleHAiOjE3ODc3NDYyNTB9.Rou_S7_wNHpLaLcGH5hKgnUwdROTinPF0o6AF70ZSEQ",
+      "team_id": 12
+    },
+    {
+      "team": "Team 12",
+      "email": "leader12@example.com",
+      "password": "!c9DWHRehLk5Vo",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIxMkBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNGIzMWUxZjlmY2JmNGFmZGIxOGUyYWQwZGEwZThiZDkiLCJleHAiOjE3ODc3NDYyNTB9.YybH5p99jAfZcXX5dFHH6lB566LAqxyGgBPbYW_OFCw",
+      "team_id": 13
+    },
+    {
+      "team": "Team 13",
+      "email": "leader13@example.com",
+      "password": "igUD$%RM3n5xFw",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIxM0BleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiZGE5ZTM0M2JmYmYxNDQ0ZGI5MzM5ZWYwMGU5NzM0NDUiLCJleHAiOjE3ODc3NDYyNTF9.jiJLVrTU4pM4ih9HXx_RO86sjkcx39uhVKKwYTzJXSI",
+      "team_id": 14
+    },
+    {
+      "team": "Team 14",
+      "email": "leader14@example.com",
+      "password": "NAVO#avq6escME",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIxNEBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiZjM0NzRjNmVlNGQ4NGQ4MDkxMWU4ZGE5YWQ3N2RiZTAiLCJleHAiOjE3ODc3NDYyNTJ9.FAsSbJ1PE7VhvB92-67FF6URtEJiSze59FEM0zY_1j4",
+      "team_id": 15
+    },
+    {
+      "team": "Team 15",
+      "email": "leader15@example.com",
+      "password": "gY#FN$6h8Aop@2",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIxNUBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNzBlNjQzNzhlMjMyNDk3OGFiN2JkYjdiMWNjMzlmMWYiLCJleHAiOjE3ODc3NDYyNTJ9.G5iRcxUuYGvbZrqrJ8mYvO6SbbmA_d0Z6rVokWfKxTY",
+      "team_id": 16
+    },
+    {
+      "team": "Team 16",
+      "email": "leader16@example.com",
+      "password": "bo4%QH$2DEp@BA",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIxNkBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiZGRiN2FjYTg1MDYyNGMyZjhiZDczZjhiZmM3OTVkMDUiLCJleHAiOjE3ODc3NDYyNTN9.ZyfyQ5yGEnO71VRRA9HGStSc0QAeDJP1FV6jn1EqqFI",
+      "team_id": 17
+    },
+    {
+      "team": "Team 17",
+      "email": "leader17@example.com",
+      "password": "hLYPZ@6Vr$lL!B",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIxN0BleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNGM0NWIwM2JlZTY2NDdiNDg0ZmE4MDhiZjQyMmFhNDciLCJleHAiOjE3ODc3NDYyNTN9.XWFhGYKZmVj2Xt-98bBFwlVc8Lh0VT-5oUqA7hZR5gQ",
+      "team_id": 18
+    },
+    {
+      "team": "Team 18",
+      "email": "leader18@example.com",
+      "password": "Z7K56QOA%4qAjJ",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIxOEBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiYWMwNWMyMjA2OTBjNGQwNzllNjhhOTNjOGQ0Y2MyMWUiLCJleHAiOjE3ODc3NDYyNTR9.V1wNhuuNxvwFnpMOV70J_UrjKd3gVzYP_p1VeYTwNfc",
+      "team_id": 19
+    },
+    {
+      "team": "Team 19",
+      "email": "leader19@example.com",
+      "password": "I7IN@9b6$GgPK#",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIxOUBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNjE5N2IwMGZkZTEyNGE5ZDlmMzk4YjIyZGFiNzBhZjciLCJleHAiOjE3ODc3NDYyNTV9.PTve0yZYgR39flCS5gkLzuaiRepFdScNdl-uGa6ghew",
+      "team_id": 20
+    },
+    {
+      "team": "Team 20",
+      "email": "leader20@example.com",
+      "password": "ub0D@c$$ZQS%G3",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIyMEBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiOTE3MGU2NGZlOWQ0NDcxYmFlMTAyZDBmMjhkY2NhZTUiLCJleHAiOjE3ODc3NDYyNTV9.l-smbRL5bZw_iAngSFyglsP1fmRZND2p9CHolo2Fmj0",
+      "team_id": 21
+    },
+    {
+      "team": "Team 21",
+      "email": "leader21@example.com",
+      "password": "Ye9@VH@cJr58i%",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIyMUBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNGFlZDU3YTM0ZTNhNDdjNzk5YWM0ODNjNmZiZjQ3YzkiLCJleHAiOjE3ODc3NDYyNTZ9.YRRwF-GpIK2lDSA5HHqjKnW3fWkzGtTMO_OKTRznmHQ",
+      "team_id": 22
+    },
+    {
+      "team": "Team 22",
+      "email": "leader22@example.com",
+      "password": "oLe@VEr0bPO5Fs",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIyMkBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNjljODg3MzgwY2ZmNGNhMGFlNWExNThhZjhiY2Q3N2UiLCJleHAiOjE3ODc3NDYyNTd9.4b1xSt_K4vuJ3Hd8Jt-WpdhAbleepHZracZsn8_8gPA",
+      "team_id": 23
+    },
+    {
+      "team": "Team 23",
+      "email": "leader23@example.com",
+      "password": "RqIcT1S5!J$zz%",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIyM0BleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNThkODIxNGVlOGEzNDFmYTk0MDNhZjYyZGQ5ZDgzZTYiLCJleHAiOjE3ODc3NDYyNTd9.wnCSO3xfm2qg77M5-RMUGoEGGC1T9BWl5e-M3E2oxmw",
+      "team_id": 24
+    },
+    {
+      "team": "Team 24",
+      "email": "leader24@example.com",
+      "password": "@cWicws4j8B@E8",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIyNEBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiYjJmNTdmNDYyNTA1NDcxNTg4YzdiM2NlYjhjODUwYWQiLCJleHAiOjE3ODc3NDYyNTh9.-VZNf2VPzZoP0BG-yTqMFJlTrI3uPsFShfD3xcN1sz0",
+      "team_id": 25
+    },
+    {
+      "team": "Team 25",
+      "email": "leader25@example.com",
+      "password": "UK3NswW%2S4fr3",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIyNUBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMjdjMDEzM2M0ODZhNGFkMzg2MmU4YzY5ZjE2Mjg4NmMiLCJleHAiOjE3ODc3NDYyNTh9.eQzpbATg2zmB5xdJRSQ3eYKoGZ8Ue0vNH3siXjk5NE0",
+      "team_id": 26
+    },
+    {
+      "team": "Team 26",
+      "email": "leader26@example.com",
+      "password": "1$w6eRJ!$pUCKI",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIyNkBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMDQwZGM5Y2JmYTJjNDUxMGJkMTIzYjc1NDAyMWZkOWEiLCJleHAiOjE3ODc3NDYyNTl9.ZVQkguAdm3xvPWh69pihzDqWK_Zg18CuOaDJGDSLlu8",
+      "team_id": 27
+    },
+    {
+      "team": "Team 27",
+      "email": "leader27@example.com",
+      "password": "g2qDJm%w5sV$oz",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIyN0BleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNTExOGI0Y2ViYzA4NDI3NWFjMTM3NmUwZDZlYzQwMzMiLCJleHAiOjE3ODc3NDYyNjB9.MRVk-FYR_W6SzvCix_fthpaJqEtFSqfn4ZUGEY2y-AE",
+      "team_id": 28
+    },
+    {
+      "team": "Team 28",
+      "email": "leader28@example.com",
+      "password": "XXvc1dpJ7eR#s2",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIyOEBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiZTQ4MjcwYTFiMGU3NDNiMzljMjdmZTI3ZWI1ODcyM2EiLCJleHAiOjE3ODc3NDYyNjB9.xQ4qm-tDgdhsSQeDSdI5ldf485TnWPvq0udlru5L3mU",
+      "team_id": 29
+    },
+    {
+      "team": "Team 29",
+      "email": "leader29@example.com",
+      "password": "RBurNd8#lQr5A8",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIyOUBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMjBmMDk0ZDRiYzcxNDBiYmFmY2VkOWU0ZGZiNzE5YTQiLCJleHAiOjE3ODc3NDYyNjF9.dQLXCCXg2MGAm_0IW34LlMsvdrOJdzDCkSfFRmrqBSY",
+      "team_id": 30
+    },
+    {
+      "team": "Team 30",
+      "email": "leader30@example.com",
+      "password": "kIsIL2J6p#rgds",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWFkZXIzMEBleGFtcGxlLmNvbSIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMzhkZDUwZTk2ZjRiNDIzOGIxMjNkNjRkZTE2ZTEwZWQiLCJleHAiOjE3ODc3NDYyNjF9.ZOeRNw3QSOhosXiTq4uV_aG7FYoXmpQJMPdNi7_3qH8",
+      "team_id": 31
+    }
+  ],
+  "round1_problems": [
+    {
+      "id": 1,
+      "problem_number": "1",
+      "title": "Adaptive Noise Cancellation",
+      "description": "Develop an AI-assisted system that removes changing environmental noise from field communications.",
+      "problem_statement": "Develop an AI-assisted system that removes changing environmental noise from field communications.",
+      "status": "AVAILABLE"
+    },
+    {
+      "id": 2,
+      "problem_number": "2",
+      "title": "Tropical Cyclone Prediction",
+      "description": "Forecast cyclone intensity and movement using weather observations and historical tracks.",
+      "problem_statement": "Forecast cyclone intensity and movement using weather observations and historical tracks.",
+      "status": "AVAILABLE"
+    },
+    {
+      "id": 3,
+      "problem_number": "3",
+      "title": "Emergency Communication",
+      "description": "Build a resilient low-bandwidth communication platform for disaster response teams.",
+      "problem_statement": "Build a resilient low-bandwidth communication platform for disaster response teams.",
+      "status": "AVAILABLE"
+    },
+    {
+      "id": 4,
+      "problem_number": "4",
+      "title": "Autonomous Logistics",
+      "description": "Optimize autonomous delivery routes for supplies across disrupted transport networks.",
+      "problem_statement": "Optimize autonomous delivery routes for supplies across disrupted transport networks.",
+      "status": "AVAILABLE"
+    },
+    {
+      "id": 5,
+      "problem_number": "5",
+      "title": "Disaster Mapping",
+      "description": "Generate rapidly updated damage maps from aerial and satellite imagery.",
+      "problem_statement": "Generate rapidly updated damage maps from aerial and satellite imagery.",
+      "status": "AVAILABLE"
+    },
+    {
+      "id": 6,
+      "problem_number": "6",
+      "title": "Secure Field Network",
+      "description": "Create a secure peer-to-peer network for teams operating without reliable infrastructure.",
+      "problem_statement": "Create a secure peer-to-peer network for teams operating without reliable infrastructure.",
+      "status": "AVAILABLE"
+    }
+  ],
+  "checks": {
+    "admin_login": true,
+    "display_login": true,
+    "leader_logins": 30,
+    "round1_cooldown_status": 429,
+    "arbitrary_bid_status": 422,
+    "rejected_bid_absent": true,
+    "first_live_board_rows": 5,
+    "assigned_team_rebid_status": 409,
+    "round1_assigned": 30,
+    "round1_problem_count": 6,
+    "duplicate_application": "Wildcard application already confirmed.",
+    "duplicate_import_teams_created": 0,
+    "duplicate_import_stable": true,
+    "late_application_status": 409,
+    "slots_too_many_status": 422,
+    "non_applicant_bid_status": 403,
+    "over_balance_status": 400,
+    "wildcard_cooldown_status": 429,
+    "wildcard_board_rows": 8,
+    "wildcard_pool_rank1": 3,
+    "wildcard_pool_rank2": 2,
+    "wildcard_pool_rank3": 1,
+    "rank2_waiting_choices": 0,
+    "out_of_turn_status": 409,
+    "concurrent_select_statuses": [
+      200,
+      409
+    ],
+    "rank2_selection_method": "timeout",
+    "rank3_fresh_turn": true,
+    "rank3_manual_method": "manual",
+    "wildcard_unique_assignments": 3,
+    "round1_history_preserved": true,
+    "submissions": 30,
+    "updated_submission": true,
+    "late_submission_status": 409,
+    "judging_team_count": 30,
+    "saved_unpublished": true,
+    "display_forbidden_status": 403,
+    "participant_forbidden_status": 403,
+    "old_token_status": 401
+  },
+  "round1_winners": [
+    [
+      {
+        "team_id": 6,
+        "team_name": "Team 05",
+        "amount": 80
+      },
+      {
+        "team_id": 5,
+        "team_name": "Team 04",
+        "amount": 70
+      },
+      {
+        "team_id": 4,
+        "team_name": "Team 03",
+        "amount": 65
+      },
+      {
+        "team_id": 3,
+        "team_name": "Team 02",
+        "amount": 40
+      },
+      {
+        "team_id": 2,
+        "team_name": "Team 01",
+        "amount": 30
+      }
+    ],
+    [
+      {
+        "team_id": 11,
+        "team_name": "Team 10",
+        "amount": 80
+      },
+      {
+        "team_id": 10,
+        "team_name": "Team 09",
+        "amount": 70
+      },
+      {
+        "team_id": 9,
+        "team_name": "Team 08",
+        "amount": 65
+      },
+      {
+        "team_id": 8,
+        "team_name": "Team 07",
+        "amount": 40
+      },
+      {
+        "team_id": 7,
+        "team_name": "Team 06",
+        "amount": 30
+      }
+    ],
+    [
+      {
+        "team_id": 16,
+        "team_name": "Team 15",
+        "amount": 80
+      },
+      {
+        "team_id": 15,
+        "team_name": "Team 14",
+        "amount": 70
+      },
+      {
+        "team_id": 14,
+        "team_name": "Team 13",
+        "amount": 65
+      },
+      {
+        "team_id": 13,
+        "team_name": "Team 12",
+        "amount": 40
+      },
+      {
+        "team_id": 12,
+        "team_name": "Team 11",
+        "amount": 30
+      }
+    ],
+    [
+      {
+        "team_id": 21,
+        "team_name": "Team 20",
+        "amount": 80
+      },
+      {
+        "team_id": 20,
+        "team_name": "Team 19",
+        "amount": 70
+      },
+      {
+        "team_id": 19,
+        "team_name": "Team 18",
+        "amount": 65
+      },
+      {
+        "team_id": 18,
+        "team_name": "Team 17",
+        "amount": 40
+      },
+      {
+        "team_id": 17,
+        "team_name": "Team 16",
+        "amount": 30
+      }
+    ],
+    [
+      {
+        "team_id": 26,
+        "team_name": "Team 25",
+        "amount": 80
+      },
+      {
+        "team_id": 25,
+        "team_name": "Team 24",
+        "amount": 70
+      },
+      {
+        "team_id": 24,
+        "team_name": "Team 23",
+        "amount": 65
+      },
+      {
+        "team_id": 23,
+        "team_name": "Team 22",
+        "amount": 40
+      },
+      {
+        "team_id": 22,
+        "team_name": "Team 21",
+        "amount": 30
+      }
+    ],
+    [
+      {
+        "team_id": 31,
+        "team_name": "Team 30",
+        "amount": 80
+      },
+      {
+        "team_id": 30,
+        "team_name": "Team 29",
+        "amount": 70
+      },
+      {
+        "team_id": 29,
+        "team_name": "Team 28",
+        "amount": 65
+      },
+      {
+        "team_id": 28,
+        "team_name": "Team 27",
+        "amount": 40
+      },
+      {
+        "team_id": 27,
+        "team_name": "Team 26",
+        "amount": 30
+      }
+    ]
+  ],
+  "wildcard_winners": [
+    {
+      "rank": 1,
+      "team_id": 2,
+      "team_name": "Team 01",
+      "winning_bid": 245
+    },
+    {
+      "rank": 2,
+      "team_id": 3,
+      "team_name": "Team 02",
+      "winning_bid": 235
+    },
+    {
+      "rank": 3,
+      "team_id": 4,
+      "team_name": "Team 03",
+      "winning_bid": 230
+    }
+  ],
+  "winner_payload": {
+    "first_place_team_id": 2,
+    "second_place_team_id": 3,
+    "third_place_team_id": 4
+  }
+}

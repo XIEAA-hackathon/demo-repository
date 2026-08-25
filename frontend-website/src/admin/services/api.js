@@ -99,6 +99,7 @@ export const importRegistrations = (file) => {
 };
 export const resetRegistrationCredentials = (confirmation) => request("/admin/registration/credentials/reset", { method: "POST", body: JSON.stringify({ confirmation }) });
 export const downloadRegistrationCredentials = (token) => request(`/admin/registration/import/download/${encodeURIComponent(token)}`, { responseType: "blob" });
+export const downloadRegistrationAssignments = () => request("/admin/registration/assignments", { responseType: "blob" });
 export const downloadRegistrationSample = () => request("/admin/registration/sample.csv", { responseType: "blob" });
 export const downloadRegistrationDemo = () => request("/admin/registration/demo.csv", { responseType: "blob" });
 export const createTeamCredentials = (payload) => request("/admin/teams/credentials", { method: "POST", body: JSON.stringify(payload) });
@@ -121,6 +122,7 @@ export const closeWildcardApplications = () => request("/admin/rounds/wildcard/a
 export const confirmWildcardSlots = (slots) => request("/admin/rounds/wildcard/slots", { method: "POST", body: JSON.stringify({ slots }) });
 export const startWildcardSlotBidding = () => request("/admin/rounds/wildcard/bidding/start", { method: "POST" });
 export const closeWildcardSlotBidding = () => request("/admin/rounds/wildcard/bidding/close", { method: "POST" });
+export const endWildcardSelectionTurn = (expectedRank, expectedTeamId) => request("/admin/rounds/wildcard/selection/end-turn", { method: "POST", body: JSON.stringify({ expected_rank: expectedRank, expected_team_id: expectedTeamId }) });
 export const getAdminSubmissions = () => request("/admin/submissions");
 export const openSubmissions = () => request("/admin/submissions/open", { method: "POST" });
 export const closeSubmissions = () => request("/admin/submissions/close", { method: "POST" });

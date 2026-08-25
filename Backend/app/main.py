@@ -15,6 +15,7 @@ from app.core.security import get_password_hash
 from app.services.demo_seed import provision_demo_accounts
 from app.services.event_service import get_or_create_event_config, get_or_create_game_config
 from app.services.event_service import sync_expired_event_state
+from app.services.wildcard_service import reconcile_wildcard_selection
 from app.api.websockets import manager
 
 logger = logging.getLogger("uvicorn.error")
@@ -36,6 +37,14 @@ async def expiry_worker() -> None:
         db = SessionLocal()
         try:
             actions = sync_expired_event_state(db)
+            wildcard_assignment = reconcile_wildcard_selection(db)
+            if wildcard_assignment:
+                actions.append("wildcard_selection_timeout")
+                await manager.broadcast_event("wildcard_updated", {
+                    "action": "selection_timeout",
+                    "team_name": wildcard_assignment["team_name"],
+                    "problem_id": wildcard_assignment["problem"]["id"],
+                })
             if actions:
                 await manager.broadcast_event("event_state_changed", {"expiry_actions": actions})
         except Exception:

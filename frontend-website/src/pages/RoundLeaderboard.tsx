@@ -22,6 +22,7 @@ interface PublicDisplay {
   problem?: { number: string; title: string } | null
   rows: LeaderboardRow[]
   slot_count?: number | null
+  base_price?: number | null
   results?: {
     first_place: Winner
     second_place: Winner
@@ -126,7 +127,7 @@ export default function RoundLeaderboard() {
 
     {isLiveBidding && display && <>
       <section className="tv-stage" aria-label="Current bidding status">
-        <div>{display.mode === 'ROUND1_LIVE' && display.problem ? <><small>Current problem</small><strong>Problem #{display.problem.number}</strong><span>{display.problem.title}</span></> : <><small>Wildcard places</small><strong>{display.slot_count ?? 0} slots</strong><span>Highest bids advance</span></>}</div>
+        <div>{display.mode === 'ROUND1_LIVE' && display.problem ? <><small>Current problem</small><strong>Problem #{display.problem.number}</strong><span>{display.problem.title} · Base price: {display.base_price ?? 0} coins</span></> : <><small>Wildcard places</small><strong>{display.slot_count ?? 0} slots</strong><span>Highest bids advance · Base price: {display.base_price ?? 0} coins</span></>}</div>
         <div className="tv-clock"><small>Time remaining</small><strong>{formatTime(remaining)}</strong></div>
       </section>
       <ol>{visibleRows.map((row) => <li key={row.team_id} className={row.qualified ? 'qualified' : ''}><strong>#{row.rank}</strong><span>{row.team_name}</span><b>{row.value.toLocaleString()} <small>coins</small></b></li>)}</ol>

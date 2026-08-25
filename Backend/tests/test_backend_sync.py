@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from app.models.models import Bid, EventConfig, GameConfig, ProblemStatement, RoundControl, Wildcard
+from app.models.models import Bid, EventConfig, GameConfig, ProblemStatement, RoundControl, Team, Wildcard
 
 
 def _leader_headers(client, admin_headers, csv_bytes):
@@ -56,14 +56,16 @@ def test_round_one_bid_cooldown_and_positive_validation(client, admin_headers, c
     game.current_round = 1
     event = db.query(EventConfig).first()
     event.bid_cooldown_seconds = 5
+    event.round1_minimum_bid = 100
     db.add(RoundControl(round_type="ROUND1", current_problem_id=problem.id, status="BIDDING"))
     db.commit()
 
-    invalid = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "amount": 0})
+    invalid = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "increment": 0})
     assert invalid.status_code == 422
-    first = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "amount": 100})
+    first = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "increment": 10})
     assert first.status_code == 200, first.text
-    second = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "amount": 101})
+    assert first.json()["amount"] == 110
+    second = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "increment": 5})
     assert second.status_code == 429
     assert second.json()["detail"] == "Bid cooldown active."
     assert 0 < second.json()["retry_after_seconds"] <= 5
@@ -73,33 +75,40 @@ def test_round_one_bid_cooldown_and_positive_validation(client, admin_headers, c
     assert 0 < dashboard.json()["bidCooldownRemainingSeconds"] <= 5
     assert dashboard.json()["gameConfig"]["bid_cooldown_seconds"] == 5
 
-    beta_bid = client.post("/bid", headers=beta_headers, json={"ps_id": problem.id, "amount": 100})
+    beta_bid = client.post("/bid", headers=beta_headers, json={"ps_id": problem.id, "increment": 25})
     assert beta_bid.status_code == 200, beta_bid.text
+    assert beta_bid.json()["amount"] == 135
 
-    alpha_bid = db.query(Bid).filter(Bid.amount == 100).order_by(Bid.id.asc()).first()
+    alpha_bid = db.query(Bid).order_by(Bid.id.asc()).first()
     alpha_bid.timestamp = datetime.now(timezone.utc) - timedelta(seconds=5.1)
     db.commit()
-    after_wait = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "amount": 101})
+    after_wait = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "increment": 10})
     assert after_wait.status_code == 200, after_wait.text
+    assert after_wait.json()["amount"] == 145
 
     configured = client.put("/admin/config", headers=admin_headers, json={"bid_cooldown_seconds": 2})
     assert configured.status_code == 200, configured.text
     assert configured.json()["bid_cooldown_seconds"] == 2
-    two_second_block = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "amount": 102})
+    two_second_block = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "increment": 5})
     assert two_second_block.status_code == 429
     assert two_second_block.json()["retry_after_seconds"] <= 2
 
     alpha_bid.timestamp = datetime.now(timezone.utc) - timedelta(seconds=2.1)
     db.commit()
-    assert client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "amount": 102}).status_code == 200
+    assert client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "increment": 5}).status_code == 200
 
     disabled = client.put("/admin/config", headers=admin_headers, json={"bid_cooldown_seconds": 0})
     assert disabled.status_code == 200, disabled.text
-    assert client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "amount": 103}).status_code == 200
-    assert client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "amount": 104}).status_code == 200
+    assert client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "increment": 5}).status_code == 200
+    assert client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "increment": 10}).status_code == 200
     leaderboard = client.get("/participant/leaderboard", headers=alpha_headers)
     assert leaderboard.status_code == 200
-    assert any(row["bid_amount"] == 104 for row in leaderboard.json())
+    assert any(row["bid_amount"] == 165 for row in leaderboard.json())
+    db.query(Team).filter(Team.id == alpha_bid.team_id).update({Team.coins: 165})
+    db.commit()
+    insufficient = client.post("/bid", headers=alpha_headers, json={"ps_id": problem.id, "increment": 5})
+    assert insufficient.status_code == 400
+    assert "exceed the team wallet balance" in insufficient.json()["detail"]
 
 
 def test_wildcard_bid_uses_same_team_cooldown(client, admin_headers, csv_bytes, db):
@@ -119,16 +128,22 @@ def test_wildcard_bid_uses_same_team_cooldown(client, admin_headers, csv_bytes, 
     db.add(Wildcard(team_id=team_id, status="applied"))
     db.commit()
 
-    first = client.post("/wildcard/bid", params={"amount": 100}, headers=alpha_headers)
+    first = client.post("/wildcard/bid", json={"increment": 10}, headers=alpha_headers)
     assert first.status_code == 200, first.text
-    second = client.post("/wildcard/bid", params={"amount": 101}, headers=alpha_headers)
+    assert first.json()["amount"] == 110
+    second = client.post("/wildcard/bid", json={"increment": 5}, headers=alpha_headers)
     assert second.status_code == 429
     assert second.json()["detail"] == "Bid cooldown active."
 
     event.bid_cooldown_seconds = 0
     db.commit()
-    allowed = client.post("/wildcard/bid", params={"amount": 101}, headers=alpha_headers)
+    allowed = client.post("/wildcard/bid", json={"increment": 25}, headers=alpha_headers)
     assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["amount"] == 135
+    db.query(Team).filter(Team.id == team_id).update({Team.coins: 135})
+    db.commit()
+    insufficient = client.post("/wildcard/bid", json={"increment": 5}, headers=alpha_headers)
+    assert insufficient.status_code == 400
 
 
 def test_admin_problem_management_and_upload_restriction(client, admin_headers):

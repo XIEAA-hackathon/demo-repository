@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Literal
 from datetime import datetime
 
 EVENT_STATES = [
@@ -92,7 +92,11 @@ class AdminPSResponse(PSResponse):
 # --- Bid Schemas ---
 class BidCreate(BaseModel):
     ps_id: int
-    amount: int = Field(..., gt=0, description="Bid amount must be strictly greater than 0")
+    increment: Literal[5, 10, 25]
+
+
+class BidIncrementRequest(BaseModel):
+    increment: Literal[5, 10, 25]
 
 class BidResponse(BaseModel):
     id: int
@@ -126,6 +130,7 @@ class EventConfigBase(BaseModel):
     wildcard_problem_count: int = 3
     wildcard_preview_seconds: int = 120
     wildcard_bid_seconds: int = 180
+    wildcard_selection_seconds: int = 30
     wildcard_starting_bid: int = 150
     wildcard_bid_increment: int = 1
     submissions_open: bool = False
@@ -147,6 +152,7 @@ class EventConfigUpdate(BaseModel):
     wildcard_problem_count: Optional[int] = None
     wildcard_preview_seconds: Optional[int] = None
     wildcard_bid_seconds: Optional[int] = None
+    wildcard_selection_seconds: Optional[int] = None
     wildcard_starting_bid: Optional[int] = None
     wildcard_bid_increment: Optional[int] = None
     submissions_open: Optional[bool] = None
@@ -212,11 +218,16 @@ class DashboardWildcard(BaseModel):
     winning_bid: Optional[int] = None
     problem_id: Optional[int] = None
     selected_at: Optional[datetime] = None
+    selection_method: Optional[str] = None
     current_selection_rank: Optional[int] = None
     current_selection_team: Optional[str] = None
     is_selection_turn: bool = False
     available_problem_count: int = 0
     slot_count: Optional[int] = None
+    selection_started_at: Optional[datetime] = None
+    selection_ends_at: Optional[datetime] = None
+    selection_duration_seconds: Optional[int] = None
+    selection_remaining_seconds: Optional[int] = None
 
 class DashboardSubmission(BaseModel):
     id: int
@@ -248,8 +259,10 @@ class DashboardGameConfig(BaseModel):
     wildcard_slots: int
     wildcard_application_seconds: int
     wildcard_starting_bid: int
+    wildcard_bid_increment: int
     wildcard_preview_seconds: int
     wildcard_bid_seconds: int
+    wildcard_selection_seconds: int = 30
     coding_duration_seconds: int
     bid_cooldown_seconds: int = 5
 
@@ -295,6 +308,11 @@ class SubmissionUpdate(BaseModel):
 
 class WildcardSlotRequest(BaseModel):
     slots: int = Field(ge=1)
+
+
+class WildcardEndTurnRequest(BaseModel):
+    expected_rank: int = Field(ge=1)
+    expected_team_id: int = Field(ge=1)
 
 # --- Leaderboard Schemas ---
 class LeaderboardEntry(BaseModel):

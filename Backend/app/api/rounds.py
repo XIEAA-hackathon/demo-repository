@@ -24,6 +24,7 @@ from app.services.event_service import (
     transition_event_state,
 )
 from app.services.activity_log import record_event
+from app.core.event_constants import ROUND1_WINNER_COUNT
 from app.services.wildcard_service import ranking_payload, wildcard_payload
 
 router = APIRouter()
@@ -161,6 +162,8 @@ def _round_payload(db: Session, meta: dict) -> dict:
         "settings": {
             "preview_seconds": config.round1_preview_seconds if meta["number"] == 1 else config.wildcard_preview_seconds,
             "bidding_seconds": config.round1_bid_seconds if meta["number"] == 1 else config.wildcard_bid_seconds,
+            "base_price": config.round1_minimum_bid,
+            "winner_count": ROUND1_WINNER_COUNT,
         },
         "event": event_snapshot(db),
     }
@@ -310,7 +313,7 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
     if not problem or control.status != "READY":
         raise HTTPException(status_code=409, detail="Close bidding before assigning winners.")
     event_config = get_or_create_event_config(db)
-    winner_limit = event_config.round1_winner_count if meta["number"] == 1 else event_config.wildcard_slots
+    winner_limit = ROUND1_WINNER_COUNT if meta["number"] == 1 else event_config.wildcard_slots
     bids = db.query(Bid).filter(Bid.ps_id == problem.id, Bid.round == meta["number"]).order_by(Bid.amount.desc(), Bid.timestamp.asc()).all()
     winners = []
     for bid in bids:
@@ -407,6 +410,7 @@ def public_round_leaderboard(
     del current_user
     meta = _meta(round_slug)
     response.headers["Cache-Control"] = "no-store"
+    event_config = get_or_create_event_config(db)
     if meta["type"] == "WILDCARD":
         control = get_or_create_round_control(db, "WILDCARD")
         return {
@@ -415,6 +419,7 @@ def public_round_leaderboard(
             "slot_count": control.slot_count,
             "finalized": control.status in {"PROBLEM_SELECTION", "COMPLETE"},
             "active": control.status == "BIDDING_OPEN",
+            "base_price": event_config.wildcard_starting_bid,
             "rows": ranking_payload(db, control),
         }
     control = get_or_create_round_control(db, "ROUND1")
@@ -437,5 +442,6 @@ def public_round_leaderboard(
         "label": meta["label"],
         "active": control.status == "BIDDING",
         "finalized": control.ended or control.status == "CLOSED",
+        "base_price": event_config.round1_minimum_bid,
         "rows": [{**row, "rank": index} for index, row in enumerate(rows, start=1)],
     }

@@ -37,6 +37,10 @@ class RoundControl(Base):
     applications_open = Column(Boolean, default=False)
     slot_count = Column(Integer, nullable=True)
     selection_pool_frozen_at = Column(DateTime(timezone=True), nullable=True)
+    current_selection_rank = Column(Integer, nullable=True)
+    selection_started_at = Column(DateTime(timezone=True), nullable=True)
+    selection_ends_at = Column(DateTime(timezone=True), nullable=True)
+    selection_duration_seconds = Column(Integer, nullable=True)
 
 class Team(Base):
     __tablename__ = "teams"
@@ -95,6 +99,7 @@ class Wildcard(Base):
     winning_bid = Column(Integer, nullable=True)
     problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), unique=True, nullable=True)
     selected_at = Column(DateTime(timezone=True), nullable=True)
+    selection_method = Column(String, nullable=True)  # manual, timeout, or admin_end_turn
 
     team = relationship("Team", back_populates="wildcard")
 
@@ -184,6 +189,7 @@ class RegistrationImport(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     committed_at = Column(DateTime(timezone=True), nullable=True)
     source_name = Column(String, nullable=True) # file fingerprint for idempotency
+    source_headers_json = Column(Text, nullable=False, default="[]")
 
     rows = relationship("RegistrationImportRow", back_populates="import_record", cascade="all, delete-orphan")
 
@@ -199,6 +205,8 @@ class RegistrationImportRow(Base):
     members_json = Column(Text, nullable=False, default="[]") # JSON list of {name, email}
     status = Column(String, default='new') # 'new', 'update', 'duplicate', 'error'
     warnings_json = Column(Text, nullable=False, default="[]")
+    source_values_json = Column(Text, nullable=False, default="[]")
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
 
     import_record = relationship("RegistrationImport", back_populates="rows")
 
@@ -237,6 +245,7 @@ class EventConfig(Base):
     wildcard_problem_count = Column(Integer, default=3)
     wildcard_preview_seconds = Column(Integer, default=120)
     wildcard_bid_seconds = Column(Integer, default=180)
+    wildcard_selection_seconds = Column(Integer, default=30)
     wildcard_starting_bid = Column(Integer, default=150)
     wildcard_bid_increment = Column(Integer, default=1)
 

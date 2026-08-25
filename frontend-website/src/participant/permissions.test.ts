@@ -31,8 +31,9 @@ function dashboard(team: Team, currentUserId: string): ParticipantDashboard {
     wildcardApplicationsOpen: false,
     submissionsOpen: true,
     gameConfig: {
-      round1WinnerCount: 5, round1BidIncrement: 1, round1PreviewSeconds: 120, round1BidSeconds: 300,
-      wildcardSlots: 3, wildcardApplicationSeconds: 60, wildcardPreviewSeconds: 120, wildcardBidSeconds: 180,
+      startingCoins: 1000,
+      round1WinnerCount: 5, round1BaseBidPrice: 25, round1BidIncrement: 1, round1PreviewSeconds: 120, round1BidSeconds: 300,
+      wildcardSlots: 3, wildcardBaseBidPrice: 150, wildcardBidIncrement: 1, wildcardApplicationSeconds: 60, wildcardPreviewSeconds: 120, wildcardBidSeconds: 180,
       codingDurationSeconds: 10800,
       bidCooldownSeconds: 5,
     },

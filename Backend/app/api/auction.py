@@ -21,6 +21,7 @@ from app.services.event_service import (
 )
 from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_rejection, bid_cooldown_remaining
+from app.core.event_constants import ROUND1_WINNER_COUNT
 
 router = APIRouter()
 
@@ -49,24 +50,21 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
     if not ps or ps.id != control.current_problem_id or ps.status != "current":
         raise HTTPException(status_code=400, detail="Invalid or unavailable Problem Statement")
 
-    min_bid = event_config.round1_minimum_bid
-    increment = event_config.round1_bid_increment
-
-    if bid.amount > team.coins:
-        raise HTTPException(status_code=400, detail="Bid cannot exceed the team wallet balance.")
-    if bid.amount < min_bid:
-        raise HTTPException(status_code=400, detail=f"Bid must be at least {min_bid} coins.")
-
-    existing_bid = db.query(Bid).filter(
-        Bid.team_id == team.id,
+    auction_bids = db.query(Bid).filter(
         Bid.ps_id == ps.id,
         Bid.round == config.current_round,
-    ).first()
-    if existing_bid and bid.amount < existing_bid.amount + increment:
+    ).with_for_update().all()
+    current_price = max(
+        [event_config.round1_minimum_bid, *(row.amount for row in auction_bids)],
+    )
+    next_amount = current_price + bid.increment
+    if next_amount > team.coins:
         raise HTTPException(
             status_code=400,
-            detail=f"New bid must be at least {increment} coin(s) higher than the current bid of {existing_bid.amount}.",
+            detail=f"A +{bid.increment} bid would be {next_amount} coins and exceed the team wallet balance of {team.coins}.",
         )
+
+    existing_bid = next((row for row in auction_bids if row.team_id == team.id), None)
 
     cooldown = event_config.bid_cooldown_seconds or 0
     remaining = bid_cooldown_remaining(
@@ -82,11 +80,11 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
 
     now = datetime.now(timezone.utc)
     if existing_bid:
-        existing_bid.amount = bid.amount
+        existing_bid.amount = next_amount
         existing_bid.timestamp = now
     else:
-        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=bid.amount, round=config.current_round, timestamp=now))
-    record_event(db, "round1.bid_placed", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": ps.id, "amount": bid.amount})
+        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=next_amount, round=config.current_round, timestamp=now))
+    record_event(db, "round1.bid_placed", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": ps.id, "increment": bid.increment, "amount": next_amount})
     try:
         db.commit()
     except (IntegrityError, OperationalError) as exc:
@@ -97,9 +95,9 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
         "team_name": team.team_name,
         "team_id": team.id,
         "ps_id": ps.id,
-        "amount": bid.amount,
+        "amount": next_amount,
     })
-    return {"message": "Bid placed successfully. Coins are not deducted yet.", "amount": bid.amount}
+    return {"message": "Bid placed successfully. Coins are not deducted yet.", "increment": bid.increment, "amount": next_amount}
 
 @router.get("/bid-history")
 def get_bid_history(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
@@ -118,7 +116,7 @@ async def finalize_round_one(
     """
     config = get_or_create_game_config(db)
     event_config = get_or_create_event_config(db)
-    winner_count = event_config.round1_winner_count
+    winner_count = ROUND1_WINNER_COUNT
 
     ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
     if not ps:
@@ -132,13 +130,15 @@ async def finalize_round_one(
             "winners": [t.team_name for t in existing_winners],
         }
 
-    top_bids = db.query(Bid).filter(
+    ranked_bids = db.query(Bid).filter(
         Bid.ps_id == ps.id,
         Bid.round == config.current_round,
-    ).order_by(Bid.amount.desc(), Bid.timestamp.asc()).limit(winner_count).all()
+    ).order_by(Bid.amount.desc(), Bid.timestamp.asc()).all()
 
     winners = []
-    for bid in top_bids:
+    for bid in ranked_bids:
+        if len(winners) >= winner_count:
+            break
         winner_team = db.query(Team).filter(Team.id == bid.team_id).first()
         if not winner_team or winner_team.ps_id is not None:
             continue  # team already has a problem; skip

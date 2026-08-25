@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 from app.api.auth import get_current_active_admin, get_current_user
 from app.api.websockets import manager
 from app.core.database import get_db
-from app.models.models import ProblemStatement, Team, Wildcard, WildcardBid, WildcardSelectionPool
-from app.schemas.schemas import WildcardSlotRequest
+from app.models.models import RoundControl, Team, Wildcard, WildcardBid
+from app.schemas.schemas import BidIncrementRequest, WildcardEndTurnRequest, WildcardSlotRequest
 from app.services.event_service import (
     _remaining_seconds,
     ensure_leader,
@@ -25,10 +25,13 @@ from app.services.event_service import (
 from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_rejection, bid_cooldown_remaining
 from app.services.wildcard_service import (
+    WildcardSelectionConflict,
+    assign_wildcard_selection,
     available_wildcard_problems,
     current_selection,
     finalize_slot_bidding,
-    problem_payload,
+    reconcile_wildcard_selection,
+    selection_remaining_seconds,
     sync_application_window,
     wildcard_payload,
 )
@@ -91,6 +94,7 @@ async def decline_wildcard(db: Session = Depends(get_db), current_user=Depends(g
 
 @router.get("/wildcard/status")
 def get_wildcard_status(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    reconcile_wildcard_selection(db)
     control = sync_application_window(db)
     team = get_team_for_user(db, current_user)
     record = db.query(Wildcard).filter(Wildcard.team_id == team.id).first() if team else None
@@ -105,10 +109,15 @@ def get_wildcard_status(db: Session = Depends(get_db), current_user=Depends(get_
         "rank": record.rank if record else None,
         "winning_bid": record.winning_bid if record else None,
         "problem_id": record.problem_id if record else None,
+        "selection_method": record.selection_method if record else None,
         "current_selection_rank": active[0].rank if active else None,
         "current_selection_team": active[1].team_name if active else None,
         "is_selection_turn": bool(active and team and active[1].id == team.id),
         "available_problem_count": len(available_wildcard_problems(db)),
+        "selection_started_at": control.selection_started_at,
+        "selection_ends_at": control.selection_ends_at,
+        "selection_duration_seconds": control.selection_duration_seconds,
+        "selection_remaining_seconds": selection_remaining_seconds(control),
     }
 
 
@@ -159,15 +168,14 @@ async def start_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
 
 @router.post("/wildcard/bid")
 async def place_wildcard_bid(
-    amount: int,
-    ps_id: int | None = None,
+    request: BidIncrementRequest,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    del ps_id  # Ignored compatibility parameter from the retired problem auction.
     team = ensure_leader(db, current_user)
     sync_expired_event_state(db)
-    control = get_or_create_round_control(db, "WILDCARD")
+    get_or_create_round_control(db, "WILDCARD")
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").with_for_update().one()
     game = get_or_create_game_config(db)
     event_config = get_or_create_event_config(db)
     if control.status != "BIDDING_OPEN" or game.state != "WILDCARD_BIDDING" or _remaining_seconds(game) == 0:
@@ -175,18 +183,18 @@ async def place_wildcard_bid(
     application = db.query(Wildcard).filter(Wildcard.team_id == team.id, Wildcard.status == "applied").first()
     if not application:
         raise HTTPException(status_code=403, detail="Only teams that applied may bid for a Wildcard slot.")
-    if amount > team.coins:
-        raise HTTPException(status_code=400, detail="Bid cannot exceed the team wallet balance.")
-    if amount < event_config.wildcard_starting_bid:
-        raise HTTPException(status_code=400, detail=f"Wildcard bid must be at least {event_config.wildcard_starting_bid} coins.")
-
     team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
-    bid = db.query(WildcardBid).filter(WildcardBid.team_id == team.id).with_for_update().first()
-    if bid and amount < bid.amount + event_config.wildcard_bid_increment:
+    auction_bids = db.query(WildcardBid).with_for_update().all()
+    current_price = max(
+        [event_config.wildcard_starting_bid, *(row.amount for row in auction_bids)],
+    )
+    next_amount = current_price + request.increment
+    if next_amount > team.coins:
         raise HTTPException(
             status_code=400,
-            detail=f"New wildcard bid must be at least {event_config.wildcard_bid_increment} coin(s) higher than {bid.amount}.",
+            detail=f"A +{request.increment} bid would be {next_amount} coins and exceed the team wallet balance of {team.coins}.",
         )
+    bid = next((row for row in auction_bids if row.team_id == team.id), None)
 
     cooldown = event_config.bid_cooldown_seconds or 0
     remaining = bid_cooldown_remaining(db, team.id, cooldown, round_type="WILDCARD")
@@ -195,19 +203,23 @@ async def place_wildcard_bid(
 
     now = datetime.now(timezone.utc)
     if bid:
-        bid.amount = amount
+        bid.amount = next_amount
         bid.timestamp = now
     else:
-        db.add(WildcardBid(team_id=team.id, amount=amount, timestamp=now))
-    record_event(db, "wildcard.bid_placed", actor=current_user, entity_type="team", entity_id=team.id, metadata={"amount": amount})
-    db.commit()
+        db.add(WildcardBid(team_id=team.id, amount=next_amount, timestamp=now))
+    record_event(db, "wildcard.bid_placed", actor=current_user, entity_type="team", entity_id=team.id, metadata={"increment": request.increment, "amount": next_amount})
+    try:
+        db.commit()
+    except (IntegrityError, OperationalError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="The wildcard bid changed concurrently. Refresh and retry.") from exc
     await manager.broadcast_event("wildcard_bid_updated", {
         "team_name": team.team_name,
         "team_id": team.id,
-        "amount": amount,
+        "amount": next_amount,
         "round": "WILDCARD",
     })
-    return {"message": "Wildcard slot bid placed. Coins are deducted only if the team qualifies.", "amount": amount}
+    return {"message": "Wildcard slot bid placed. Coins are deducted only if the team qualifies.", "increment": request.increment, "amount": next_amount}
 
 
 @router.post("/admin/rounds/wildcard/bidding/close")
@@ -245,110 +257,64 @@ async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=De
 @router.post("/wildcard/select/{ps_id}")
 async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     team = ensure_leader(db, current_user)
-    control = get_or_create_round_control(db, "WILDCARD")
-    if control.status != "PROBLEM_SELECTION":
-        raise HTTPException(status_code=409, detail=f"Wildcard problem selection is not open (state: {control.status}).")
-
-    active = (
-        db.query(Wildcard, Team)
-        .join(Team, Team.id == Wildcard.team_id)
-        .filter(Wildcard.status == "qualified", Wildcard.problem_id.is_(None))
-        .order_by(Wildcard.rank.asc())
-        .with_for_update()
-        .first()
-    )
-    if not active or active[1].id != team.id:
-        waiting_for = active[1].team_name if active else "the current winner"
-        raise HTTPException(status_code=409, detail=f"Wait for {waiting_for} to select a problem.")
-
-    problem = (
-        db.query(ProblemStatement)
-        .join(WildcardSelectionPool, WildcardSelectionPool.problem_id == ProblemStatement.id)
-        .filter(
-            ProblemStatement.id == ps_id,
-            ProblemStatement.round == 2,
-            ProblemStatement.status.in_(("available", "visible")),
-            WildcardSelectionPool.selected_by_team_id.is_(None),
-        )
-        .with_for_update()
-        .first()
-    )
-    if not problem:
-        raise HTTPException(status_code=409, detail="That Wildcard problem is unavailable or was already selected.")
-
-    record = active[0]
     try:
-        claimed = (
-            db.query(Wildcard)
-            .filter(Wildcard.id == record.id, Wildcard.status == "qualified", Wildcard.problem_id.is_(None))
-            .update({
-                Wildcard.status: "selected",
-                Wildcard.problem_id: problem.id,
-                Wildcard.selected_at: datetime.utcnow(),
-                Wildcard.used: True,
-            }, synchronize_session=False)
-        )
-        reserved = (
-            db.query(ProblemStatement)
-            .filter(
-                ProblemStatement.id == problem.id,
-                ProblemStatement.round == 2,
-                ProblemStatement.status.in_(("available", "visible")),
-            )
-            .update({ProblemStatement.status: "allocated"}, synchronize_session=False)
-        )
-        pool_reserved = (
-            db.query(WildcardSelectionPool)
-            .filter(
-                WildcardSelectionPool.problem_id == problem.id,
-                WildcardSelectionPool.selected_by_team_id.is_(None),
-            )
-            .update({
-                WildcardSelectionPool.selected_by_team_id: team.id,
-                WildcardSelectionPool.selected_at: datetime.utcnow(),
-            }, synchronize_session=False)
-        )
-        if claimed != 1 or reserved != 1 or pool_reserved != 1:
-            db.rollback()
-            raise HTTPException(status_code=409, detail="The selection changed concurrently. Reload and try again.")
-
-        if team.round1_problem_id is None and team.ps_id:
-            previous = db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first()
-            if previous and previous.round == 1:
-                team.round1_problem_id = previous.id
-        team.wildcard_problem_id = problem.id
-        team.ps_id = problem.id
-
-        remaining = db.query(Wildcard).filter(
-            Wildcard.id != record.id,
-            Wildcard.status == "qualified",
-            Wildcard.problem_id.is_(None),
-        ).count()
-        if remaining == 0:
-            control.status = "COMPLETE"
-            control.ended = True
-        record_event(
+        result = assign_wildcard_selection(
             db,
-            "wildcard.problem_selected",
+            method="manual",
+            team_id=team.id,
+            problem_id=ps_id,
             actor=current_user,
-            entity_type="problem",
-            entity_id=problem.id,
-            metadata={"team_id": team.id, "rank": record.rank},
         )
-        db.commit()
+    except WildcardSelectionConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (IntegrityError, OperationalError) as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="That Wildcard problem was selected concurrently.") from exc
 
     await manager.broadcast_event("wildcard_updated", {
         "team_name": team.team_name,
-        "problem_id": problem.id,
-        "action": "problem_selected",
+        "problem_id": result["problem"]["id"],
+        "action": "problem_selected" if result["method"] == "manual" else "selection_timeout",
     })
+    control = get_or_create_round_control(db, "WILDCARD")
     if control.status == "COMPLETE":
         await manager.broadcast_event("event_state_changed", event_snapshot(db))
     return {
-        "message": f"Wildcard Problem {problem_payload(problem)['problem_number']} selected.",
-        "problem": problem_payload(problem),
+        "message": f"Wildcard Problem {result['problem']['problem_number']} selected.",
+        "problem": result["problem"],
+        "selection_method": result["method"],
         "wildcard_status": control.status,
     }
+
+
+@router.post("/admin/rounds/wildcard/selection/end-turn")
+async def end_wildcard_selection_turn(
+    request: WildcardEndTurnRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_admin),
+):
+    try:
+        result = assign_wildcard_selection(
+            db,
+            method="admin_end_turn",
+            expected_rank=request.expected_rank,
+            expected_team_id=request.expected_team_id,
+            actor=current_user,
+        )
+    except WildcardSelectionConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (IntegrityError, OperationalError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="The Wildcard turn changed concurrently.") from exc
+
+    await manager.broadcast_event("wildcard_updated", {
+        "team_name": result["team_name"],
+        "problem_id": result["problem"]["id"],
+        "action": result["method"],
+    })
+    control = get_or_create_round_control(db, "WILDCARD")
+    if control.status == "COMPLETE":
+        await manager.broadcast_event("event_state_changed", event_snapshot(db))
+    return {"assignment": result, **wildcard_payload(db)}

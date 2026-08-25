@@ -35,7 +35,7 @@ def test_non_leader_cannot_bid(client, admin_headers, csv_bytes, db):
     db.commit()
     db.refresh(ps)
 
-    response = client.post("/bid", json={"ps_id": ps.id, "amount": 50}, headers=member_headers)
+    response = client.post("/bid", json={"ps_id": ps.id, "increment": 5}, headers=member_headers)
     assert response.status_code == 403
 
 
@@ -52,7 +52,7 @@ def test_imported_leader_can_bid(client, admin_headers, csv_bytes, db):
     db.refresh(ps)
 
     # must be in ROUND1_BIDDING state
-    response = client.post("/bid", json={"ps_id": ps.id, "amount": 50}, headers=leader_headers)
+    response = client.post("/bid", json={"ps_id": ps.id, "increment": 5}, headers=leader_headers)
     assert response.status_code == 409
 
     config = db.query(GameConfig).first()
@@ -60,7 +60,7 @@ def test_imported_leader_can_bid(client, admin_headers, csv_bytes, db):
     db.commit()
     _activate_problem(db, ps)
 
-    response = client.post("/bid", json={"ps_id": ps.id, "amount": 50}, headers=leader_headers)
+    response = client.post("/bid", json={"ps_id": ps.id, "increment": 5}, headers=leader_headers)
     assert response.status_code == 200, response.text
 
 
@@ -83,7 +83,7 @@ def test_bid_does_not_deduct_coins_immediately(client, admin_headers, csv_bytes,
     team_alpha = db.query(Team).filter(Team.team_name == "Team Alpha").first()
     assert team_alpha.coins == 1000
 
-    client.post("/bid", json={"ps_id": ps.id, "amount": 100}, headers=leader_headers)
+    client.post("/bid", json={"ps_id": ps.id, "increment": 25}, headers=leader_headers)
     db.refresh(team_alpha)
     assert team_alpha.coins == 1000  # not deducted on placement
 
@@ -119,21 +119,18 @@ def test_bid_bounds_from_event_config(client, admin_headers, csv_bytes, db):
     assert dashboard.status_code == 200
     assert dashboard.json()["gameConfig"]["round1_bid_increment"] == 25
 
-    response = client.post("/bid", json={"ps_id": ps.id, "amount": 50}, headers=leader_headers)
-    assert response.status_code == 400
-    assert "at least 200" in response.json()["detail"]
-
     response = client.post("/bid", json={"ps_id": ps.id, "amount": 200}, headers=leader_headers)
+    assert response.status_code == 422
+
+    response = client.post("/bid", json={"ps_id": ps.id, "increment": 5}, headers=leader_headers)
     assert response.status_code == 200, response.text
-
-    # increment rule: next bid must be >= 225
-    response = client.post("/bid", json={"ps_id": ps.id, "amount": 210}, headers=leader_headers)
-    assert response.status_code == 400
-    response = client.post("/bid", json={"ps_id": ps.id, "amount": 225}, headers=leader_headers)
+    assert response.json()["amount"] == 205
+    response = client.post("/bid", json={"ps_id": ps.id, "increment": 10}, headers=leader_headers)
     assert response.status_code == 200, response.text
+    assert response.json()["amount"] == 215
 
 
-def test_finalize_top_n_winners_charged_once_losers_zero(client, admin_headers, csv_bytes, db):
+def test_finalize_assigns_all_bidders_when_fewer_than_five_and_charges_once(client, admin_headers, csv_bytes, db):
     creds = _import_and_get_client_state(client, admin_headers, csv_bytes, db)
 
     from app.models.models import ProblemStatement, GameConfig, EventConfig
@@ -148,43 +145,38 @@ def test_finalize_top_n_winners_charged_once_losers_zero(client, admin_headers, 
     db.commit()
     _activate_problem(db, ps)
 
-    # N = 2 winners only (EventConfig controls cutoff)
-    event_config = db.query(EventConfig).first()
-    event_config.round1_winner_count = 2
-    db.commit()
-
-    bids = {"alice@test.com": 300, "bob@test.com": 200, "carol@test.com": 100}
-    for email, amount in bids.items():
+    bids = (("carol@test.com", 5), ("bob@test.com", 10), ("alice@test.com", 25))
+    for email, increment in bids:
         headers = {"Authorization": "Bearer " + client.post(
             "/login", data={"username": email, "password": creds[email]}
         ).json()["access_token"]}
-        resp = client.post("/bid", json={"ps_id": ps.id, "amount": amount}, headers=headers)
+        resp = client.post("/bid", json={"ps_id": ps.id, "increment": increment}, headers=headers)
         assert resp.status_code == 200, resp.text
 
     response = client.post(f"/admin/auction/{ps.id}/finalize", headers=admin_headers)
     assert response.status_code == 200, response.text
     winners = response.json()["winners"]
-    assert len(winners) == 2
-    assert [w["team"] for w in winners] == ["Team Alpha", "Team Beta"]
+    assert len(winners) == 3
+    assert [w["team"] for w in winners] == ["Team Alpha", "Team Beta", "Team Gamma"]
 
     alpha = db.query(Team).filter(Team.team_name == "Team Alpha").first()
     beta = db.query(Team).filter(Team.team_name == "Team Beta").first()
     gamma = db.query(Team).filter(Team.team_name == "Team Gamma").first()
 
     # winners charged exactly once, losers pay zero
-    assert alpha.coins == 1000 - 300
-    assert beta.coins == 1000 - 200
-    assert gamma.coins == 1000
+    assert alpha.coins == 1000 - 65
+    assert beta.coins == 1000 - 40
+    assert gamma.coins == 1000 - 30
 
     round1_win_tx = db.query(WalletTransaction).filter(WalletTransaction.transaction_type == "ROUND1_WIN").all()
-    assert len(round1_win_tx) == 2
-    assert sum(tx.amount for tx in round1_win_tx) == -500
+    assert len(round1_win_tx) == 3
+    assert sum(tx.amount for tx in round1_win_tx) == -135
 
     # finalized is idempotent
     response2 = client.post(f"/admin/auction/{ps.id}/finalize", headers=admin_headers)
     assert response2.status_code == 200
     assert response2.json()["message"].startswith("Problem Statement already finalized")
-    assert db.query(WalletTransaction).filter(WalletTransaction.transaction_type == "ROUND1_WIN").count() == 2
+    assert db.query(WalletTransaction).filter(WalletTransaction.transaction_type == "ROUND1_WIN").count() == 3
 
 
 def test_dashboard_shows_imported_leader(client, admin_headers, csv_bytes, db):

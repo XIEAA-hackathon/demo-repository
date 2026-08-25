@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from math import ceil
 
 from sqlalchemy.orm import Session
 
@@ -32,6 +33,55 @@ WILDCARD_STATES = (
     "PROBLEM_SELECTION",
     "COMPLETE",
 )
+
+
+class WildcardSelectionConflict(ValueError):
+    pass
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def clear_selection_timer(control: RoundControl) -> None:
+    control.current_selection_rank = None
+    control.selection_started_at = None
+    control.selection_ends_at = None
+    control.selection_duration_seconds = None
+
+
+def start_selection_timer(
+    db: Session,
+    control: RoundControl,
+    *,
+    now: datetime | None = None,
+) -> tuple[Wildcard, Team] | None:
+    active = current_selection(db)
+    if not active:
+        clear_selection_timer(control)
+        control.status = "COMPLETE"
+        control.ended = True
+        return None
+    started_at = now or utc_now()
+    duration = max(5, min(300, get_or_create_event_config(db).wildcard_selection_seconds or 30))
+    control.current_selection_rank = active[0].rank
+    control.selection_started_at = started_at
+    control.selection_ends_at = started_at + timedelta(seconds=duration)
+    control.selection_duration_seconds = duration
+    return active
+
+
+def selection_remaining_seconds(control: RoundControl, *, now: datetime | None = None) -> int | None:
+    ends_at = as_utc(control.selection_ends_at)
+    if ends_at is None:
+        return None
+    return max(0, ceil((ends_at - (now or utc_now())).total_seconds()))
 
 
 def display_problem_number(problem: ProblemStatement) -> str:
@@ -176,6 +226,208 @@ def current_selection(db: Session) -> tuple[Wildcard, Team] | None:
     )
 
 
+def _locked_current_selection(db: Session) -> tuple[Wildcard, Team] | None:
+    return (
+        db.query(Wildcard, Team)
+        .join(Team, Team.id == Wildcard.team_id)
+        .filter(Wildcard.status == "qualified", Wildcard.problem_id.is_(None))
+        .order_by(Wildcard.rank.asc())
+        .with_for_update()
+        .first()
+    )
+
+
+def _first_available_problem(db: Session) -> ProblemStatement | None:
+    return (
+        db.query(ProblemStatement)
+        .join(WildcardSelectionPool, WildcardSelectionPool.problem_id == ProblemStatement.id)
+        .filter(
+            ProblemStatement.round == 2,
+            ProblemStatement.status.in_(("available", "visible")),
+            WildcardSelectionPool.selected_by_team_id.is_(None),
+        )
+        .order_by(WildcardSelectionPool.position.asc())
+        .with_for_update()
+        .first()
+    )
+
+
+def _assign_locked_selection(
+    db: Session,
+    control: RoundControl,
+    active: tuple[Wildcard, Team],
+    problem: ProblemStatement,
+    *,
+    method: str,
+    actor=None,
+    now: datetime | None = None,
+) -> dict:
+    record, team = active
+    assigned_at = now or utc_now()
+    claimed = (
+        db.query(Wildcard)
+        .filter(Wildcard.id == record.id, Wildcard.status == "qualified", Wildcard.problem_id.is_(None))
+        .update({
+            Wildcard.status: "selected",
+            Wildcard.problem_id: problem.id,
+            Wildcard.selected_at: assigned_at,
+            Wildcard.selection_method: method,
+            Wildcard.used: True,
+        }, synchronize_session=False)
+    )
+    reserved = (
+        db.query(ProblemStatement)
+        .filter(
+            ProblemStatement.id == problem.id,
+            ProblemStatement.round == 2,
+            ProblemStatement.status.in_(("available", "visible")),
+        )
+        .update({ProblemStatement.status: "allocated"}, synchronize_session=False)
+    )
+    pool_reserved = (
+        db.query(WildcardSelectionPool)
+        .filter(
+            WildcardSelectionPool.problem_id == problem.id,
+            WildcardSelectionPool.selected_by_team_id.is_(None),
+        )
+        .update({
+            WildcardSelectionPool.selected_by_team_id: team.id,
+            WildcardSelectionPool.selected_at: assigned_at,
+        }, synchronize_session=False)
+    )
+    if claimed != 1 or reserved != 1 or pool_reserved != 1:
+        raise WildcardSelectionConflict("The Wildcard selection changed concurrently. Reload and try again.")
+
+    if team.round1_problem_id is None and team.ps_id:
+        previous = db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first()
+        if previous and previous.round == 1:
+            team.round1_problem_id = previous.id
+    team.wildcard_problem_id = problem.id
+    team.ps_id = problem.id
+
+    db.flush()
+    next_active = start_selection_timer(db, control, now=assigned_at)
+    action = "wildcard.problem_selected" if method == "manual" else "wildcard.problem_auto_assigned"
+    record_event(
+        db,
+        action,
+        actor=actor,
+        actor_type="system" if actor is None else None,
+        entity_type="problem",
+        entity_id=problem.id,
+        metadata={"team_id": team.id, "rank": record.rank, "method": method},
+    )
+    return {
+        "team_id": team.id,
+        "team_name": team.team_name,
+        "rank": record.rank,
+        "problem": problem_payload(problem),
+        "method": method,
+        "next_rank": next_active[0].rank if next_active else None,
+        "next_team": next_active[1].team_name if next_active else None,
+    }
+
+
+def assign_wildcard_selection(
+    db: Session,
+    *,
+    method: str,
+    team_id: int | None = None,
+    problem_id: int | None = None,
+    expected_rank: int | None = None,
+    expected_team_id: int | None = None,
+    actor=None,
+    now: datetime | None = None,
+) -> dict:
+    """Atomically assign the current turn and advance its server-owned timer."""
+    get_or_create_round_control(db, "WILDCARD")
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.round_type == "WILDCARD")
+        .with_for_update()
+        .one()
+    )
+    if control.status != "PROBLEM_SELECTION":
+        raise WildcardSelectionConflict(f"Wildcard problem selection is not open (state: {control.status}).")
+
+    active = _locked_current_selection(db)
+    if not active:
+        clear_selection_timer(control)
+        control.status = "COMPLETE"
+        control.ended = True
+        raise WildcardSelectionConflict("No Wildcard selection turn is active.")
+    record, active_team = active
+    if expected_rank is not None and (record.rank != expected_rank or active_team.id != expected_team_id):
+        raise WildcardSelectionConflict("The current Wildcard turn already changed. Reload before ending a turn.")
+    if team_id is not None and active_team.id != team_id:
+        raise WildcardSelectionConflict(f"Wait for {active_team.team_name} to select a problem.")
+
+    check_time = now or utc_now()
+    if control.current_selection_rank != record.rank or control.selection_ends_at is None:
+        start_selection_timer(db, control, now=check_time)
+    expired = as_utc(control.selection_ends_at) <= check_time
+    effective_method = "timeout" if expired else method
+
+    if effective_method == "manual":
+        problem = (
+            db.query(ProblemStatement)
+            .join(WildcardSelectionPool, WildcardSelectionPool.problem_id == ProblemStatement.id)
+            .filter(
+                ProblemStatement.id == problem_id,
+                ProblemStatement.round == 2,
+                ProblemStatement.status.in_(("available", "visible")),
+                WildcardSelectionPool.selected_by_team_id.is_(None),
+            )
+            .with_for_update()
+            .first()
+        )
+        if not problem:
+            raise WildcardSelectionConflict("That Wildcard problem is unavailable or was already selected.")
+    else:
+        problem = _first_available_problem(db)
+        if not problem:
+            raise WildcardSelectionConflict("No available Wildcard problem remains for automatic assignment.")
+
+    result = _assign_locked_selection(
+        db, control, active, problem, method=effective_method, actor=actor, now=check_time,
+    )
+    db.commit()
+    return result
+
+
+def reconcile_wildcard_selection(db: Session, *, now: datetime | None = None) -> dict | None:
+    """Finalize an expired turn. Safe for the background worker and request paths."""
+    get_or_create_round_control(db, "WILDCARD")
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.round_type == "WILDCARD")
+        .with_for_update()
+        .one()
+    )
+    if control.status != "PROBLEM_SELECTION":
+        return None
+    active = _locked_current_selection(db)
+    if not active:
+        clear_selection_timer(control)
+        control.status = "COMPLETE"
+        control.ended = True
+        db.commit()
+        return None
+    check_time = now or utc_now()
+    if control.current_selection_rank != active[0].rank or control.selection_ends_at is None:
+        start_selection_timer(db, control, now=check_time)
+        db.commit()
+        return None
+    if as_utc(control.selection_ends_at) > check_time:
+        return None
+    problem = _first_available_problem(db)
+    if not problem:
+        raise WildcardSelectionConflict("No available Wildcard problem remains for automatic assignment.")
+    result = _assign_locked_selection(db, control, active, problem, method="timeout", now=check_time)
+    db.commit()
+    return result
+
+
 def finalize_slot_bidding(db: Session, control: RoundControl, *, commit: bool = True) -> list[dict]:
     """Persist the deterministic top-N result and charge each winner once.
 
@@ -238,6 +490,11 @@ def finalize_slot_bidding(db: Session, control: RoundControl, *, commit: bool = 
 
     control.status = "PROBLEM_SELECTION" if winners else "COMPLETE"
     control.ended = not winners
+    if winners:
+        db.flush()
+        start_selection_timer(db, control)
+    else:
+        clear_selection_timer(control)
     record_event(
         db,
         "wildcard.selection_pool_frozen",
@@ -252,6 +509,7 @@ def finalize_slot_bidding(db: Session, control: RoundControl, *, commit: bool = 
 
 
 def wildcard_payload(db: Session) -> dict:
+    reconcile_wildcard_selection(db)
     control = sync_application_window(db)
     config: EventConfig = get_or_create_event_config(db)
     applications = db.query(Wildcard).all()
@@ -273,6 +531,7 @@ def wildcard_payload(db: Session) -> dict:
             "winning_bid": application.winning_bid,
             "status": "SELECTED" if application.status == "selected" else "CHOOSING" if active and active[0].team_id == team.id else "WAITING",
             "problem": problem_payload(selected_problem) if selected_problem else None,
+            "selection_method": application.selection_method,
         })
     max_slots = min(applied, len(problems))
     return {
@@ -301,6 +560,10 @@ def wildcard_payload(db: Session) -> dict:
             "current_rank": active[0].rank if active else None,
             "current_team_id": active[1].id if active else None,
             "current_team": active[1].team_name if active else None,
+            "started_at": control.selection_started_at,
+            "ends_at": control.selection_ends_at,
+            "duration_seconds": control.selection_duration_seconds,
+            "remaining_seconds": selection_remaining_seconds(control),
             "qualifications": qualifications,
             "available_problems": [problem_payload(problem) for problem in available],
             "pool_frozen": bool(pool_rows),
@@ -319,6 +582,9 @@ def wildcard_payload(db: Session) -> dict:
         "settings": {
             "application_seconds": config.wildcard_application_seconds,
             "bidding_seconds": config.wildcard_bid_seconds,
+            "bid_cooldown_seconds": config.bid_cooldown_seconds,
+            "selection_seconds": config.wildcard_selection_seconds,
+            "base_price": config.wildcard_starting_bid,
             "wildcard_slots": control.slot_count or config.wildcard_slots,
         },
         "event": event_snapshot(db),

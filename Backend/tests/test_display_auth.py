@@ -18,7 +18,7 @@ def test_display_login_is_dedicated_and_least_privilege(client, admin_headers, d
         headers=display_headers,
         json={"confirmation": "RESET EVENT"},
     ).status_code == 403
-    assert client.post("/bid", headers=display_headers, json={"ps_id": 1, "amount": 100}).status_code == 403
+    assert client.post("/bid", headers=display_headers, json={"ps_id": 1, "increment": 5}).status_code == 403
 
     assert client.post("/logout", headers=display_headers).status_code == 200
     assert client.get("/public/leaderboard", headers=display_headers).status_code == 401

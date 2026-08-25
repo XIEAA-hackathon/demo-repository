@@ -12,6 +12,7 @@ from app.models.models import (
     EventActivityLog,
     EventConfig,
     ExchangeRequest,
+    FinalResult,
     GameConfig,
     Member,
     ProblemStatement,
@@ -67,9 +68,24 @@ def _display_login(client):
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
-@pytest.mark.parametrize("active_state", ["ROUND1_BIDDING", "WILDCARD_BIDDING", "SUBMISSION", "RESULTS"])
+@pytest.mark.parametrize(
+    "active_state",
+    [
+        "WAITING",
+        "ROUND1_PREVIEW",
+        "ROUND1_BIDDING",
+        "ROUND1_RESULT",
+        "WILDCARD_APPLICATION",
+        "WILDCARD_BIDDING",
+        "WILDCARD_SELECTION",
+        "SUBMISSION",
+        "JUDGING_WAIT",
+        "RESULTS",
+    ],
+)
 def test_event_reset_is_allowed_from_every_active_stage(client, admin_headers, db, active_state):
-    _leader, team = _team(db, f"{active_state} Team", f"{active_state.lower()}@reset.test")
+    leader, team = _team(db, f"{active_state} Team", f"{active_state.lower()}@reset.test")
+    participant_headers = _login(client, leader.email)
     problem = ProblemStatement(ps_number=f"{active_state}-PS", title="Active", description="Active", round=1, status="current")
     db.add(problem)
     db.flush()
@@ -77,6 +93,12 @@ def test_event_reset_is_allowed_from_every_active_stage(client, admin_headers, d
     team.round1_problem_id = problem.id
     db.add(Bid(team_id=team.id, ps_id=problem.id, amount=100, round=1))
     db.add(Submission(team_id=team.id, problem_id=problem.id, repository_url="https://github.com/example/active-reset"))
+    db.add(FinalResult(
+        first_place_team_id=team.id,
+        result_status="PUBLISHED" if active_state == "RESULTS" else "WAITING",
+        saved_at=datetime.now(timezone.utc),
+        published_at=datetime.now(timezone.utc) if active_state == "RESULTS" else None,
+    ))
 
     game = db.query(GameConfig).first()
     game.state = active_state
@@ -87,6 +109,22 @@ def test_event_reset_is_allowed_from_every_active_stage(client, admin_headers, d
     game.timer_paused_remaining_seconds = 120
     event = db.query(EventConfig).first()
     event.submissions_open = active_state == "SUBMISSION"
+    round1 = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").first()
+    if round1 is None:
+        round1 = RoundControl(round_type="ROUND1")
+        db.add(round1)
+    round1.status = "BIDDING" if active_state == "ROUND1_BIDDING" else "PREVIEW"
+    round1.current_problem_id = problem.id
+    wildcard = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").first()
+    if wildcard is None:
+        wildcard = RoundControl(round_type="WILDCARD")
+        db.add(wildcard)
+    wildcard.status = active_state
+    wildcard.applications_open = active_state == "WILDCARD_APPLICATION"
+    wildcard.current_selection_rank = 1
+    wildcard.selection_started_at = datetime.now(timezone.utc)
+    wildcard.selection_ends_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+    wildcard.selection_duration_seconds = 30
     db.commit()
 
     recovery = client.get("/admin/recovery", headers=admin_headers)
@@ -108,7 +146,18 @@ def test_event_reset_is_allowed_from_every_active_stage(client, admin_headers, d
     assert db.query(EventConfig).first().submissions_open is False
     assert db.query(Bid).count() == 0
     assert db.query(Submission).count() == 0
+    assert db.query(FinalResult).count() == 0
     assert db.query(Team).filter(Team.is_system_team.is_(False)).count() == 0
+    controls = {control.round_type: control for control in db.query(RoundControl).all()}
+    assert controls["ROUND1"].status == "IDLE"
+    assert controls["ROUND1"].current_problem_id is None
+    assert controls["WILDCARD"].status == "NOT_STARTED"
+    assert controls["WILDCARD"].current_problem_id is None
+    assert controls["WILDCARD"].current_selection_rank is None
+    assert controls["WILDCARD"].selection_started_at is None
+    assert controls["WILDCARD"].selection_ends_at is None
+    assert controls["WILDCARD"].selection_duration_seconds is None
+    assert client.get("/participant/dashboard", headers=participant_headers).status_code == 401
 
 
 def test_event_reset_rolls_back_if_any_step_fails(client, admin_headers, db, monkeypatch):
@@ -191,6 +240,10 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
     wildcard_control.status = "COMPLETE"
     wildcard_control.ended = True
     wildcard_control.slot_count = 1
+    wildcard_control.current_selection_rank = 1
+    wildcard_control.selection_started_at = datetime.now(timezone.utc)
+    wildcard_control.selection_ends_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+    wildcard_control.selection_duration_seconds = 30
     game = db.query(GameConfig).first()
     game.state = "ROUND1_BIDDING"
     db.commit()
@@ -220,6 +273,9 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
     controls = {row.round_type: row for row in db.query(RoundControl).all()}
     assert controls["ROUND1"].status == "IDLE" and controls["ROUND1"].current_problem_id is None
     assert controls["WILDCARD"].status == "NOT_STARTED" and controls["WILDCARD"].slot_count is None
+    assert controls["WILDCARD"].current_selection_rank is None
+    assert controls["WILDCARD"].selection_started_at is None
+    assert controls["WILDCARD"].selection_ends_at is None
     assert db.query(GameConfig).first().auction_timer_end is None
 
     # Existing Admin bearer token and permanent demo leader credentials remain valid.

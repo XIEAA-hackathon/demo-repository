@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParticipant } from '../ParticipantContext'
-import type { LeaderboardEntry } from '../types'
+import type { BidIncrement, LeaderboardEntry } from '../types'
 import AdvanceButton from '../components/AdvanceButton'
 import Countdown from '../components/Countdown'
 import Leaderboard from '../components/Leaderboard'
@@ -8,11 +8,13 @@ import WaitingState from '../components/WaitingState'
 import { Button, Card, CoinBalance, PageHeading, Stat } from '../components/ui'
 import { useBidCooldown } from '../useBidCooldown'
 
+const BID_INCREMENTS: BidIncrement[] = [5, 10, 25]
+
 export default function WildcardBiddingPage() {
   const { dashboard, service, refresh } = useParticipant()
   const [entries, setEntries] = useState<LeaderboardEntry[]>([])
-  const [amount, setAmount] = useState('')
   const [working, setWorking] = useState(false)
+  const [highSpendConfirmed, setHighSpendConfirmed] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const cooldownRemaining = useBidCooldown(dashboard?.bidCooldownRemainingSeconds ?? 0)
   const loadLeaderboard = useCallback(() => service.getLeaderboard('WILDCARD').then(setEntries), [service])
@@ -26,28 +28,39 @@ export default function WildcardBiddingPage() {
   const applied = Boolean(dashboard.wildcardApplication) && dashboard.wildcard?.status === 'applied'
   const isLeader = dashboard.team.leaderId === dashboard.currentUserId
   const slots = dashboard.wildcard?.slotCount ?? dashboard.gameConfig.wildcardSlots
+  const currentPrice = Math.max(dashboard.gameConfig.wildcardBaseBidPrice, ...entries.map((entry) => entry.amount))
+  const canAfford = (increment: BidIncrement) => currentPrice + increment <= dashboard.wallet.balance
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault()
-    setWorking(true); setMessage(null)
+  const placeIncrement = async (increment: BidIncrement) => {
+    const proposedAmount = currentPrice + increment
+    if (
+      proposedAmount > dashboard.gameConfig.startingCoins / 2
+      && !highSpendConfirmed
+      && !window.confirm('High Bid Warning\n\nYou are committing more than half of your starting balance to this auction.\n\nContinue?')
+    ) return
+    if (proposedAmount > dashboard.gameConfig.startingCoins / 2) setHighSpendConfirmed(true)
+    setWorking(true)
+    setMessage(null)
     try {
-      await service.placeWildcardBid(Number(amount))
+      const accepted = await service.placeWildcardBid(increment)
       await Promise.all([refresh(), loadLeaderboard()])
-      setAmount('')
-      setMessage({ type: 'success', text: 'Your slot bid was accepted. You can update it while bidding remains open.' })
+      setMessage({ type: 'success', text: `Your slot bid was accepted at ${accepted} coins.` })
     } catch (cause) {
+      await Promise.allSettled([refresh(), loadLeaderboard()])
       setMessage({ type: 'error', text: cause instanceof Error ? cause.message : 'Bid could not be placed.' })
-    } finally { setWorking(false) }
+    } finally {
+      setWorking(false)
+    }
   }
 
   if (!applied) return <div className="stack"><PageHeading eyebrow="Wildcard · Slot bidding" title="Your team is not bidding" /><Card className="center-card"><WaitingState text="Only teams that applied can place a wildcard slot bid." /></Card><Card><h2>Live ranking</h2><Leaderboard entries={entries} currentTeamId={dashboard.team.id} cutoff={slots} cutoffLabel="Wildcard cut-off" /></Card></div>
 
   return <div className="stack wildcard-bidding-page">
     <PageHeading eyebrow="Wildcard · Slot bidding" title="Bid for a selection slot">One team, one live bid. The top {slots} teams qualify to choose problems in rank order.</PageHeading>
-    <div className="stats-grid bid-status-grid"><Stat label="Time left" value={<Countdown timing={dashboard.timing} />} /><Stat label="Team balance" value={<CoinBalance value={dashboard.wallet.balance} />} /><Stat label="Your current bid" value={`${dashboard.wildcardBidAmount ?? 0} coins`} /></div>
+    <div className="stats-grid bid-status-grid"><Stat label="Time left" value={<Countdown timing={dashboard.timing} />} /><Stat label="Current bid" value={`${currentPrice} coins`} /><Stat label="Your balance" value={<CoinBalance value={dashboard.wallet.balance} />} /><Stat label="Base price" value={`${dashboard.gameConfig.wildcardBaseBidPrice} coins`} /></div>
     <div className="two-column bid-layout">
       <Card className="leaderboard-panel"><h2>Live slot ranking</h2><Leaderboard entries={entries} currentTeamId={dashboard.team.id} cutoff={slots} cutoffLabel="Wildcard cut-off" /></Card>
-      <Card className="bid-panel"><h2>Place your slot bid</h2><form className="form" onSubmit={submit}><label className={!isLeader ? 'is-locked' : ''}><span>Bid amount</span><input type="number" inputMode="numeric" min={1} max={dashboard.wallet.balance} value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="250" disabled={!isLeader || cooldownRemaining > 0} aria-describedby="wildcard-bid-cooldown" required /></label><Button type="submit" disabled={!isLeader || working || !amount || cooldownRemaining > 0}>{working ? 'Placing bid…' : cooldownRemaining > 0 ? `Available in ${cooldownRemaining}s` : dashboard.wildcardBidAmount == null ? 'Place slot bid' : 'Update slot bid'}</Button></form><p className="muted bid-rules">Higher bids rank first. For equal bids, the earlier final bid timestamp ranks first.</p><p className="notice">Winning bids are deducted only when the organizer closes bidding.</p>{!isLeader && <p className="notice">Only your team leader can place or update the bid.</p>}{cooldownRemaining > 0 && <p className="bid-cooldown" id="wildcard-bid-cooldown" role="status">Next bid available in <strong>{cooldownRemaining}s</strong></p>}{message && <p className={message.type === 'success' ? 'success' : 'error'} role="status">{message.text}</p>}</Card>
+      <Card className="bid-panel"><h2>Quick bid</h2><div className="bid-controls"><div className="bid-current"><span>Current auction bid</span><strong>{currentPrice} coins</strong>{dashboard.wildcardBidAmount != null && <small>Your bid: {dashboard.wildcardBidAmount} coins</small>}</div><div className="quick-bid-buttons" aria-label="Quick bid increments">{BID_INCREMENTS.map((increment) => <Button key={increment} type="button" disabled={!isLeader || working || cooldownRemaining > 0 || !canAfford(increment)} onClick={() => void placeIncrement(increment)}>+{increment}</Button>)}</div></div><p className="muted bid-rules" id="wildcard-bid-rules">The server adds your selected increment to the authoritative current bid. Maximum single increase: 25 coins.</p>{!BID_INCREMENTS.some(canAfford) && <p className="notice">Your balance cannot cover the next available bid.</p>}<p className="notice">Winning bids are deducted only when the organizer closes bidding.</p>{!isLeader && <p className="notice">Only your team leader can place or update the bid.</p>}{cooldownRemaining > 0 && <p className="bid-cooldown" id="wildcard-bid-cooldown" role="status">Next bid available in <strong>{cooldownRemaining}s</strong></p>}{message && <p className={message.type === 'success' ? 'success' : 'error'} role="status">{message.text}</p>}</Card>
     </div>
     <AdvanceButton label="Waiting for slot bidding to close" />
   </div>

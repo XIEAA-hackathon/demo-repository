@@ -83,11 +83,16 @@ export interface WildcardState {
   rank: number | null
   winningBid: number | null
   selectedProblemId: Id | null
+  selectionMethod: 'manual' | 'timeout' | 'admin_end_turn' | null
   currentSelectionRank: number | null
   currentSelectionTeam: string | null
   isSelectionTurn: boolean
   availableProblemCount: number
   slotCount: number | null
+  selectionStartedAt: string | null
+  selectionEndsAt: string | null
+  selectionDurationSeconds: number | null
+  selectionRemainingSeconds: number | null
 }
 
 export interface LeaderboardEntry {
@@ -144,14 +149,19 @@ export interface ParticipantDashboard {
   wildcardApplicationsOpen: boolean
   submissionsOpen: boolean
   gameConfig: {
+    startingCoins: number
     round1WinnerCount: number
+    round1BaseBidPrice: number
     round1BidIncrement: number
     round1PreviewSeconds: number
     round1BidSeconds: number
     wildcardSlots: number
+    wildcardBaseBidPrice: number
+    wildcardBidIncrement: number
     wildcardApplicationSeconds: number
     wildcardPreviewSeconds: number
     wildcardBidSeconds: number
+    wildcardSelectionSeconds: number
     codingDurationSeconds: number
     bidCooldownSeconds: number
   }
@@ -166,3 +176,5 @@ export interface EventTiming {
   paused: boolean
   pausedRemainingSeconds: number | null
 }
+
+export type BidIncrement = 5 | 10 | 25

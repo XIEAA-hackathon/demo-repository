@@ -13,20 +13,26 @@ def test_admin_get_config(client, admin_headers, db):
 def test_admin_update_config_validates(client, admin_headers, db):
     response = client.put("/admin/config", headers=admin_headers, json={"round1_winner_count": -1})
     assert response.status_code == 400
+    response = client.put("/admin/config", headers=admin_headers, json={"round1_winner_count": 3})
+    assert response.status_code == 400
 
     response = client.put("/admin/config", headers=admin_headers, json={
         "starting_coins": 1500,
-        "round1_winner_count": 3,
+        "round1_winner_count": 5,
         "round1_minimum_bid": 50,
         "round1_bid_increment": 5,
+        "wildcard_starting_bid": 300,
+        "wildcard_bid_increment": 10,
         "wildcard_enabled": False,
         "wildcard_slots": 4,
     })
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["starting_coins"] == 1500
-    assert data["round1_winner_count"] == 3
+    assert data["round1_winner_count"] == 5
     assert data["round1_minimum_bid"] == 50
+    assert data["wildcard_starting_bid"] == 300
+    assert data["wildcard_bid_increment"] == 10
     assert data["wildcard_enabled"] is False
 
 
