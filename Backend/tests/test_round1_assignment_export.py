@@ -3,15 +3,15 @@ import io
 
 from openpyxl import load_workbook
 
-from app.models.models import EventConfig, Team
+from app.models.models import EventConfig, RoundControl, Team
 
 
 def _twelve_team_registration() -> bytes:
     output = io.StringIO(newline="")
     writer = csv.writer(output)
-    writer.writerow(["Team Name", "Leader Name", "Leader Email", "Organizer Notes"])
+    writer.writerow(["Team Name", "Leader Name", "Leader Email", "Leader Password", "Organizer Notes"])
     for index, letter in enumerate("ABCDEFGHIJKL", start=1):
-        writer.writerow([f"Team {letter}", f"Leader {letter}", f"leader{index}@example.com", f"Preserve note {letter}"])
+        writer.writerow([f"Team {letter}", f"Leader {letter}", f"leader{index}@example.com", f"Leader{index}@123", f"Preserve note {letter}"])
     return output.getvalue().encode("utf-8")
 
 
@@ -87,6 +87,7 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert imported.status_code == 200, imported.text
     first_problem = next(problem for problem in imported.json()["problems"] if problem["problem_number"] == "1")
     second_problem = next(problem for problem in imported.json()["problems"] if problem["problem_number"] == "2")
+    final_problem = next(problem for problem in imported.json()["problems"] if problem["problem_number"] == "3")
 
     assert client.post(f"/admin/rounds/round-1/problems/{first_problem['id']}/select", headers=admin_headers).status_code == 200
     assert client.post("/admin/rounds/round-1/preview/start", headers=admin_headers).status_code == 200
@@ -104,6 +105,13 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert assigned.status_code == 200, assigned.text
     assert [winner["team_name"] for winner in assigned.json()["winners"]] == [f"Team {letter}" for letter in "ABCDE"]
     db.expire_all()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one()
+    assert (control.round1_winning_bid_sum, control.round1_winning_bid_count) == (850, 5)
+    duplicate = client.post("/admin/rounds/round-1/assign-winners", headers=admin_headers)
+    assert duplicate.status_code == 200 and duplicate.json()["winners"] == []
+    db.expire_all()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one()
+    assert (control.round1_winning_bid_sum, control.round1_winning_bid_count) == (850, 5)
     assert db.query(Team).filter(Team.team_name == "Team F").one().round1_problem_id is None
 
     after_first = _assignment_rows(client.get("/admin/registration/assignments", headers=admin_headers))
@@ -114,7 +122,7 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert first_by_team["Team A"]["Wildcard Problem Number"] == ""
     assert first_by_team["Team A"]["Final Problem Number"] == "R1-1"
     assert first_by_team["Team F"]["Round 1 Problem Number"] == ""
-    assert "Leader Password" not in first_by_team["Team A"]
+    assert first_by_team["Team A"]["Leader Password"] == "NOT EXPORTED"
     round_one_workbook = client.get("/admin/rounds/round-1/assignments/export", headers=admin_headers)
     assert 'filename="bid_to_build_round_1_assignments.xlsx"' in round_one_workbook.headers["content-disposition"]
     round_one_rows = _assignment_workbook_rows(round_one_workbook)
@@ -137,13 +145,44 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert client.post("/admin/rounds/round-1/bidding/close", headers=admin_headers).status_code == 200
     second_assigned = client.post("/admin/rounds/round-1/assign-winners", headers=admin_headers)
     assert [winner["team_name"] for winner in second_assigned.json()["winners"]] == [f"Team {letter}" for letter in "FGHIJ"]
-    assert second_assigned.json()["final_auto_assignment"]["status"] == "COMPLETED"
-    assert second_assigned.json()["final_auto_assignment"]["calculated_cost"] == 192
+    assert second_assigned.json()["final_auto_assignment"]["status"] == "PENDING"
+    assert second_assigned.json()["final_auto_assignment"]["suggested_deduction"] == 193
+    assert second_assigned.json()["final_auto_assignment"]["completed_auctions"] == 2
+    blocked_final_auction = client.post(
+        f"/admin/rounds/round-1/problems/{final_problem['id']}/select",
+        headers=admin_headers,
+    )
+    assert blocked_final_auction.status_code == 409
+    db.expire_all()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one()
+    assert (control.round1_winning_bid_sum, control.round1_winning_bid_count) == (1925, 10)
+    confirmed = client.post(
+        "/admin/rounds/round-1/final-auto-assignment",
+        headers=admin_headers,
+        json={"deduction": 190},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["final_auto_assignment"]["status"] == "COMPLETED"
+    assert confirmed.json()["final_auto_assignment"]["deduction_per_team"] == 190
     db.expire_all()
     final_teams = db.query(Team).filter(Team.team_name.in_(["Team K", "Team L"])).all()
     assert all(team.round1_problem_id is not None for team in final_teams)
     assert all(team.round1_assignment_type == "AUTO_FINAL_PROBLEM" for team in final_teams)
-    assert all(team.round1_assignment_cost == 192 for team in final_teams)
+    assert all(team.round1_assignment_cost == 190 for team in final_teams)
+    balances_after_confirmation = {team.id: team.coins for team in final_teams}
+    duplicate_confirmation = client.post(
+        "/admin/rounds/round-1/final-auto-assignment",
+        headers=admin_headers,
+        json={"deduction": 500},
+    )
+    assert duplicate_confirmation.status_code == 200
+    db.expire_all()
+    assert {
+        team.id: team.coins
+        for team in db.query(Team).filter(Team.team_name.in_(["Team K", "Team L"])).all()
+    } == balances_after_confirmation
+    control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one()
+    assert (control.round1_winning_bid_sum, control.round1_winning_bid_count) == (1925, 10)
 
     assert client.post("/admin/rounds/round-1/end", headers=admin_headers).status_code == 200
     assert client.post("/admin/rounds/wildcard/applications/open", headers=admin_headers).status_code == 200
@@ -199,4 +238,6 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     config = db.query(EventConfig).one()
     assert config.round1_minimum_bid == 25
     assert config.wildcard_starting_bid == 150
-    assert client.get("/admin/registration/assignments", headers=admin_headers).status_code == 409
+    control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one()
+    assert (control.round1_winning_bid_sum, control.round1_winning_bid_count) == (0, 0)
+    assert client.get("/admin/registration/assignments", headers=admin_headers).status_code == 200

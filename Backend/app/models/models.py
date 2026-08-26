@@ -46,6 +46,8 @@ class RoundControl(Base):
     final_auto_assignment_problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
     final_auto_assignment_price = Column(Integer, nullable=True)
     final_auto_assignment_team_count = Column(Integer, nullable=True)
+    round1_winning_bid_sum = Column(Integer, nullable=False, default=0)
+    round1_winning_bid_count = Column(Integer, nullable=False, default=0)
 
 class Team(Base):
     __tablename__ = "teams"

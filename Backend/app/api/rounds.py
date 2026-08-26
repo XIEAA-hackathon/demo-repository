@@ -8,6 +8,7 @@ from typing import Iterable
 from fastapi import APIRouter, Depends, File, HTTPException, Response as FastAPIResponse, UploadFile
 from fastapi.responses import Response
 from openpyxl import load_workbook
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_active_admin, get_current_active_display, get_current_user
@@ -27,8 +28,10 @@ from app.services.activity_log import record_event
 from app.core.event_constants import ROUND1_WINNER_COUNT
 from app.services.round1_auto_assignment import (
     ROUND1_BID_WINNER,
+    ROUND1_FINALIZATION_LOCK,
     auto_assign_final_problem,
     final_auto_assignment_summary,
+    update_round1_winning_bid_aggregate,
 )
 from app.services.wildcard_service import ranking_payload, wildcard_payload
 
@@ -41,6 +44,10 @@ ROUND_META = {
 NUMBER_HEADERS = {"problemnumber", "problemno", "problemid", "number", "id"}
 TITLE_HEADERS = {"title", "problemtitle", "name", "problemname"}
 DESCRIPTION_HEADERS = {"description", "problemdescription", "problemstatement", "statement", "problem"}
+
+
+class FinalAutoAssignmentRequest(BaseModel):
+    deduction: int | None = None
 
 
 def _meta(round_slug: str) -> dict:
@@ -239,16 +246,12 @@ async def select_problem(round_slug: str, problem_id: int, db: Session = Depends
         return _round_payload(db, meta)
     if problem.status in {"completed", "allocated"}:
         raise HTTPException(status_code=409, detail="A completed problem cannot be selected again.")
-    automatic = auto_assign_final_problem(db, control, actor=current_user)
-    if automatic:
-        db.commit()
-        await manager.broadcast_event("round_updated", {
-            "round": meta["type"],
-            "action": "final_problem_auto_assigned",
-            "problem_id": automatic["problem"]["id"],
-            "team_count": automatic["team_count"],
-        })
-        return _round_payload(db, meta)
+    final_auto = final_auto_assignment_summary(db, control)
+    if final_auto and final_auto["status"] == "PENDING" and final_auto["problem"]["id"] == problem.id:
+        raise HTTPException(
+            status_code=409,
+            detail="The final Round 1 problem must be confirmed through Last Problem Auto Allotment.",
+        )
     problem.status = "current"
     control.current_problem_id = problem.id
     control.status = "READY"
@@ -324,50 +327,82 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
     meta = _meta(round_slug)
     if meta["type"] == "WILDCARD":
         raise HTTPException(status_code=409, detail="Wildcard slot winners are finalized when slot bidding closes.")
-    control = get_or_create_round_control(db, meta["type"])
-    if control.current_problem_id is None and control.status == "READY":
-        return {"message": "Winner assignment already completed.", "winners": [], **_round_payload(db, meta)}
-    problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id, ProblemStatement.round == meta["number"]).first()
-    if not problem or control.status != "READY":
-        raise HTTPException(status_code=409, detail="Close bidding before assigning winners.")
-    event_config = get_or_create_event_config(db)
-    winner_limit = ROUND1_WINNER_COUNT if meta["number"] == 1 else event_config.wildcard_slots
-    bids = db.query(Bid).filter(Bid.ps_id == problem.id, Bid.round == meta["number"]).order_by(Bid.amount.desc(), Bid.timestamp.asc()).all()
-    winners = []
-    for bid in bids:
-        if len(winners) >= winner_limit:
-            break
-        team = db.query(Team).filter(Team.id == bid.team_id).first()
-        if not team or team.round1_problem_id is not None or team.ps_id is not None or team.coins < bid.amount:
-            continue
-        if meta["number"] == 2:
-            application = db.query(Wildcard).filter(Wildcard.team_id == team.id, Wildcard.status == "applied").first()
-            if not application:
+    with ROUND1_FINALIZATION_LOCK:
+        control = get_or_create_round_control(db, meta["type"])
+        if control.current_problem_id is None and control.status == "READY":
+            return {"message": "Winner assignment already completed.", "winners": [], **_round_payload(db, meta)}
+        problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id, ProblemStatement.round == meta["number"]).first()
+        if not problem or control.status != "READY":
+            raise HTTPException(status_code=409, detail="Close bidding before assigning winners.")
+        event_config = get_or_create_event_config(db)
+        winner_limit = ROUND1_WINNER_COUNT if meta["number"] == 1 else event_config.wildcard_slots
+        bids = db.query(Bid).filter(Bid.ps_id == problem.id, Bid.round == meta["number"]).order_by(Bid.amount.desc(), Bid.timestamp.asc()).all()
+        winners = []
+        for bid in bids:
+            if len(winners) >= winner_limit:
+                break
+            team = db.query(Team).filter(Team.id == bid.team_id).first()
+            if not team or team.round1_problem_id is not None or team.ps_id is not None or team.coins < bid.amount:
                 continue
-            application.status = "selected"
-            application.used = True
-            application.coins_paid = bid.amount
-        team.coins -= bid.amount
-        team.ps_id = problem.id
+            if meta["number"] == 2:
+                application = db.query(Wildcard).filter(Wildcard.team_id == team.id, Wildcard.status == "applied").first()
+                if not application:
+                    continue
+                application.status = "selected"
+                application.used = True
+                application.coins_paid = bid.amount
+            team.coins -= bid.amount
+            team.ps_id = problem.id
+            if meta["number"] == 1:
+                team.round1_problem_id = problem.id
+                team.round1_assignment_type = ROUND1_BID_WINNER
+                team.round1_assignment_cost = bid.amount
+            db.add(WalletTransaction(team_id=team.id, transaction_type="ROUND1_WIN" if meta["number"] == 1 else "WILDCARD_WIN", amount=-bid.amount, description=f"{meta['label']} win for problem {_display_number(problem)}"))
+            winners.append({"team_id": team.id, "team_name": team.team_name, "amount": bid.amount})
         if meta["number"] == 1:
-            team.round1_problem_id = problem.id
-            team.round1_assignment_type = ROUND1_BID_WINNER
-            team.round1_assignment_cost = bid.amount
-        db.add(WalletTransaction(team_id=team.id, transaction_type="ROUND1_WIN" if meta["number"] == 1 else "WILDCARD_WIN", amount=-bid.amount, description=f"{meta['label']} win for problem {_display_number(problem)}"))
-        winners.append({"team_id": team.id, "team_name": team.team_name, "amount": bid.amount})
-    problem.status = "completed"
-    control.current_problem_id = None
-    control.status = "READY"
-    record_event(db, "round1.winners_assigned", actor=current_user, entity_type="problem", entity_id=problem.id, metadata={"winner_team_ids": [winner["team_id"] for winner in winners]})
-    automatic = auto_assign_final_problem(db, control, actor=current_user)
-    db.commit()
+            update_round1_winning_bid_aggregate(
+                control,
+                problem,
+                [winner["amount"] for winner in winners],
+            )
+        problem.status = "completed"
+        control.current_problem_id = None
+        control.status = "READY"
+        record_event(db, "round1.winners_assigned", actor=current_user, entity_type="problem", entity_id=problem.id, metadata={"winner_team_ids": [winner["team_id"] for winner in winners]})
+        db.commit()
     await manager.broadcast_event("round_updated", {
         "round": meta["type"],
-        "action": "final_problem_auto_assigned" if automatic else "winners_assigned",
+        "action": "winners_assigned",
         "winners": winners,
-        "automatic": automatic,
     })
     return {"winners": winners, **_round_payload(db, meta)}
+
+
+@router.post("/admin/rounds/round-1/final-auto-assignment")
+async def confirm_final_auto_assignment(
+    payload: FinalAutoAssignmentRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_admin),
+):
+    if payload.deduction is not None and payload.deduction < 0:
+        raise HTTPException(status_code=422, detail="Deduction per team must be zero or greater.")
+    control = get_or_create_round_control(db, "ROUND1")
+    automatic = auto_assign_final_problem(
+        db,
+        control,
+        actor=current_user,
+        price_override=payload.deduction,
+    )
+    if not automatic:
+        raise HTTPException(status_code=409, detail="Last Problem Auto Allotment is not currently available.")
+    db.commit()
+    await manager.broadcast_event("round_updated", {
+        "round": "ROUND1",
+        "action": "final_problem_auto_assigned",
+        "problem_id": automatic["problem"]["id"],
+        "team_count": automatic["team_count"],
+    })
+    return _round_payload(db, ROUND_META["round-1"])
 
 
 @router.post("/admin/rounds/round-1/end")

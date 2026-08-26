@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
-    "test:permissions": "node --experimental-strip-types src/participant/permissions.test.ts"
+    "test:permissions": "node --experimental-strip-types src/participant/permissions.test.ts",
+    "test:realtime": "node --experimental-strip-types src/services/realtime/connectReconnectingSocket.test.ts && node --experimental-strip-types src/services/realtime/timerReconciliation.test.ts"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",

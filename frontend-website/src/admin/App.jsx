@@ -9,7 +9,7 @@ import {
   updateAdminConfig, createTeamCredentials, getRoundControl, importRoundProblems, downloadRoundProblemSample,
   downloadRoundOneAssignments, downloadWildcardAssignments,
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
-  endRoundOne, openWildcardApplications, closeWildcardApplications,
+  confirmRoundOneAutoAllotment, endRoundOne, openWildcardApplications, closeWildcardApplications,
   confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding, endWildcardSelectionTurn,
   getAdminSubmissions, openSubmissions, closeSubmissions, ApiError,
   getJudging, saveJudgingWinners, publishJudgingResults,
@@ -273,12 +273,14 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [autoDeduction, setAutoDeduction] = useState("");
+  const [autoConfirming, setAutoConfirming] = useState(false);
   const loadRound = useCallback(() => getRoundControl(round).then(setData).catch((cause) => setError(cause.message)), [round]);
   useEffect(() => { void loadRound(); }, [loadRound, state?.timing?.server_time]);
   const run = async (operation, success) => {
     setWorking(true); setError(""); setNotice("");
     try { const result = await operation(); if (result?.round_type) setData(result); setNotice(success); await loadRound(); }
-    catch (cause) { setError(cause.message || "Action failed."); if (cause instanceof ApiError && [409, 503].includes(cause.status)) await load(); }
+    catch (cause) { setError(cause.message || "Action failed."); if (cause instanceof ApiError && [409, 503].includes(cause.status)) await loadRound(); }
     finally { setWorking(false); }
   };
   const downloadSample = async () => {
@@ -303,6 +305,18 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   const saveSettings = () => run(() => updateAdminConfig(config), `${isWildcard ? "Wildcard" : "Round 1"} timer settings saved.`);
   const current = data?.current_problem;
   const finalAuto = data?.final_auto_assignment;
+  useEffect(() => {
+    if (finalAuto?.status === "PENDING") setAutoDeduction(String(finalAuto.suggested_deduction));
+  }, [finalAuto?.problem?.id, finalAuto?.status, finalAuto?.suggested_deduction]);
+  const confirmAutoAllotment = async () => {
+    const deduction = Number(autoDeduction);
+    if (!Number.isInteger(deduction) || deduction < 0) {
+      setError("Deduction per team must be a whole number of zero or greater.");
+      return;
+    }
+    setAutoConfirming(false);
+    await run(() => confirmRoundOneAutoAllotment(deduction), "Final Round 1 problem allotted to every remaining team.");
+  };
   const eventState = data?.event?.event_state;
   const hasTimer = Boolean(state?.timing?.ends_at || state?.timing?.paused);
   const afterBidding = current && data?.status === "READY" && eventState === (isWildcard ? "WILDCARD_SELECTION" : "ROUND1_RESULT");
@@ -316,12 +330,6 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
 
     {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
     {notice && <div className="admin-notice">{notice}</div>}
-
-    {!isWildcard && finalAuto && <section className="round-applications">
-      <div><span className="eyebrow">FINAL PROBLEM AUTO-ASSIGNMENT</span><h3>{finalAuto.status === "COMPLETED" ? "Final problem assigned" : "Final problem ready"}</h3><p>{finalAuto.team_count} remaining team{finalAuto.team_count === 1 ? "" : "s"}</p></div>
-      <div><strong>Problem #{finalAuto.problem.problem_number} — {finalAuto.problem.title}</strong><p>Calculated cost: {finalAuto.calculated_cost} coins</p></div>
-      <div><strong>{finalAuto.status}</strong><p>{finalAuto.teams.map((team) => team.team_name).join(", ")}</p></div>
-    </section>}
 
     {isWildcard && <section className="round-applications">
       <div><span className="eyebrow">APPLICATIONS</span><h3>{data.applications.applied} / {data.applications.eligible} applied</h3><p>{data.applications.declined} declined · {data.applications.pending} pending</p></div>
@@ -353,7 +361,7 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
 
     <section className={`round-problem-bank ${!isWildcard ? "round-problem-bank--round1" : ""}`}>
       <div className="round-section-heading"><div><span className="eyebrow">{isWildcard ? "WILDCARD" : "ROUND 1"} PROBLEMS</span><h3>Problem bank</h3></div><div className="round-inline-actions"><label className="secondary-button round-upload">Upload XLSX / CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-button" onClick={() => void downloadSample()}>Download sample CSV</button>{file && <button className="primary-button" disabled={working} onClick={() => run(() => importRoundProblems(round, file), `${file.name} imported.`)}>Import {file.name}</button>}</div></div>
-      <div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><div className="round-problem-copy"><b>{problem.title}</b><p title={problem.description}>{problem.description}</p></div><span>{problem.status}</span>{problem.status === "AVAILABLE" && !data.ended && !current && <button className="secondary-button" onClick={() => run(() => selectRoundProblem(round, problem.id), finalAuto?.status === "PENDING" && finalAuto.problem.id === problem.id ? "Final Round 1 problem automatically assigned." : `Problem #${problem.problem_number} selected.`)}>{finalAuto?.status === "PENDING" && finalAuto.problem.id === problem.id ? "Assign final problem" : "Select"}</button>}</article>) : <div className="round-empty"><strong>No problems imported</strong><p>Upload the organizer&apos;s XLSX or CSV problem bank.</p></div>}</div>
+      <div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><div className="round-problem-copy"><b>{problem.title}</b><p title={problem.description}>{problem.description}</p></div><span>{problem.status}</span>{problem.status === "AVAILABLE" && !data.ended && !current && !(finalAuto?.status === "PENDING" && finalAuto.problem.id === problem.id) && <button className="secondary-button" onClick={() => run(() => selectRoundProblem(round, problem.id), `Problem #${problem.problem_number} selected.`)}>Select</button>}</article>) : <div className="round-empty"><strong>No problems imported</strong><p>Upload the organizer&apos;s XLSX or CSV problem bank.</p></div>}</div>
     </section>
 
     <section className={`round-settings ${!isWildcard ? "round-settings--round1" : ""}`}>
@@ -369,7 +377,19 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
       </div>}
       {!isWildcard && <button className="danger-link round-end" disabled={data.ended || working} onClick={() => window.confirm("End Round 1? No further Round 1 selection or bidding will be allowed.") && run(endRoundOne, "Round 1 ended. Wildcard can now be opened.")}>{data.ended ? "Round 1 ended" : "End Round 1"}</button>}
     </section>
+    {!isWildcard && finalAuto && <section className="round-auto-allotment">
+      <div className="round-auto-allotment__heading"><span className="eyebrow">LAST PROBLEM AUTO ALLOTMENT</span><h3>{finalAuto.status === "COMPLETED" ? "Final allotment completed" : "Confirm final allotment"}</h3></div>
+      <dl className="round-auto-allotment__grid">
+        <div><dt>Final Problem</dt><dd>#{finalAuto.problem.problem_number} — {finalAuto.problem.title}</dd></div>
+        <div><dt>Remaining Teams</dt><dd>{finalAuto.team_count}</dd></div>
+        <div><dt>Suggested Deduction</dt><dd>{finalAuto.suggested_deduction} coins</dd></div>
+        <div><dt>Deduction Per Team</dt><dd>{finalAuto.status === "PENDING" ? <input aria-label="Deduction per team" type="number" min="0" step="1" value={autoDeduction} onChange={(event) => setAutoDeduction(event.target.value)} /> : `${finalAuto.deduction_per_team} coins`}</dd></div>
+        <div><dt>Completed Auctions</dt><dd>{finalAuto.completed_auctions}</dd></div>
+      </dl>
+      {finalAuto.status === "PENDING" ? <button className="primary-button" disabled={working || autoDeduction === ""} onClick={() => setAutoConfirming(true)}>CONFIRM AUTO ALLOTMENT</button> : <div className="round-auto-allotment__teams"><strong>Assigned teams</strong><span>{finalAuto.teams.map((team) => team.team_name).join(", ")}</span></div>}
+    </section>}
     {!isWildcard && <div className="round-export-action"><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>DOWNLOAD ROUND 1 ASSIGNMENTS</button></div>}
+    {autoConfirming && finalAuto?.status === "PENDING" && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="auto-allotment-title"><h3 id="auto-allotment-title">Confirm final problem auto allotment?</h3><p>Assign Problem #{finalAuto.problem.problem_number} — {finalAuto.problem.title} to all {finalAuto.team_count} remaining teams and deduct up to {autoDeduction} coins from each team?</p><div><button className="secondary-button" disabled={working} onClick={() => setAutoConfirming(false)}>Cancel</button><button className="primary-button" disabled={working} onClick={() => void confirmAutoAllotment()}>{working ? "Assigning…" : "Confirm Auto Allotment"}</button></div></section></div>}
   </section>;
 }
 

@@ -47,6 +47,8 @@ def initialize_database() -> None:
             "final_auto_assignment_problem_id": "INTEGER",
             "final_auto_assignment_price": "INTEGER",
             "final_auto_assignment_team_count": "INTEGER",
+            "round1_winning_bid_sum": "INTEGER NOT NULL DEFAULT 0",
+            "round1_winning_bid_count": "INTEGER NOT NULL DEFAULT 0",
         }.items():
             if column_name not in round_control_columns:
                 with engine.begin() as connection:
@@ -138,6 +140,8 @@ def initialize_database() -> None:
                     "final_auto_assignment_problem_id": "INTEGER REFERENCES problem_statements(id)",
                     "final_auto_assignment_price": "INTEGER",
                     "final_auto_assignment_team_count": "INTEGER",
+                    "round1_winning_bid_sum": "INTEGER NOT NULL DEFAULT 0",
+                    "round1_winning_bid_count": "INTEGER NOT NULL DEFAULT 0",
                 },
                 "teams": {
                     "round1_problem_id": "INTEGER REFERENCES problem_statements(id)",

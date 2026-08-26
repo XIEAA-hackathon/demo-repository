@@ -120,6 +120,7 @@ export const startRoundPreview = (round) => request(`/admin/rounds/${round}/prev
 export const startRoundBidding = (round) => request(`/admin/rounds/${round}/bidding/start`, { method: "POST" });
 export const closeRoundBidding = (round) => request(`/admin/rounds/${round}/bidding/close`, { method: "POST" });
 export const assignRoundWinners = (round) => request(`/admin/rounds/${round}/assign-winners`, { method: "POST" });
+export const confirmRoundOneAutoAllotment = (deduction) => request("/admin/rounds/round-1/final-auto-assignment", { method: "POST", body: JSON.stringify({ deduction }) });
 export const endRoundOne = () => request("/admin/rounds/round-1/end", { method: "POST" });
 export const openWildcardApplications = () => request("/admin/rounds/wildcard/applications/open", { method: "POST" });
 export const closeWildcardApplications = () => request("/admin/rounds/wildcard/applications/close", { method: "POST" });

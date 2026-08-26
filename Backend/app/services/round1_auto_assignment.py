@@ -12,7 +12,7 @@ from app.services.event_service import get_or_create_event_config, transition_ev
 ROUND1_BID_WINNER = "BID_WINNER"
 ROUND1_AUTO_FINAL_PROBLEM = "AUTO_FINAL_PROBLEM"
 ROUND1_AUTO_TRANSACTION = "ROUND1_AUTO_FINAL"
-_FINALIZATION_LOCK = RLock()
+ROUND1_FINALIZATION_LOCK = RLock()
 
 
 def _display_number(problem: ProblemStatement) -> str:
@@ -48,23 +48,36 @@ def _eligible_teams(db: Session, *, lock: bool = False) -> list[Team]:
     return query.all()
 
 
-def final_problem_price(db: Session) -> int:
-    """Return the median of completed Round 1 winner charges, or the configured base bid."""
-    charges = sorted(
-        abs(row.amount)
-        for row in db.query(WalletTransaction)
-        .filter(
-            WalletTransaction.transaction_type == "ROUND1_WIN",
-            WalletTransaction.amount < 0,
-        )
-        .all()
-    )
-    if not charges:
+def update_round1_winning_bid_aggregate(
+    control: RoundControl,
+    problem: ProblemStatement,
+    winner_amounts: list[int],
+) -> bool:
+    """Add one normal auction's final winner prices exactly once before completion."""
+    if problem.status in {"completed", "allocated"} or not winner_amounts:
+        return False
+    control.round1_winning_bid_sum = (control.round1_winning_bid_sum or 0) + sum(winner_amounts)
+    control.round1_winning_bid_count = (control.round1_winning_bid_count or 0) + len(winner_amounts)
+    return True
+
+
+def final_problem_price(db: Session, control: RoundControl) -> int:
+    """Return the rounded running winner average, or the configured base bid."""
+    winning_count = control.round1_winning_bid_count or 0
+    if winning_count <= 0:
         return max(0, get_or_create_event_config(db).round1_minimum_bid)
-    middle = len(charges) // 2
-    if len(charges) % 2:
-        return charges[middle]
-    return (charges[middle - 1] + charges[middle]) // 2
+    winning_sum = control.round1_winning_bid_sum or 0
+    return (winning_sum + (winning_count // 2)) // winning_count
+
+
+def _completed_normal_auction_count(db: Session, control: RoundControl) -> int:
+    query = db.query(ProblemStatement).filter(
+        ProblemStatement.round == 1,
+        ProblemStatement.status.in_(("completed", "allocated")),
+    )
+    if control.final_auto_assignment_problem_id is not None:
+        query = query.filter(ProblemStatement.id != control.final_auto_assignment_problem_id)
+    return query.count()
 
 
 def final_auto_assignment_summary(db: Session, control: RoundControl) -> dict | None:
@@ -92,6 +105,11 @@ def final_auto_assignment_summary(db: Session, control: RoundControl) -> dict | 
                 "description": problem.description,
             },
             "calculated_cost": control.final_auto_assignment_price or 0,
+            "suggested_deduction": final_problem_price(db, control),
+            "deduction_per_team": control.final_auto_assignment_price or 0,
+            "completed_auctions": _completed_normal_auction_count(db, control),
+            "round1_winning_bid_sum": control.round1_winning_bid_sum or 0,
+            "round1_winning_bid_count": control.round1_winning_bid_count or 0,
             "team_count": control.final_auto_assignment_team_count or len(teams),
             "teams": [{"team_id": team.id, "team_name": team.team_name} for team in teams],
         }
@@ -109,15 +127,26 @@ def final_auto_assignment_summary(db: Session, control: RoundControl) -> dict | 
             "title": problem.title,
             "description": problem.description,
         },
-        "calculated_cost": final_problem_price(db),
+        "calculated_cost": final_problem_price(db, control),
+        "suggested_deduction": final_problem_price(db, control),
+        "deduction_per_team": final_problem_price(db, control),
+        "completed_auctions": _completed_normal_auction_count(db, control),
+        "round1_winning_bid_sum": control.round1_winning_bid_sum or 0,
+        "round1_winning_bid_count": control.round1_winning_bid_count or 0,
         "team_count": len(teams),
         "teams": [{"team_id": team.id, "team_name": team.team_name} for team in teams],
     }
 
 
-def auto_assign_final_problem(db: Session, control: RoundControl, *, actor=None) -> dict | None:
+def auto_assign_final_problem(
+    db: Session,
+    control: RoundControl,
+    *,
+    actor=None,
+    price_override: int | None = None,
+) -> dict | None:
     """Atomically settle the final no-choice Round 1 problem for every eligible team."""
-    with _FINALIZATION_LOCK:
+    with ROUND1_FINALIZATION_LOCK:
         db.flush()
         control = (
             db.query(RoundControl)
@@ -135,7 +164,7 @@ def auto_assign_final_problem(db: Session, control: RoundControl, *, actor=None)
             return None
 
         problem = problems[0]
-        price = final_problem_price(db)
+        price = final_problem_price(db, control) if price_override is None else max(0, int(price_override))
         assignments = []
         for team in teams:
             charge = min(price, max(0, team.coins or 0))
@@ -185,6 +214,11 @@ def auto_assign_final_problem(db: Session, control: RoundControl, *, actor=None)
                 "description": problem.description,
             },
             "calculated_cost": price,
+            "suggested_deduction": final_problem_price(db, control),
+            "deduction_per_team": price,
+            "completed_auctions": _completed_normal_auction_count(db, control),
+            "round1_winning_bid_sum": control.round1_winning_bid_sum or 0,
+            "round1_winning_bid_count": control.round1_winning_bid_count or 0,
             "team_count": len(assignments),
             "teams": assignments,
         }

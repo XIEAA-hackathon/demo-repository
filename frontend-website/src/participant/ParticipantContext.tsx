@@ -80,13 +80,9 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     const schedule = (delay: number) => {
       timer = window.setTimeout(async () => {
         if (stopped) return
-        if (document.hidden) {
-          schedule(30_000)
-          return
-        }
         const next = await refresh()
         failures = next ? 0 : failures + 1
-        schedule(next ? 5_000 : Math.min(30_000, 1_000 * 2 ** failures))
+        schedule(document.hidden ? 30_000 : next ? 5_000 : Math.min(30_000, 1_000 * 2 ** failures))
       }, delay)
     }
     const onVisibility = () => {

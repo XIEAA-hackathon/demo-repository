@@ -22,6 +22,10 @@ from app.services.event_service import (
 from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_rejection, bid_cooldown_remaining
 from app.core.event_constants import ROUND1_WINNER_COUNT
+from app.services.round1_auto_assignment import (
+    ROUND1_FINALIZATION_LOCK,
+    update_round1_winning_bid_aggregate,
+)
 
 router = APIRouter()
 
@@ -117,55 +121,62 @@ async def finalize_round_one(
 
     Winning teams are charged exactly once. Transactional + idempotent.
     """
-    config = get_or_create_game_config(db)
-    event_config = get_or_create_event_config(db)
-    winner_count = ROUND1_WINNER_COUNT
+    with ROUND1_FINALIZATION_LOCK:
+        config = get_or_create_game_config(db)
+        get_or_create_event_config(db)
+        winner_count = ROUND1_WINNER_COUNT
+        control = get_or_create_round_control(db, "ROUND1")
 
-    ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
-    if not ps:
-        raise HTTPException(status_code=404, detail="Problem Statement not found")
-    if ps.status == "allocated":
-        # idempotent: already finalized
-        existing_winners = db.query(Team).filter(Team.ps_id == ps.id).all()
-        return {
-            "message": "Problem Statement already finalized.",
-            "ps": ps.ps_number,
-            "winners": [t.team_name for t in existing_winners],
-        }
+        ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
+        if not ps:
+            raise HTTPException(status_code=404, detail="Problem Statement not found")
+        if ps.status == "allocated":
+            # Idempotent: the assignment and aggregate were already committed.
+            existing_winners = db.query(Team).filter(Team.ps_id == ps.id).all()
+            return {
+                "message": "Problem Statement already finalized.",
+                "ps": ps.ps_number,
+                "winners": [t.team_name for t in existing_winners],
+            }
 
-    ranked_bids = db.query(Bid).filter(
-        Bid.ps_id == ps.id,
-        Bid.round == config.current_round,
-    ).order_by(Bid.amount.desc(), Bid.timestamp.asc()).all()
+        ranked_bids = db.query(Bid).filter(
+            Bid.ps_id == ps.id,
+            Bid.round == config.current_round,
+        ).order_by(Bid.amount.desc(), Bid.timestamp.asc()).all()
 
-    winners = []
-    for bid in ranked_bids:
-        if len(winners) >= winner_count:
-            break
-        winner_team = db.query(Team).filter(Team.id == bid.team_id).first()
-        if not winner_team or winner_team.round1_problem_id is not None or winner_team.ps_id is not None:
-            continue  # team already has a problem; skip
-        if winner_team.coins < bid.amount:
-            continue
+        winners = []
+        for bid in ranked_bids:
+            if len(winners) >= winner_count:
+                break
+            winner_team = db.query(Team).filter(Team.id == bid.team_id).first()
+            if not winner_team or winner_team.round1_problem_id is not None or winner_team.ps_id is not None:
+                continue  # team already has a problem; skip
+            if winner_team.coins < bid.amount:
+                continue
 
-        # charge exactly once via explicit ledger entry
-        winner_team.coins -= bid.amount
-        db.add(WalletTransaction(
-            team_id=winner_team.id,
-            transaction_type="ROUND1_WIN",
-            amount=-bid.amount,
-            description=f"Round 1 auction win for {ps.ps_number}",
-        ))
-        winner_team.ps_id = ps.id
-        winner_team.round1_problem_id = ps.id
-        winner_team.round1_assignment_type = "BID_WINNER"
-        winner_team.round1_assignment_cost = bid.amount
-        winners.append({"team": winner_team.team_name, "amount": bid.amount})
+            # Charge exactly once via explicit ledger entry.
+            winner_team.coins -= bid.amount
+            db.add(WalletTransaction(
+                team_id=winner_team.id,
+                transaction_type="ROUND1_WIN",
+                amount=-bid.amount,
+                description=f"Round 1 auction win for {ps.ps_number}",
+            ))
+            winner_team.ps_id = ps.id
+            winner_team.round1_problem_id = ps.id
+            winner_team.round1_assignment_type = "BID_WINNER"
+            winner_team.round1_assignment_cost = bid.amount
+            winners.append({"team": winner_team.team_name, "amount": bid.amount})
 
-    if winners:
-        ps.status = "allocated"
-    record_event(db, "round1.auction_finalized", actor=current_user, entity_type="problem", entity_id=ps.id, metadata={"winner_count": len(winners)})
-    db.commit()
+        if winners:
+            update_round1_winning_bid_aggregate(
+                control,
+                ps,
+                [winner["amount"] for winner in winners],
+            )
+            ps.status = "allocated"
+        record_event(db, "round1.auction_finalized", actor=current_user, entity_type="problem", entity_id=ps.id, metadata={"winner_count": len(winners)})
+        db.commit()
 
     transition_event_state(db, "ROUND1_RESULT")
 

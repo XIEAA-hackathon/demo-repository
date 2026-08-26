@@ -110,7 +110,14 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
     db.query(RoundControl).delete(synchronize_session=False)
     db.query(ProblemStatement).delete(synchronize_session=False)
     db.add_all([
-        RoundControl(round_type="ROUND1", status="IDLE", ended=False, applications_open=False),
+        RoundControl(
+            round_type="ROUND1",
+            status="IDLE",
+            ended=False,
+            applications_open=False,
+            round1_winning_bid_sum=0,
+            round1_winning_bid_count=0,
+        ),
         RoundControl(round_type="WILDCARD", status="NOT_STARTED", ended=False, applications_open=False),
     ])
 
