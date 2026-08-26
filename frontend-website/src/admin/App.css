@@ -2183,11 +2183,13 @@ td strong {
 /* =====================================
    LIVE OPERATIONS HARDENING
 ===================================== */
-.connection-health { min-width: 240px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; color: #897990; font-size: 9px; }
-.connection-health span { display: flex; align-items: center; gap: 6px; }
+.connection-health { min-width: 300px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; color: #897990; font-size: 9px; }
+.connection-health span { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .connection-health strong { color: #d8cadf; }
 .connection-health small { grid-column: 1 / -1; color: #74657c; font-size: 8px; text-align: right; }
 .connection-health .status-dot { display: inline-block; flex: 0 0 auto; }
+.connection-health .status-dot.degraded { background: #f1bd4d; box-shadow: 0 0 9px rgba(241, 189, 77, .4); }
+.connection-health .status-dot.offline { background: #ed6687; box-shadow: 0 0 9px rgba(237, 102, 135, .35); }
 .stale-state-warning { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 18px; padding: 13px 16px; color: #f6d58b; background: #241806; border: 1px solid rgba(233, 184, 79, .38); border-radius: 10px; }
 .stale-state-warning strong { font-size: 10px; letter-spacing: .08em; }
 .stale-state-warning span { color: #d8bd80; font-size: 10px; }

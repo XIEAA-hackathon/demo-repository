@@ -19,6 +19,7 @@ import {
   createManagedLeaderboardUser, resetManagedUserPassword, resetManagedUsers,
 } from "./services/api";
 import { connectAuctionSocket } from "./services/auctionSocket";
+import { classifyApiStatus, deriveServerRemaining, isSyncStale, projectCountdown, shouldApplyTimerSnapshot } from "./timerReconciliation";
 
 const labels = {
   WAITING: "Waiting", ROUND1_PREVIEW: "Round 1 preview", ROUND1_BIDDING: "Round 1 bidding",
@@ -42,22 +43,46 @@ function App() {
   return <AdminApplication onLogout={async () => { await logout(); setAuthenticated(false); }} />;
 }
 
-function useServerCountdown(timing) {
-  const calculate = useCallback((localNow) => {
-    if (timing?.paused && timing.paused_remaining_seconds != null) return timing.paused_remaining_seconds;
-    if (!timing?.ends_at) return 0;
-    const receivedAt = timing.received_at || localNow;
-    const offset = Date.parse(timing.server_time) - receivedAt;
-    return Math.max(0, Math.ceil((Date.parse(timing.ends_at) - (localNow + offset)) / 1000));
-  }, [timing]);
-  const [now, setNow] = useState(0);
+function useServerCountdown(timing, timerKey) {
+  const initialNow = Date.now();
+  const initialRemaining = deriveServerRemaining(timing, initialNow);
+  const anchorRef = useRef({ remaining: initialRemaining, localAt: initialNow, paused: Boolean(timing?.paused) });
+  const snapshotRef = useRef({ timing, timerKey });
+  const remainingRef = useRef(initialRemaining);
+  const [remaining, setRemaining] = useState(initialRemaining);
+
   useEffect(() => {
-    const tick = () => setNow(Date.now());
+    const localNow = Date.now();
+    const serverRemaining = deriveServerRemaining(timing, localNow);
+    const expectedRemaining = projectCountdown(anchorRef.current, localNow);
+    if (shouldApplyTimerSnapshot({
+      previousTiming: snapshotRef.current.timing,
+      previousTimerKey: snapshotRef.current.timerKey,
+      nextTiming: timing,
+      nextTimerKey: timerKey,
+      expectedRemaining,
+      serverRemaining,
+    })) {
+      anchorRef.current = { remaining: serverRemaining, localAt: localNow, paused: Boolean(timing?.paused) };
+      remainingRef.current = serverRemaining;
+      setRemaining(serverRemaining);
+    }
+    snapshotRef.current = { timing, timerKey };
+  }, [timing, timerKey]);
+
+  useEffect(() => {
+    const tick = () => {
+      const next = projectCountdown(anchorRef.current, Date.now());
+      if (next !== remainingRef.current) {
+        remainingRef.current = next;
+        setRemaining(next);
+      }
+    };
     const first = setTimeout(tick, 0);
     const interval = setInterval(tick, 1000);
     return () => { clearTimeout(first); clearInterval(interval); };
   }, []);
-  return calculate(now || timing?.received_at || 0);
+  return remaining;
 }
 
 function AdminApplication({ onLogout }) {
@@ -69,10 +94,12 @@ function AdminApplication({ onLogout }) {
   const [state, setState] = useState(null);
   const [config, setConfig] = useState(null);
   const [socketStatus, setSocketStatus] = useState("connecting");
-  const [apiStatus, setApiStatus] = useState("connecting");
+  const [apiStatus, setApiStatus] = useState("checking");
   const [health, setHealth] = useState(null);
   const [lastSyncAt, setLastSyncAt] = useState(null);
   const [clockNow, setClockNow] = useState(Date.now());
+  const [documentHidden, setDocumentHidden] = useState(() => document.hidden);
+  const [visibilityRefreshPending, setVisibilityRefreshPending] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -84,17 +111,43 @@ function AdminApplication({ onLogout }) {
     const startedAt = Date.now();
     const request = (async () => {
       try {
-        const [teamRows, problemRows, bidRows, board, eventState, eventConfig] = await Promise.all([
+        const results = await Promise.allSettled([
           getTeams(), getProblemStatements(), getBidHistory(), getLeaderboard(), getAdminState(), getAdminConfig(),
         ]);
-        let serverHealth = { backend: "connected", database: "healthy" };
-        try { serverHealth = { ...serverHealth, ...await getAdminHealth() }; } catch { /* Core API requests above remain authoritative. */ }
-        setTeams(teamRows); setProblems(problemRows); setBids(bidRows); setLeaderboard(board.teams || board);
-        const syncedAt = Date.now();
-        setState({ ...eventState, timing: { ...eventState.timing, received_at: syncedAt } }); setConfig(eventConfig); setHealth(serverHealth); setLastSyncAt(syncedAt); setApiStatus("connected"); setError("");
-        lastSuccessfulLoadStartedAt.current = startedAt;
-        return true;
-      } catch (cause) { setApiStatus("reconnecting"); setError(cause.message || "Unable to load event data."); return false; }
+        const [teamResult, problemResult, bidResult, boardResult, eventStateResult, configResult] = results;
+        const fulfilled = (result) => result.status === "fulfilled";
+        const eventStateFresh = fulfilled(eventStateResult);
+
+        if (fulfilled(teamResult)) setTeams(teamResult.value);
+        if (fulfilled(problemResult)) setProblems(problemResult.value);
+        if (fulfilled(bidResult)) setBids(bidResult.value);
+        if (fulfilled(boardResult)) setLeaderboard(boardResult.value.teams || boardResult.value);
+        if (fulfilled(configResult)) setConfig(configResult.value);
+
+        let healthFailed = false;
+        try {
+          setHealth({ backend: "connected", database: "healthy", ...await getAdminHealth() });
+        } catch {
+          healthFailed = true;
+        }
+
+        if (eventStateFresh) {
+          const syncedAt = Date.now();
+          const eventState = eventStateResult.value;
+          setState({ ...eventState, timing: { ...eventState.timing, received_at: syncedAt } });
+          setLastSyncAt(syncedAt);
+          lastSuccessfulLoadStartedAt.current = startedAt;
+        }
+
+        setApiStatus(classifyApiStatus(results, healthFailed));
+        if (!eventStateFresh) {
+          const cause = eventStateResult.reason;
+          setError(cause?.message || "Live event state could not be refreshed. The last timer snapshot is being preserved.");
+        } else {
+          setError("");
+        }
+        return eventStateFresh;
+      } catch (cause) { setApiStatus("offline"); setError(cause.message || "Unable to load event data."); return false; }
       finally { setLoading(false); }
     })();
     loadInFlight.current = request;
@@ -106,8 +159,28 @@ function AdminApplication({ onLogout }) {
   useEffect(() => { const resync = () => { void load(); }; window.addEventListener("admin:resync", resync); return () => window.removeEventListener("admin:resync", resync); }, [load]);
   useEffect(() => {
     let stopped = false; let timer; let failures = 0;
-    const schedule = (delay) => { timer = window.setTimeout(async () => { if (stopped) return; const ok = await load(); failures = ok ? 0 : failures + 1; schedule(ok ? (document.hidden ? 30000 : 5000) : Math.min(30000, 1000 * 2 ** failures)); }, delay); };
-    const onVisibility = () => { if (!document.hidden) void load(); };
+    const schedule = (delay) => {
+      clearTimeout(timer);
+      timer = window.setTimeout(async () => {
+        if (stopped) return;
+        const ok = await load();
+        if (stopped) return;
+        failures = ok ? 0 : failures + 1;
+        schedule(ok ? (document.hidden ? 30000 : 5000) : Math.min(30000, 1000 * 2 ** failures));
+      }, delay);
+    };
+    const onVisibility = () => {
+      const hidden = document.hidden;
+      setDocumentHidden(hidden);
+      if (hidden) return;
+      clearTimeout(timer);
+      setVisibilityRefreshPending(true);
+      void load().then((ok) => {
+        if (stopped) return;
+        failures = ok ? 0 : failures + 1;
+        schedule(ok ? 5000 : Math.min(30000, 1000 * 2 ** failures));
+      }).finally(() => { if (!stopped) setVisibilityRefreshPending(false); });
+    };
     schedule(5000); document.addEventListener("visibilitychange", onVisibility);
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
   }, [load]);
@@ -129,9 +202,14 @@ function AdminApplication({ onLogout }) {
     return () => { clearTimeout(timer); disconnect(); };
   }, [load]);
   useEffect(() => { const timer = setInterval(() => setClockNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
-  const remaining = useServerCountdown(state?.timing);
+  const remaining = useServerCountdown(state?.timing, state?.event_state);
   const staleSeconds = lastSyncAt ? Math.floor((clockNow - lastSyncAt) / 1000) : null;
-  const stale = staleSeconds == null || staleSeconds > 15;
+  const stale = isSyncStale({ documentHidden, refreshPending: visibilityRefreshPending, staleSeconds });
+  const socketConnected = socketStatus === "connected" || socketStatus === "reconnected";
+  const socketLabel = socketConnected ? "Connected" : socketStatus === "connecting" ? "Connecting" : socketStatus === "error" || socketStatus === "disconnected" ? "Disconnected" : "Reconnecting";
+  const apiLabel = apiStatus === "healthy" ? "Healthy" : apiStatus === "degraded" ? "Degraded" : apiStatus === "offline" ? "Offline" : "Checking";
+  const databaseLabel = health?.database === "healthy" ? "Healthy" : apiStatus === "offline" ? "Unavailable" : "Checking";
+  const syncLabel = documentHidden ? "Paused while hidden" : visibilityRefreshPending ? "Refreshing" : stale ? "Stale" : "Fresh";
 
   const action = async (operation, success) => {
     try { setError(""); setNotice(""); await operation(); setNotice(success); await load(); }
@@ -156,9 +234,9 @@ function AdminApplication({ onLogout }) {
         <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">A</div><div><strong>Event Admin</strong><span>Backend verified</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page === "admin-users" ? "Admin Users" : page === "leaderboard-users" ? "Leaderboard Users" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health"><span><i className={`status-dot ${apiStatus === "connected" ? "online" : ""}`} />Backend <strong>{apiStatus === "connected" ? "Connected" : "Reconnecting"}</strong></span><span>Database <strong>{health?.database === "healthy" ? "Healthy" : "Checking"}</strong></span><small>Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {socketStatus}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
+        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page === "admin-users" ? "Admin Users" : page === "leaderboard-users" ? "Leaderboard Users" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health" aria-live="polite"><span><i className={`status-dot ${socketConnected ? "online" : socketStatus === "reconnecting" || socketStatus === "connecting" ? "degraded" : "offline"}`} />Live connection <strong>{socketLabel}</strong></span><span><i className={`status-dot ${apiStatus === "healthy" ? "online" : apiStatus === "degraded" || apiStatus === "checking" ? "degraded" : "offline"}`} />Backend/API <strong>{apiLabel}</strong></span><small>Database {databaseLabel} · Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {syncLabel}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
         <div className="page-content">
-          {stale && <div className="stale-state-warning" role="alert"><strong>LIVE STATE MAY BE STALE</strong><span>Last successful synchronization: {staleSeconds == null ? "not yet completed" : `${staleSeconds} seconds ago`}. Attempting reconnection…</span></div>}
+          {stale && <div className="stale-state-warning" role="alert"><strong>LIVE DATA MAY BE STALE</strong><span>Last successful API synchronization: {staleSeconds == null ? "not yet completed" : `${staleSeconds} seconds ago`}. The live connection is tracked separately.</span></div>}
           {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
           {notice && <div className="admin-notice">{notice}</div>}
           {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} />}
@@ -290,7 +368,7 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
 
 function WildcardControlPage({ state, config, remaining, onConfig }) {
   const [data, setData] = useState(null);
-  const selectionRemaining = useServerCountdown({ server_time: data?.event?.timing?.server_time, ends_at: data?.selection?.ends_at, received_at: data?.selection?.received_at, paused: false });
+  const selectionRemaining = useServerCountdown({ server_time: data?.event?.timing?.server_time, ends_at: data?.selection?.ends_at, received_at: data?.selection?.received_at, remaining_seconds: data?.selection?.remaining_seconds, paused: false }, data?.selection?.current_rank);
   const [tab, setTab] = useState("applications");
   const [slots, setSlots] = useState(1);
   const [file, setFile] = useState(null);

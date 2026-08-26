@@ -40,6 +40,12 @@ export function connectReconnectingSocket<T>({
     }
     socket.onerror = () => onStatus?.('error')
     socket.onclose = (event) => {
+      console.info('[realtime] WebSocket closed', {
+        code: event.code,
+        reason: (event.reason || '').slice(0, 160),
+        timestamp: new Date().toISOString(),
+        wasClean: event.wasClean,
+      })
       onStatus?.(stopped ? 'disconnected' : 'reconnecting')
       if (stopped || event.code === 4401) return
       retryTimer = window.setTimeout(connect, Math.min(30_000, 1_000 * 2 ** attempt++))
