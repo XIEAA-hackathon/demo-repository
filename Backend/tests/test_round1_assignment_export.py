@@ -45,6 +45,7 @@ def _round_problem_csv() -> bytes:
         "Problem Number,Title,Description\n"
         "1,Round One Problem,First round description\n"
         "2,Round Two Problem,Second round description\n"
+        "3,Final Round Problem,Final round description\n"
     ).encode()
 
 
@@ -109,6 +110,7 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     first_by_team = {row["Team Name"]: row for row in after_first}
     assert first_by_team["Team A"]["Organizer Notes"] == "Preserve note A"
     assert first_by_team["Team A"]["Round 1 Problem Number"] == "R1-1"
+    assert first_by_team["Team A"]["Round 1 Assignment Type"] == "BID_WINNER"
     assert first_by_team["Team A"]["Wildcard Problem Number"] == ""
     assert first_by_team["Team A"]["Final Problem Number"] == "R1-1"
     assert first_by_team["Team F"]["Round 1 Problem Number"] == ""
@@ -135,8 +137,13 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert client.post("/admin/rounds/round-1/bidding/close", headers=admin_headers).status_code == 200
     second_assigned = client.post("/admin/rounds/round-1/assign-winners", headers=admin_headers)
     assert [winner["team_name"] for winner in second_assigned.json()["winners"]] == [f"Team {letter}" for letter in "FGHIJ"]
+    assert second_assigned.json()["final_auto_assignment"]["status"] == "COMPLETED"
+    assert second_assigned.json()["final_auto_assignment"]["calculated_cost"] == 192
     db.expire_all()
-    assert db.query(Team).filter(Team.team_name.in_(["Team K", "Team L"]), Team.round1_problem_id.is_not(None)).count() == 0
+    final_teams = db.query(Team).filter(Team.team_name.in_(["Team K", "Team L"])).all()
+    assert all(team.round1_problem_id is not None for team in final_teams)
+    assert all(team.round1_assignment_type == "AUTO_FINAL_PROBLEM" for team in final_teams)
+    assert all(team.round1_assignment_cost == 192 for team in final_teams)
 
     assert client.post("/admin/rounds/round-1/end", headers=admin_headers).status_code == 200
     assert client.post("/admin/rounds/wildcard/applications/open", headers=admin_headers).status_code == 200
@@ -171,6 +178,9 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     team_h = next(row for row in final_rows if row["Team Name"] == "Team H")
     assert team_h["Round 1 Problem Number"] == "R1-2"
     assert team_h["Round 1 Problem Title"] == "Round Two Problem"
+    team_k = next(row for row in final_rows if row["Team Name"] == "Team K")
+    assert team_k["Round 1 Problem Number"] == "R1-3"
+    assert team_k["Round 1 Assignment Type"] == "AUTO_FINAL_PROBLEM"
     assert team_h["Wildcard Problem Number"] == "WC-2"
     assert team_h["Wildcard Problem Title"] == "Emergency Network"
     assert team_h["Final Problem Number"] == "WC-2"

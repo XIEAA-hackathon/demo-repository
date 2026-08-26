@@ -78,7 +78,7 @@ def _authenticate_socket(
         # long-lived connection so an idle socket never occupies the pool.
         with session_factory() as db:
             user = db.query(User).filter(User.email == email).first()
-            if not user or (user.session_id and user.session_id != session_id):
+            if not user or not user.credentials_active or not user.session_id or user.session_id != session_id:
                 return None, None
             team = get_team_for_user(db, user) if user.role != "admin" else None
             identity = {

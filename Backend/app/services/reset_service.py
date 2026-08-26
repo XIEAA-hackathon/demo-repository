@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import secrets
 
 from sqlalchemy.orm import Session
 
@@ -24,7 +25,32 @@ from app.models.models import (
 )
 from app.services.activity_log import record_event
 from app.services.event_service import get_or_create_event_config, get_or_create_game_config
+from app.core.security import get_password_hash
 from app.core.event_constants import ROUND1_BASE_BID_DEFAULT, ROUND1_WINNER_COUNT, WILDCARD_BASE_BID_DEFAULT
+
+
+def reset_imported_participant_credentials(db: Session, *, actor: User) -> dict:
+    """Invalidate imported participant authentication without touching event data."""
+    accounts = db.query(User).filter(
+        User.account_source == "IMPORTED",
+        User.role.in_(("leader", "member")),
+        User.is_system_account.is_(False),
+    ).all()
+    for account in accounts:
+        account.password_hash = get_password_hash(secrets.token_urlsafe(48))
+        account.session_id = secrets.token_hex(32)
+        account.credentials_active = False
+
+    record_event(
+        db,
+        "registration.credentials_reset",
+        actor=actor,
+        metadata={"reset_participant_accounts": len(accounts)},
+    )
+    return {
+        "participant_accounts": len(accounts),
+        "sessions_invalidated": len(accounts),
+    }
 
 
 def reset_event_and_imported_participants(db: Session, *, actor: User, action: str) -> dict:
@@ -83,6 +109,8 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
         team.ps_id = None
         team.round1_problem_id = None
         team.wildcard_problem_id = None
+        team.round1_assignment_type = None
+        team.round1_assignment_cost = None
         team.is_approved = True
 
     if non_system_team_ids:

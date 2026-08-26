@@ -5,10 +5,11 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
+import pytest
 
 from app.core.config import settings
-from app.core.security import verify_password
-from app.models.models import Bid, GameConfig, Member, ProblemStatement, RoundControl, Team, User, WalletTransaction
+from app.core.security import get_password_hash, verify_password
+from app.models.models import Bid, GameConfig, Member, ProblemStatement, RoundControl, Submission, Team, User, WalletTransaction, Wildcard, WildcardBid
 from app.services.demo_seed import provision_demo_accounts
 
 
@@ -318,6 +319,22 @@ def test_demo_csv_is_importer_compatible_and_returns_csv_credentials(client, adm
 
 def test_registration_credential_reset_allows_fresh_passwords_and_preserves_system_accounts(client, admin_headers, db):
     provision_demo_accounts(db)
+    manual_leader = User(
+        name="Manual Leader",
+        email="manual.leader@example.com",
+        password_hash=get_password_hash("ManualLeader@123"),
+        role="leader",
+    )
+    db.add(manual_leader)
+    db.flush()
+    manual_team = Team(team_name="Manual Team", leader_id=manual_leader.id, is_approved=True)
+    db.add(manual_team)
+    db.flush()
+    manual_leader.team_id = manual_team.id
+    db.add_all([
+        User(name="Manual Admin", email="manual.admin@example.com", password_hash=get_password_hash("ManualAdmin@123"), role="admin"),
+        User(name="Manual Display", email="manual.display@example.com", password_hash=get_password_hash("ManualDisplay@123"), role="display"),
+    ])
     db.commit()
     source = (
         "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email\n"
@@ -383,19 +400,34 @@ def test_registration_credential_reset_allows_fresh_passwords_and_preserves_syst
         json={"confirmation": "RESET CREDENTIALS"},
     )
     assert reset.status_code == 200, reset.text
-    assert reset.json()["deleted"]["participant_accounts"] == 2
-    assert reset.json()["deleted"]["teams"] == 2
-    assert db.query(User).filter(User.email.in_(("alpha@example.com", "beta@example.com"))).count() == 0
-    assert db.query(Team).filter(Team.team_name.in_(("Team Alpha", "Team Beta"))).count() == 0
+    assert reset.json()["reset"]["participant_accounts"] == 2
+    assert reset.json()["deleted"]["participant_accounts"] == 0
+    assert reset.json()["deleted"]["teams"] == 0
+    db.expire_all()
+    imported_accounts = db.query(User).filter(User.email.in_(("alpha@example.com", "beta@example.com"))).all()
+    assert len(imported_accounts) == 2
+    assert all(account.account_source == "IMPORTED" and not account.credentials_active for account in imported_accounts)
+    assert db.query(Team).filter(Team.team_name.in_(("Team Alpha", "Team Beta"))).count() == 2
+    for email, password in first_passwords.items():
+        assert client.post("/login", data={"username": email, "password": password}).status_code == 401
+    assert client.get("/participant/dashboard", headers=alpha_headers).status_code == 401
     assert client.post("/login", data={"username": settings.DEMO_LEADER_EMAIL, "password": settings.DEMO_LEADER_PASSWORD}).status_code == 200
     assert client.post("/login", data={"username": settings.DEMO_ADMIN_EMAIL, "password": settings.DEMO_ADMIN_PASSWORD}).status_code == 200
     assert client.post(
         "/leaderboard/login",
         data={"username": settings.LEADERBOARD_DISPLAY_EMAIL, "password": settings.LEADERBOARD_DISPLAY_PASSWORD},
     ).status_code == 200
+    assert client.post("/login", data={"username": "manual.admin@example.com", "password": "ManualAdmin@123"}).status_code == 200
+    assert client.post("/login", data={"username": "manual.leader@example.com", "password": "ManualLeader@123"}).status_code == 200
+    assert client.post(
+        "/leaderboard/login",
+        data={"username": "manual.display@example.com", "password": "ManualDisplay@123"},
+    ).status_code == 200
 
     after_reset, after_reset_rows = import_and_download()
-    assert after_reset["leaders_created"] == 2
+    assert after_reset["teams_created"] == 0
+    assert after_reset["leaders_created"] == 0
+    assert after_reset["existing_leaders"] == 2
     new_passwords = {row["Leader Login Email"]: row["Leader Password"] for row in after_reset_rows}
     assert all(password and password != "EXISTING ACCOUNT" for password in new_passwords.values())
     assert new_passwords != first_passwords
@@ -500,7 +532,8 @@ def test_assignment_export_never_replays_uploaded_plaintext_password(client, adm
     assert "DoNotReplay123!" not in exported.text
 
 
-def test_registration_credential_reset_clears_active_event_data(client, admin_headers, db):
+@pytest.mark.parametrize("active_state", ["ROUND1_BIDDING", "WILDCARD_BIDDING", "SUBMISSION"])
+def test_registration_credential_reset_preserves_active_event_data(client, admin_headers, db, active_state):
     provision_demo_accounts(db)
     db.commit()
     source = (
@@ -514,12 +547,35 @@ def test_registration_credential_reset_clears_active_event_data(client, admin_he
     )
     assert imported.status_code == 200, imported.text
     team = db.query(Team).filter(Team.team_name == "Team Alpha").one()
-    problem = ProblemStatement(ps_number="RESET-PS", title="Active", description="Active", round=1)
-    db.add(problem)
+    leader = db.query(User).filter(User.email == "alpha@example.com").one()
+    original_password_hash = leader.password_hash
+    round_problem = ProblemStatement(ps_number="RESET-PS", title="Active", description="Active", round=1)
+    wildcard_problem = ProblemStatement(ps_number="RESET-WC", title="Wildcard", description="Wildcard", round=2)
+    db.add_all([round_problem, wildcard_problem])
     db.flush()
-    db.add(Bid(team_id=team.id, ps_id=problem.id, amount=100, round=1))
+    team.ps_id = round_problem.id
+    team.round1_problem_id = round_problem.id
+    db.add_all([
+        Bid(team_id=team.id, ps_id=round_problem.id, amount=100, round=1),
+        Wildcard(team_id=team.id, coins_paid=0, status="applied"),
+        WildcardBid(team_id=team.id, amount=175),
+        Submission(
+            team_id=team.id,
+            problem_id=round_problem.id,
+            submitted_by_user_id=leader.id,
+            repository_url="https://github.com/example/preserved",
+        ),
+    ])
     game = db.query(GameConfig).first()
-    game.state = "ROUND1_BIDDING"
+    game.state = active_state
+    timer_end = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=5)
+    game.auction_timer_end = timer_end
+    round1_control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").first()
+    if round1_control is None:
+        round1_control = RoundControl(round_type="ROUND1")
+        db.add(round1_control)
+    round1_control.status = "BIDDING"
+    round1_control.current_problem_id = round_problem.id
     wildcard_control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").first()
     if wildcard_control is None:
         wildcard_control = RoundControl(round_type="WILDCARD")
@@ -537,21 +593,39 @@ def test_registration_credential_reset_clears_active_event_data(client, admin_he
         json={"confirmation": "RESET CREDENTIALS"},
     )
     assert reset.status_code == 200, reset.text
-    assert reset.json()["event_state"] == "WAITING"
-    assert db.query(User).filter(User.email == "alpha@example.com").count() == 0
-    assert db.query(Team).filter(Team.team_name == "Team Alpha").count() == 0
-    assert db.query(Bid).count() == 0
-    assert db.query(ProblemStatement).count() == 0
+    assert reset.json()["event_state"] == active_state
+    assert reset.json()["reset"]["participant_accounts"] == 1
+    assert reset.json()["deleted"]["teams"] == 0
     db.expire_all()
-    assert db.query(GameConfig).first().state == "WAITING"
+    reset_leader = db.query(User).filter(User.email == "alpha@example.com").one()
+    preserved_team = db.query(Team).filter(Team.team_name == "Team Alpha").one()
+    assert reset_leader.id == leader.id
+    assert reset_leader.password_hash != original_password_hash
+    assert not reset_leader.credentials_active
+    assert preserved_team.id == team.id
+    assert preserved_team.round1_problem_id == round_problem.id
+    assert preserved_team.ps_id == round_problem.id
+    assert db.query(Bid).filter(Bid.team_id == team.id, Bid.amount == 100).count() == 1
+    assert db.query(Wildcard).filter(Wildcard.team_id == team.id, Wildcard.status == "applied").count() == 1
+    assert db.query(WildcardBid).filter(WildcardBid.team_id == team.id, WildcardBid.amount == 175).count() == 1
+    assert db.query(Submission).filter(Submission.team_id == team.id).count() == 1
+    assert db.query(ProblemStatement).count() == 2
+    preserved_game = db.query(GameConfig).first()
+    assert preserved_game.state == active_state
+    assert preserved_game.auction_timer_end == timer_end
     controls = {control.round_type: control for control in db.query(RoundControl).all()}
-    assert controls["ROUND1"].status == "IDLE"
-    assert controls["WILDCARD"].status == "NOT_STARTED"
-    assert controls["WILDCARD"].current_selection_rank is None
-    assert controls["WILDCARD"].selection_started_at is None
-    assert controls["WILDCARD"].selection_ends_at is None
+    assert controls["ROUND1"].status == "BIDDING"
+    assert controls["ROUND1"].current_problem_id == round_problem.id
+    assert controls["WILDCARD"].status == "PROBLEM_SELECTION"
+    assert controls["WILDCARD"].current_selection_rank == 1
+    assert controls["WILDCARD"].selection_started_at is not None
+    assert controls["WILDCARD"].selection_ends_at is not None
     assert client.post("/login", data={"username": settings.DEMO_LEADER_EMAIL, "password": settings.DEMO_LEADER_PASSWORD}).status_code == 200
     assert client.post("/login", data={"username": settings.DEMO_ADMIN_EMAIL, "password": settings.DEMO_ADMIN_PASSWORD}).status_code == 200
+    assert client.post(
+        "/leaderboard/login",
+        data={"username": settings.LEADERBOARD_DISPLAY_EMAIL, "password": settings.LEADERBOARD_DISPLAY_PASSWORD},
+    ).status_code == 200
 
     imported_again = client.post(
         "/admin/registration/import",
@@ -559,7 +633,9 @@ def test_registration_credential_reset_clears_active_event_data(client, admin_he
         files={"file": ("registrations.csv", source, "text/csv")},
     )
     assert imported_again.status_code == 200, imported_again.text
-    assert imported_again.json()["leaders_created"] == 1
+    assert imported_again.json()["teams_created"] == 0
+    assert imported_again.json()["leaders_created"] == 0
+    assert imported_again.json()["existing_leaders"] == 1
     credentials = client.get(
         f"/admin/registration/import/download/{imported_again.json()['download_token']}",
         headers=admin_headers,

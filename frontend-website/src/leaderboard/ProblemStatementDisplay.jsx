@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { API_URL } from "../services/api/config";
+import { useReconciledCountdown } from "../services/realtime/useReconciledCountdown";
 import "./Dashboard.css";
 
 const formatTime = (seconds) => {
@@ -9,18 +10,21 @@ const formatTime = (seconds) => {
 
 function ProblemStatementDisplay({ token, onUnauthorized, onLogout }) {
   const [display, setDisplay] = useState(null);
-  const [connection, setConnection] = useState("reconnecting");
-  const [now, setNow] = useState(Date.now());
+  const [apiStatus, setApiStatus] = useState("checking");
 
   useEffect(() => {
     let active = true;
     let timer;
     let failures = 0;
+    let hasDisplay = false;
+    let inFlight = false;
     const schedule = (delay) => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(load, delay);
     };
     const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const response = await fetch(`${API_URL}/public/leaderboard`, {
           cache: "no-store",
@@ -32,21 +36,24 @@ function ProblemStatementDisplay({ token, onUnauthorized, onLogout }) {
         }
         if (!response.ok) throw new Error("Problem display unavailable");
         const payload = await response.json();
+        if (payload.timing) payload.timing = { ...payload.timing, received_at: Date.now() };
         if (active) {
           failures = 0;
+          hasDisplay = true;
           setDisplay(payload);
-          setConnection("live");
+          setApiStatus("healthy");
         }
       } catch {
         if (active) {
           failures += 1;
-          setConnection("reconnecting");
+          setApiStatus(hasDisplay ? "degraded" : "offline");
         }
       } finally {
+        inFlight = false;
         if (active) schedule(failures ? Math.min(30_000, 1000 * 2 ** failures) : document.hidden ? 30_000 : 2000);
       }
     };
-    const onVisibility = () => { if (!document.hidden) schedule(0); };
+    const onVisibility = () => schedule(document.hidden ? 30_000 : 0);
     void load();
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
@@ -56,17 +63,9 @@ function ProblemStatementDisplay({ token, onUnauthorized, onLogout }) {
     };
   }, [onUnauthorized, token]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const remaining = useMemo(() => {
-    if (!display?.timing) return null;
-    if (display.timing.paused && display.timing.paused_remaining_seconds != null) return display.timing.paused_remaining_seconds;
-    if (!display.timing.ends_at) return null;
-    return Math.max(0, Math.ceil((new Date(display.timing.ends_at).getTime() - now) / 1000));
-  }, [display, now]);
+  const timing = display?.timing ?? null;
+  const remaining = useReconciledCountdown(timing, `${display?.event_state ?? "waiting"}:${timing?.ends_at ? "active" : "inactive"}`);
+  const apiLive = apiStatus === "healthy";
 
   const problem = display?.problem;
 
@@ -104,14 +103,14 @@ function ProblemStatementDisplay({ token, onUnauthorized, onLogout }) {
           <div className="problem-info-item">
             <span>STATUS</span>
             <strong>
-              {connection === "live" ? display.status_label : "RECONNECTING"}
+              {apiLive ? display.status_label : apiStatus === "degraded" ? "SYNC DEGRADED" : "DISPLAY OFFLINE"}
             </strong>
           </div>
 
         </div></> : <>
           <div className="problem-number">CURRENT PROBLEM</div>
-          <h1>{connection === "live" ? "Waiting for the current problem" : "Reconnecting to the event"}</h1>
-          <p className="problem-description">{connection === "live" ? "The selected problem will appear here automatically." : "The display will recover without a refresh."}</p>
+          <h1>{apiLive ? "Waiting for the current problem" : "Refreshing the event display"}</h1>
+          <p className="problem-description">{apiLive ? "The selected problem will appear here automatically." : "The last display state is preserved while polling recovers."}</p>
         </>}
 
       </section>

@@ -39,6 +39,10 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 .top-status { display: flex; align-items: center; gap: 1.25rem; }
 .top-status__stage { display: flex; align-items: center; gap: .55rem; padding: .5rem .9rem; border: 1px solid rgba(180,25,255,.3); border-radius: 99px; background: rgba(16,8,28,.7); font-size: .8rem; }
 .top-status__label { color: var(--muted); font: 600 .58rem 'JetBrains Mono', monospace; letter-spacing: .2em; text-transform: uppercase; }
+.top-status__api { color: var(--muted); font: 600 .55rem 'JetBrains Mono', monospace; letter-spacing: .08em; text-transform: uppercase; }
+.top-status__api.is-healthy { color: var(--success); }
+.top-status__api.is-degraded { color: var(--gold-bright); }
+.top-status__api.is-offline { color: var(--danger); }
 .top-status__stage strong { color: var(--text); }
 .live-dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--success); box-shadow: 0 0 12px var(--success); animation: live-pulse 1.8s infinite; }
 .live-dot.is-reconnecting { background: var(--gold-bright); box-shadow: 0 0 12px rgba(244, 196, 87, .45); }

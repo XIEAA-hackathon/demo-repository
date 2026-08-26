@@ -27,6 +27,8 @@ function dashboard(team: Team, currentUserId: string): ParticipantDashboard {
     bidCooldownRemainingSeconds: 0,
     isLeader: team.leaderId === currentUserId,
     round1Assigned: false,
+    round1AssignmentType: null,
+    round1AssignmentCost: null,
     wildcardEligible: true,
     wildcardApplicationsOpen: false,
     submissionsOpen: true,

@@ -158,6 +158,8 @@ async def finalize_round_one(
         ))
         winner_team.ps_id = ps.id
         winner_team.round1_problem_id = ps.id
+        winner_team.round1_assignment_type = "BID_WINNER"
+        winner_team.round1_assignment_cost = bid.amount
         winners.append({"team": winner_team.team_name, "amount": bid.amount})
 
     if winners:

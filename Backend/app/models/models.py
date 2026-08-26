@@ -14,6 +14,8 @@ class User(Base):
     team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
     session_id = Column(String, nullable=True) # Used to track the active session
     is_system_account = Column(Boolean, nullable=False, default=False)
+    account_source = Column(String, nullable=False, default="MANUAL") # MANUAL, IMPORTED
+    credentials_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 class ProblemStatement(Base):
@@ -41,6 +43,9 @@ class RoundControl(Base):
     selection_started_at = Column(DateTime(timezone=True), nullable=True)
     selection_ends_at = Column(DateTime(timezone=True), nullable=True)
     selection_duration_seconds = Column(Integer, nullable=True)
+    final_auto_assignment_problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
+    final_auto_assignment_price = Column(Integer, nullable=True)
+    final_auto_assignment_team_count = Column(Integer, nullable=True)
 
 class Team(Base):
     __tablename__ = "teams"
@@ -52,6 +57,8 @@ class Team(Base):
     ps_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
     round1_problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
     wildcard_problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
+    round1_assignment_type = Column(String, nullable=True) # BID_WINNER, AUTO_FINAL_PROBLEM
+    round1_assignment_cost = Column(Integer, nullable=True)
     is_approved = Column(Boolean, default=True)
     is_system_team = Column(Boolean, nullable=False, default=False)
 

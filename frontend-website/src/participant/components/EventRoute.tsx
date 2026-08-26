@@ -8,7 +8,7 @@ export default function EventRoute({ state, children }: { state: ParticipantEven
   const { dashboard, loading, error } = useParticipant()
 
   if (loading) return <p className="muted">Loading participant panel…</p>
-  if (error || !dashboard) return <p className="error">{error ?? 'Participant data unavailable.'}</p>
+  if (!dashboard) return <p className="error">{error ?? 'Participant data unavailable.'}</p>
 
   if (dashboard.eventState !== state) {
     const active = getStageRoute(dashboard.eventState)

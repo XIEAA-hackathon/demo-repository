@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { API_URL } from "../services/api/config";
+import { useReconciledCountdown } from "../services/realtime/useReconciledCountdown";
 import "./Dashboard.css";
 
 const formatTime = (seconds) => {
@@ -9,18 +10,21 @@ const formatTime = (seconds) => {
 
 function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
   const [display, setDisplay] = useState(null);
-  const [connection, setConnection] = useState("reconnecting");
-  const [now, setNow] = useState(Date.now());
+  const [apiStatus, setApiStatus] = useState("checking");
 
   useEffect(() => {
     let active = true;
     let timer;
     let failures = 0;
+    let hasDisplay = false;
+    let inFlight = false;
     const schedule = (delay) => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(load, delay);
     };
     const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const response = await fetch(`${API_URL}/public/leaderboard`, {
           cache: "no-store",
@@ -32,21 +36,24 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
         }
         if (!response.ok) throw new Error("Leaderboard unavailable");
         const payload = await response.json();
+        if (payload.timing) payload.timing = { ...payload.timing, received_at: Date.now() };
         if (active) {
           failures = 0;
+          hasDisplay = true;
           setDisplay(payload);
-          setConnection("live");
+          setApiStatus("healthy");
         }
       } catch {
         if (active) {
           failures += 1;
-          setConnection("reconnecting");
+          setApiStatus(hasDisplay ? "degraded" : "offline");
         }
       } finally {
+        inFlight = false;
         if (active) schedule(failures ? Math.min(30_000, 1000 * 2 ** failures) : document.hidden ? 30_000 : 2000);
       }
     };
-    const onVisibility = () => { if (!document.hidden) schedule(0); };
+    const onVisibility = () => schedule(document.hidden ? 30_000 : 0);
     void load();
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
@@ -56,19 +63,9 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
     };
   }, [onUnauthorized, token]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const remaining = useMemo(() => {
-    if (!display?.timing) return null;
-    if (display.timing.paused && display.timing.paused_remaining_seconds != null) {
-      return display.timing.paused_remaining_seconds;
-    }
-    if (!display.timing.ends_at) return null;
-    return Math.max(0, Math.ceil((new Date(display.timing.ends_at).getTime() - now) / 1000));
-  }, [display, now]);
+  const timing = display?.timing ?? null;
+  const remaining = useReconciledCountdown(timing, `${display?.event_state ?? "waiting"}:${timing?.ends_at ? "active" : "inactive"}`);
+  const apiLive = apiStatus === "healthy";
 
   const mode = display?.mode;
   const isRoundOne = mode === "ROUND1_LIVE";
@@ -97,7 +94,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
         </h1>
 
         <div className="auction-status">
-          {display?.status_label || (connection === "live" ? "WAITING FOR EVENT" : "RECONNECTING")}
+          {display?.status_label || (apiStatus === "checking" ? "CONNECTING TO EVENT" : apiStatus === "offline" ? "DISPLAY OFFLINE" : "WAITING FOR EVENT")}
         </div>
 
       </header>
@@ -150,7 +147,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
               </div>
 
               <div className="bid-time">
-                {isFinal ? "WINNER" : connection === "live" ? "LIVE" : "UPDATING"}
+                {isFinal ? "WINNER" : apiLive ? "CURRENT" : "LAST SYNC"}
               </div>
 
             </div>
@@ -159,7 +156,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
 
           {!rows.length && <div className="leaderboard-empty">
             <strong>{display?.status_label || "Connecting to the event"}</strong>
-            <span>{connection === "live" ? "Live rankings will appear when bidding starts." : "Trying to restore the live display…"}</span>
+            <span>{apiLive ? "Live rankings will appear when bidding starts." : "Trying to refresh the event display…"}</span>
           </div>}
 
         </div>
@@ -167,7 +164,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
       </section>
 
 
-      {(isRoundOne || isWildcard) && remaining !== null && <div className="leaderboard-countdown">
+      {(isRoundOne || isWildcard) && timing?.ends_at && <div className="leaderboard-countdown">
         {display?.timing?.paused ? "PAUSED" : "AUCTION TIME"}&nbsp;&nbsp; {formatTime(remaining)}
       </div>}
 

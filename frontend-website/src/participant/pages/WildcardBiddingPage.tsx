@@ -68,7 +68,7 @@ export default function WildcardBiddingPage() {
     setMessage(null)
     try {
       const accepted = await service.placeWildcardBid(increment)
-      await Promise.all([refresh(), loadLeaderboard()])
+      await Promise.allSettled([refresh(), loadLeaderboard()])
       setMessage({ type: 'success', text: `Your slot bid was accepted at ${accepted} coins.` })
     } catch (cause) {
       await Promise.allSettled([refresh(), loadLeaderboard()])

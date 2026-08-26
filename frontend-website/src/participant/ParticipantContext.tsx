@@ -5,13 +5,17 @@ import type { ParticipantService } from './services/participantService'
 import { connectEventSocket } from './services/eventSocket'
 import type { ParticipantDashboard } from './types'
 import { getStageRoute } from './routeConfig'
+import type { ApiStatus } from '../services/realtime/timerReconciliation'
 
 interface ParticipantContextValue {
   dashboard: ParticipantDashboard | null
   loading: boolean
   error: string | null
   socketStatus: string
+  apiStatus: ApiStatus
   lastSyncAt: number | null
+  documentHidden: boolean
+  refreshPending: boolean
   service: ParticipantService
   refresh: () => Promise<ParticipantDashboard | null>
 }
@@ -23,7 +27,10 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [socketStatus, setSocketStatus] = useState('connecting')
+  const [apiStatus, setApiStatus] = useState<ApiStatus>('checking')
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
+  const [documentHidden, setDocumentHidden] = useState(() => document.hidden)
+  const [refreshPending, setRefreshPending] = useState(false)
   const refreshInFlight = useRef<Promise<ParticipantDashboard | null> | null>(null)
   const dashboardRef = useRef<ParticipantDashboard | null>(null)
   const lastSuccessfulRefreshStartedAt = useRef(0)
@@ -33,6 +40,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     if (refreshInFlight.current) return refreshInFlight.current
     const startedAt = Date.now()
     const request = (async () => {
+      setRefreshPending(true)
       try {
         setError(null)
         const next = await participantService.getParticipantDashboard()
@@ -40,14 +48,15 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         dashboardRef.current = next
         lastSuccessfulRefreshStartedAt.current = startedAt
         setLastSyncAt(Date.now())
-        setSocketStatus((current) => current === 'reconnected' ? current : 'connected')
+        setApiStatus('healthy')
         return next
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : 'Participant data could not be loaded.')
-        setSocketStatus('reconnecting')
+        setApiStatus(dashboardRef.current ? 'degraded' : 'offline')
         return null
       } finally {
         setLoading(false)
+        setRefreshPending(false)
       }
     })()
     refreshInFlight.current = request
@@ -81,7 +90,17 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       }, delay)
     }
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') void refresh()
+      setDocumentHidden(document.hidden)
+      if (timer !== undefined) window.clearTimeout(timer)
+      if (document.hidden) {
+        schedule(30_000)
+        return
+      }
+      void (async () => {
+        const next = await refresh()
+        failures = next ? 0 : failures + 1
+        schedule(next ? 5_000 : Math.min(30_000, 1_000 * 2 ** failures))
+      })()
     }
     schedule(5_000)
     document.addEventListener('visibilitychange', onVisibility)
@@ -126,8 +145,8 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
   }, [navigate, refresh])
 
   const value = useMemo(
-    () => ({ dashboard, loading, error, socketStatus, lastSyncAt, service: participantService, refresh }),
-    [dashboard, error, lastSyncAt, loading, refresh, socketStatus],
+    () => ({ dashboard, loading, error, socketStatus, apiStatus, lastSyncAt, documentHidden, refreshPending, service: participantService, refresh }),
+    [apiStatus, dashboard, documentHidden, error, lastSyncAt, loading, refresh, refreshPending, socketStatus],
   )
   return <ParticipantContext.Provider value={value}>{children}</ParticipantContext.Provider>
 }

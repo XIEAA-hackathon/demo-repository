@@ -342,6 +342,7 @@ ASSIGNMENT_HEADERS = [
     "Round 1 Problem Number",
     "Round 1 Problem Title",
     "Round 1 Problem Description",
+    "Round 1 Assignment Type",
     "Wildcard Problem Number",
     "Wildcard Problem Title",
     "Wildcard Problem Description",

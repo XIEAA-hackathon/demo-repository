@@ -294,6 +294,8 @@ class ParticipantDashboardResponse(BaseModel):
     gameConfig: DashboardGameConfig
     timing: EventTiming
     round1Assigned: bool = False
+    round1AssignmentType: Optional[str] = None
+    round1AssignmentCost: Optional[int] = None
     wildcardEligible: bool = False
     wildcardApplicationsOpen: bool = False
     submissionsOpen: bool = False

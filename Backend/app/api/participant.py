@@ -215,6 +215,8 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         ),
         timing=EventTiming(**event_timing(config)),
         round1Assigned=round1_problem_obj is not None,
+        round1AssignmentType=team.round1_assignment_type,
+        round1AssignmentCost=team.round1_assignment_cost,
         wildcardEligible=bool(team.is_approved),
         wildcardApplicationsOpen=get_or_create_round_control(db, "WILDCARD").applications_open,
         submissionsOpen=bool(event_config.submissions_open),

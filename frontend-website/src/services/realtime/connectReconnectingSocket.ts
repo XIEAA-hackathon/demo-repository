@@ -28,6 +28,7 @@ export function connectReconnectingSocket<T>({
     socket.onopen = () => {
       const recovered = attempt > 0
       attempt = 0
+      if (settledTimer !== undefined) window.clearTimeout(settledTimer)
       onStatus?.(recovered ? 'reconnected' : 'connected')
       if (recovered) settledTimer = window.setTimeout(() => onStatus?.('connected'), 2_000)
     }
@@ -40,6 +41,10 @@ export function connectReconnectingSocket<T>({
     }
     socket.onerror = () => onStatus?.('error')
     socket.onclose = (event) => {
+      if (settledTimer !== undefined) {
+        window.clearTimeout(settledTimer)
+        settledTimer = undefined
+      }
       console.info('[realtime] WebSocket closed', {
         code: event.code,
         reason: (event.reason || '').slice(0, 160),

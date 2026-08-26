@@ -80,7 +80,7 @@ export default function BiddingPanel({
       const accepted = isWildcard
         ? await service.placeWildcardBid(increment)
         : await service.placeBid(problem.id, increment)
-      await Promise.all([refresh(), loadLeaderboard()])
+      await Promise.allSettled([refresh(), loadLeaderboard()])
       setMessage({ type: 'success', text: `Bid accepted at ${accepted} coins. Coins are not deducted until finalization.` })
     } catch (cause) {
       await Promise.allSettled([refresh(), loadLeaderboard()])

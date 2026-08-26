@@ -106,7 +106,7 @@ def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     login_id = form_data.username.strip().lower()
     user = db.query(User).filter(func.lower(User.email) == login_id).first()
-    if not user or not verify_password(form_data.password, user.password_hash):
+    if not user or not user.credentials_active or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",

@@ -41,7 +41,7 @@ from app.services.registration_import import (
     build_registration_assignment_csv, build_registration_assignment_workbook,
     ASSIGNMENT_HEADERS,
 )
-from app.services.reset_service import reset_event_and_imported_participants
+from app.services.reset_service import reset_event_and_imported_participants, reset_imported_participant_credentials
 from app.services.activity_log import record_event
 from app.core.security import get_password_hash
 from app.core.event_constants import ROUND1_WINNER_COUNT
@@ -470,6 +470,7 @@ def reset_participant_password(
     password = _default_password()
     account.password_hash = get_password_hash(password)
     account.session_id = None
+    account.credentials_active = True
     db.commit()
     supplied_email = account.email if "@" in account.email else ""
     return _credential(account, team, password, supplied_email)
@@ -581,7 +582,12 @@ async def import_registrations(
             leader = _user_by_login(db, leader_email)
             if leader:
                 existing_leaders += 1
-                leader_password = "EXISTING ACCOUNT"
+                if leader.account_source == "IMPORTED" and not leader.credentials_active:
+                    leader_password = _default_password()
+                    leader.password_hash = get_password_hash(leader_password)
+                    leader.credentials_active = True
+                else:
+                    leader_password = "EXISTING ACCOUNT"
             else:
                 leader_password = _default_password()
                 leader = User(
@@ -590,6 +596,8 @@ async def import_registrations(
                     password_hash=get_password_hash(leader_password),
                     role="leader",
                     team_id=team.id,
+                    account_source="IMPORTED",
+                    credentials_active=True,
                 )
                 db.add(leader)
                 db.flush()
@@ -688,11 +696,7 @@ async def reset_registration_credentials(
         raise HTTPException(status_code=422, detail="Enter RESET CREDENTIALS to confirm participant credential reset.")
 
     try:
-        event_deleted = reset_event_and_imported_participants(
-            db,
-            actor=current_user,
-            action="registration.credentials_reset",
-        )
+        credential_reset = reset_imported_participant_credentials(db, actor=current_user)
         db.commit()
     except Exception:
         db.rollback()
@@ -707,26 +711,26 @@ async def reset_registration_credentials(
             except OSError:
                 pass
 
-    deleted = {
-        **event_deleted,
-        "participant_accounts": event_deleted["participant_users"],
-        "member_records": event_deleted["team_members"],
-        "credential_exports": credential_exports_removed,
-    }
-    snapshot = event_snapshot(db)
-    await manager.broadcast_event("event_state_changed", snapshot)
-    await manager.broadcast_event("round_updated", {"action": "registration_credentials_reset", "event": snapshot})
-    await manager.broadcast_event("wildcard_updated", {"action": "registration_credentials_reset", "event": snapshot})
-    await manager.broadcast_event("team_updated", {"action": "registration_credentials_reset"})
+    game = get_or_create_game_config(db)
+    await manager.broadcast_event("team_updated", {
+        "action": "registration_credentials_reset",
+        "participant_accounts": credential_reset["participant_accounts"],
+    })
     return {
-        "status": "reset_complete",
-        "deleted": deleted,
+        "status": "credentials_reset",
+        "reset": credential_reset,
+        "deleted": {
+            "participant_accounts": 0,
+            "teams": 0,
+            "member_records": 0,
+            "credential_exports": credential_exports_removed,
+        },
         "preserved": {
             "system_accounts": db.query(User).filter(User.is_system_account.is_(True)).count(),
             "system_teams": db.query(Team).filter(Team.is_system_team.is_(True)).count(),
             "admin_accounts": db.query(User).filter(User.role == "admin").count(),
         },
-        "event_state": "WAITING",
+        "event_state": game.state,
     }
 
 
@@ -834,6 +838,7 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], st
         final = wildcard or round1
         assignment_values = [
             *_assignment_problem_values(round1),
+            (team.round1_assignment_type or "BID_WINNER") if round1 and team else "",
             *_assignment_problem_values(wildcard),
             *_assignment_problem_values(final),
         ]
@@ -1027,10 +1032,17 @@ async def confirm_registration_import(
                 password_hash=get_password_hash(created_password),
                 role="leader",
                 team_id=team.id,
+                account_source="IMPORTED",
+                credentials_active=True,
             )
             db.add(leader)
             db.flush()
             accounts_created += 1
+            credentials.append(_credential(leader, team, created_password, leader_email))
+        elif leader.account_source == "IMPORTED" and not leader.credentials_active:
+            created_password = generate_credentials([row_as_dict])[0]["temporary_password"]
+            leader.password_hash = get_password_hash(created_password)
+            leader.credentials_active = True
             credentials.append(_credential(leader, team, created_password, leader_email))
 
         team.leader_id = leader.id
@@ -1056,10 +1068,17 @@ async def confirm_registration_import(
                     password_hash=get_password_hash(created_password),
                     role="member",
                     team_id=team.id,
+                    account_source="IMPORTED",
+                    credentials_active=True,
                 )
                 db.add(member_user)
                 db.flush()
                 accounts_created += 1
+                credentials.append(_credential(member_user, team, created_password, member_email))
+            elif member_user.account_source == "IMPORTED" and not member_user.credentials_active:
+                created_password = _default_password()
+                member_user.password_hash = get_password_hash(created_password)
+                member_user.credentials_active = True
                 credentials.append(_credential(member_user, team, created_password, member_email))
             else:
                 member_user.name = member_name

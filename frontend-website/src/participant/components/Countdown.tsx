@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
 import type { EventTiming } from '../types'
+import { useReconciledCountdown } from '../../services/realtime/useReconciledCountdown'
 
 function format(seconds: number, showHours: boolean) {
   const hours = Math.floor(seconds / 3600)
@@ -10,19 +10,8 @@ function format(seconds: number, showHours: boolean) {
 }
 
 export default function Countdown({ seconds = 0, showHours = false, timing }: { seconds?: number; showHours?: boolean; timing?: EventTiming }) {
-  const calculate = () => {
-    if (timing?.paused && timing.pausedRemainingSeconds !== null) return timing.pausedRemainingSeconds
-    if (!timing?.endsAt) return seconds
-    const serverOffset = Date.parse(timing.serverTime) - timing.receivedAt
-    return Math.max(0, Math.ceil((Date.parse(timing.endsAt) - (Date.now() + serverOffset)) / 1000))
-  }
-  const [remaining, setRemaining] = useState(calculate)
-
-  useEffect(() => {
-    setRemaining(calculate())
-    const timer = window.setInterval(() => setRemaining(calculate()), 1_000)
-    return () => window.clearInterval(timer)
-  }, [seconds, timing?.endsAt, timing?.paused, timing?.pausedRemainingSeconds, timing?.receivedAt, timing?.serverTime])
+  const timerKey = timing ? `${timing.startedAt ?? ''}:${timing.endsAt ? 'active' : 'inactive'}` : 'fallback'
+  const remaining = useReconciledCountdown(timing, timerKey, seconds)
 
   return <time className="countdown" dateTime={`PT${remaining}S`}>{format(remaining, showHours)}</time>
 }

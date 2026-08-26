@@ -44,6 +44,9 @@ def initialize_database() -> None:
             "selection_started_at": datetime_type,
             "selection_ends_at": datetime_type,
             "selection_duration_seconds": "INTEGER",
+            "final_auto_assignment_problem_id": "INTEGER",
+            "final_auto_assignment_price": "INTEGER",
+            "final_auto_assignment_team_count": "INTEGER",
         }.items():
             if column_name not in round_control_columns:
                 with engine.begin() as connection:
@@ -55,6 +58,31 @@ def initialize_database() -> None:
                 connection.execute(text("ALTER TABLE wildcards ADD COLUMN selection_method VARCHAR"))
 
         user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+        if "is_system_account" not in user_columns:
+            system_account_default = "FALSE" if database_backend == "postgresql" else "0"
+            with engine.begin() as connection:
+                connection.execute(text(
+                    f"ALTER TABLE users ADD COLUMN is_system_account BOOLEAN NOT NULL DEFAULT {system_account_default}"
+                ))
+        account_source_added = "account_source" not in user_columns
+        if account_source_added:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE users ADD COLUMN account_source VARCHAR NOT NULL DEFAULT 'MANUAL'"))
+        if "credentials_active" not in user_columns:
+            credentials_active_default = "TRUE" if database_backend == "postgresql" else "1"
+            with engine.begin() as connection:
+                connection.execute(text(
+                    f"ALTER TABLE users ADD COLUMN credentials_active BOOLEAN NOT NULL DEFAULT {credentials_active_default}"
+                ))
+
+        team_columns = {column["name"] for column in inspect(engine).get_columns("teams")}
+        for column_name, definition in {
+            "round1_assignment_type": "VARCHAR",
+            "round1_assignment_cost": "INTEGER",
+        }.items():
+            if column_name not in team_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(f"ALTER TABLE teams ADD COLUMN {column_name} {definition}"))
         if "created_at" not in user_columns:
             created_at_type = "TIMESTAMP WITH TIME ZONE" if database_backend == "postgresql" else "DATETIME"
             with engine.begin() as connection:
@@ -74,6 +102,19 @@ def initialize_database() -> None:
             if column_name not in registration_row_columns:
                 with engine.begin() as connection:
                     connection.execute(text(f"ALTER TABLE registration_import_rows ADD COLUMN {column_name} {definition}"))
+        if account_source_added:
+            # Legacy registration rows are the only reliable, non-email marker
+            # connecting previously imported participant accounts to their teams.
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "UPDATE users SET account_source = 'IMPORTED' "
+                    "WHERE is_system_account IS FALSE AND role IN ('leader', 'member') AND ("
+                    "team_id IN (SELECT team_id FROM registration_import_rows WHERE team_id IS NOT NULL) OR "
+                    "id IN (SELECT leader_id FROM teams WHERE id IN ("
+                    "SELECT team_id FROM registration_import_rows WHERE team_id IS NOT NULL"
+                    "))"
+                    ")"
+                ))
 
         # ``create_all`` does not add columns to an existing SQLite database.
         # Keep this small migration-less project upgrade-safe for local users.
@@ -94,14 +135,21 @@ def initialize_database() -> None:
                 "round_controls": {
                     "slot_count": "INTEGER",
                     "selection_pool_frozen_at": "DATETIME",
+                    "final_auto_assignment_problem_id": "INTEGER REFERENCES problem_statements(id)",
+                    "final_auto_assignment_price": "INTEGER",
+                    "final_auto_assignment_team_count": "INTEGER",
                 },
                 "teams": {
                     "round1_problem_id": "INTEGER REFERENCES problem_statements(id)",
                     "wildcard_problem_id": "INTEGER REFERENCES problem_statements(id)",
+                    "round1_assignment_type": "VARCHAR",
+                    "round1_assignment_cost": "INTEGER",
                     "is_system_team": "BOOLEAN NOT NULL DEFAULT 0",
                 },
                 "users": {
                     "is_system_account": "BOOLEAN NOT NULL DEFAULT 0",
+                    "account_source": "VARCHAR NOT NULL DEFAULT 'MANUAL'",
+                    "credentials_active": "BOOLEAN NOT NULL DEFAULT 1",
                 },
                 "wildcards": {
                     "applied_at": "DATETIME",

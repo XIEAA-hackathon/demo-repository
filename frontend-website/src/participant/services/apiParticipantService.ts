@@ -22,6 +22,8 @@ interface RawDashboard {
   bidCooldownRemainingSeconds: number
   isLeader: boolean
   round1Assigned: boolean
+  round1AssignmentType: 'BID_WINNER' | 'AUTO_FINAL_PROBLEM' | null
+  round1AssignmentCost: number | null
   wildcardEligible: boolean
   wildcardApplicationsOpen: boolean
   submissionsOpen: boolean
@@ -114,6 +116,8 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
     bidCooldownRemainingSeconds: raw.bidCooldownRemainingSeconds,
     isLeader: raw.isLeader,
     round1Assigned: raw.round1Assigned,
+    round1AssignmentType: raw.round1AssignmentType,
+    round1AssignmentCost: raw.round1AssignmentCost,
     wildcardEligible: raw.wildcardEligible,
     wildcardApplicationsOpen: raw.wildcardApplicationsOpen,
     submissionsOpen: raw.submissionsOpen,

@@ -25,6 +25,11 @@ from app.services.event_service import (
 )
 from app.services.activity_log import record_event
 from app.core.event_constants import ROUND1_WINNER_COUNT
+from app.services.round1_auto_assignment import (
+    ROUND1_BID_WINNER,
+    auto_assign_final_problem,
+    final_auto_assignment_summary,
+)
 from app.services.wildcard_service import ranking_payload, wildcard_payload
 
 router = APIRouter()
@@ -165,6 +170,7 @@ def _round_payload(db: Session, meta: dict) -> dict:
             "base_price": config.round1_minimum_bid,
             "winner_count": ROUND1_WINNER_COUNT,
         },
+        "final_auto_assignment": final_auto_assignment_summary(db, control),
         "event": event_snapshot(db),
     }
     return payload
@@ -229,8 +235,20 @@ async def select_problem(round_slug: str, problem_id: int, db: Session = Depends
     problem = db.query(ProblemStatement).filter(ProblemStatement.id == problem_id, ProblemStatement.round == meta["number"]).first()
     if not problem:
         raise HTTPException(status_code=404, detail="Problem not found in this round.")
+    if control.final_auto_assignment_problem_id == problem_id:
+        return _round_payload(db, meta)
     if problem.status in {"completed", "allocated"}:
         raise HTTPException(status_code=409, detail="A completed problem cannot be selected again.")
+    automatic = auto_assign_final_problem(db, control, actor=current_user)
+    if automatic:
+        db.commit()
+        await manager.broadcast_event("round_updated", {
+            "round": meta["type"],
+            "action": "final_problem_auto_assigned",
+            "problem_id": automatic["problem"]["id"],
+            "team_count": automatic["team_count"],
+        })
+        return _round_payload(db, meta)
     problem.status = "current"
     control.current_problem_id = problem.id
     control.status = "READY"
@@ -333,14 +351,22 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
         team.ps_id = problem.id
         if meta["number"] == 1:
             team.round1_problem_id = problem.id
+            team.round1_assignment_type = ROUND1_BID_WINNER
+            team.round1_assignment_cost = bid.amount
         db.add(WalletTransaction(team_id=team.id, transaction_type="ROUND1_WIN" if meta["number"] == 1 else "WILDCARD_WIN", amount=-bid.amount, description=f"{meta['label']} win for problem {_display_number(problem)}"))
         winners.append({"team_id": team.id, "team_name": team.team_name, "amount": bid.amount})
     problem.status = "completed"
     control.current_problem_id = None
     control.status = "READY"
     record_event(db, "round1.winners_assigned", actor=current_user, entity_type="problem", entity_id=problem.id, metadata={"winner_team_ids": [winner["team_id"] for winner in winners]})
+    automatic = auto_assign_final_problem(db, control, actor=current_user)
     db.commit()
-    await manager.broadcast_event("round_updated", {"round": meta["type"], "action": "winners_assigned", "winners": winners})
+    await manager.broadcast_event("round_updated", {
+        "round": meta["type"],
+        "action": "final_problem_auto_assigned" if automatic else "winners_assigned",
+        "winners": winners,
+        "automatic": automatic,
+    })
     return {"winners": winners, **_round_payload(db, meta)}
 
 

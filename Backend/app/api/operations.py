@@ -239,6 +239,8 @@ async def development_reset(
         team.ps_id = None
         team.round1_problem_id = None
         team.wildcard_problem_id = None
+        team.round1_assignment_type = None
+        team.round1_assignment_cost = None
     db.query(ProblemStatement).update({ProblemStatement.status: "available"}, synchronize_session=False)
     db.query(RoundControl).delete(synchronize_session=False)
     game = get_or_create_game_config(db)

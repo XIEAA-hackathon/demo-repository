@@ -4,9 +4,10 @@ import { useAuth } from '../auth/AuthContext'
 import { useParticipant } from '../ParticipantContext'
 import { getStageRoute } from '../routeConfig'
 import StageNavigation from './StageNavigation'
+import { isSyncStale } from '../../services/realtime/timerReconciliation'
 
 export default function ParticipantLayout() {
-  const { dashboard, socketStatus, lastSyncAt } = useParticipant()
+  const { dashboard, socketStatus, apiStatus, lastSyncAt, documentHidden, refreshPending } = useParticipant()
   const { logout } = useAuth()
   const stage = getStageRoute(dashboard?.eventState ?? 'WAITING')
   const [now, setNow] = useState(Date.now())
@@ -15,8 +16,9 @@ export default function ParticipantLayout() {
     return () => window.clearInterval(timer)
   }, [])
   const staleSeconds = lastSyncAt ? Math.floor((now - lastSyncAt) / 1_000) : null
-  const stale = staleSeconds === null || staleSeconds > 15
-  const connectionLabel = socketStatus === 'connected' ? 'Live stage' : socketStatus === 'reconnected' ? 'Reconnected' : 'Reconnecting…'
+  const stale = isSyncStale({ documentHidden, refreshPending, staleSeconds })
+  const connectionLabel = socketStatus === 'connected' ? 'Connected' : socketStatus === 'reconnected' ? 'Reconnected' : socketStatus === 'error' ? 'Connection error' : 'Reconnecting…'
+  const apiLabel = apiStatus === 'healthy' ? 'API healthy' : apiStatus === 'degraded' ? 'API degraded' : apiStatus === 'offline' ? 'API offline' : 'API checking'
 
   return (
     <div className="app-shell">
@@ -29,6 +31,7 @@ export default function ParticipantLayout() {
           <div className="top-status__stage">
             <span className={`live-dot ${socketStatus === 'connected' || socketStatus === 'reconnected' ? '' : 'is-reconnecting'}`} aria-hidden="true" />
             <span className="top-status__label">{connectionLabel}</span>
+            <span className={`top-status__api is-${apiStatus}`}>{apiLabel}</span>
             <strong>{stage.label}</strong>
           </div>
           <div className="topbar__team">
@@ -42,7 +45,7 @@ export default function ParticipantLayout() {
           </div>
         </div>
       </header>
-      {stale && <div className="participant-stale-warning" role="alert"><strong>Live state may be stale.</strong> Last successful synchronization: {staleSeconds === null ? 'not yet completed' : `${staleSeconds} seconds ago`}. Attempting reconnection…</div>}
+      {stale && <div className="participant-stale-warning" role="alert"><strong>Live state may be stale.</strong> Last successful API synchronization: {staleSeconds === null ? 'not yet completed' : `${staleSeconds} seconds ago`}. Dashboard polling is recovering; the live connection is tracked separately.</div>}
       <div className="workspace">
         <StageNavigation />
         <main className="workspace__main"><Outlet /></main>
