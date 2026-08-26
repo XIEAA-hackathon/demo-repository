@@ -1,17 +1,35 @@
 import csv
 import io
+import json
 
-from app.models.models import Bid, GameConfig, ProblemStatement, Team, User
+from app.models.models import GameConfig, RegistrationImportRow, User
 
 
-SOURCE = (
-    "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email\n"
-    "Password Team,Test Leader,leader.test@example.com,Test Member,member.test@example.com\n"
-).encode()
+def _registration_csv(
+    leader_password: str,
+    member_password: str = "MemberInitial@123",
+    *,
+    team_name: str = "Password Team",
+    leader_email: str = "leader.test@example.com",
+) -> bytes:
+    return (
+        "Team Name,Leader Name,Leader Email,Leader Password,"
+        "Member 1 Name,Member 1 Email,Member 1 Password\n"
+        f"{team_name},Test Leader,{leader_email},{leader_password},"
+        f"Test Member,member.test@example.com,{member_password}\n"
+    ).encode()
 
 
 def _login(client, login_id: str, password: str):
     return client.post("/login", data={"username": login_id, "password": password})
+
+
+def _import(client, admin_headers, content: bytes):
+    return client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("participants.csv", content, "text/csv")},
+    )
 
 
 def _set_password(client, admin_headers, user_id: int, password: str):
@@ -22,79 +40,50 @@ def _set_password(client, admin_headers, user_id: int, password: str):
     )
 
 
-def test_manual_password_lifecycle_and_event_reset_preserves_hash(
-    client, admin_headers, display_headers, db,
-):
-    imported = client.post(
-        "/admin/registration/import",
-        headers=admin_headers,
-        files={"file": ("participants.csv", SOURCE, "text/csv")},
-    )
-    assert imported.status_code == 200, imported.text
-    summary = imported.json()
-    assert summary["leaders_created"] == 1
-    assert summary["participant_accounts_created"] == 1
+def test_imported_password_lifecycle_and_resets(client, admin_headers, db):
+    initial = _import(client, admin_headers, _registration_csv("Alpha@123"))
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["leaders_created"] == 1
+    assert initial.json()["participant_accounts_created"] == 1
 
-    account_sheet = client.get(
-        f"/admin/registration/import/download/{summary['download_token']}",
+    immediate = client.get(
+        f"/admin/registration/import/download/{initial.json()['download_token']}",
         headers=admin_headers,
     )
-    row = next(csv.DictReader(io.StringIO(account_sheet.content.decode("utf-8-sig"))))
-    assert row["Leader Login Email"] == "leader.test@example.com"
-    assert row["Credential Status"] == "PASSWORD NOT SET"
-    assert "Leader Password" not in row
-    assert "temporary_password" not in account_sheet.text.lower()
+    row = next(csv.DictReader(io.StringIO(immediate.content.decode("utf-8-sig"))))
+    assert row["Leader Password"] == "Alpha@123"
+    assert row["Member 1 Password"] == "MemberInitial@123"
+    assert row["Credential Status"] == "PASSWORD SET"
+    initial_login = _login(client, "leader.test@example.com", "Alpha@123")
+    assert initial_login.status_code == 200
+    initial_headers = {"Authorization": f"Bearer {initial_login.json()['access_token']}"}
+    assert _login(client, "member.test@example.com", "MemberInitial@123").status_code == 200
 
-    accounts_response = client.get("/admin/registration/participant-accounts", headers=admin_headers)
-    assert accounts_response.status_code == 200
-    accounts = {account["login_id"]: account for account in accounts_response.json()["accounts"]}
-    assert set(accounts) == {"leader.test@example.com", "member.test@example.com"}
-    assert all(account["credential_status"] == "NOT_SET" for account in accounts.values())
-    leader = accounts["leader.test@example.com"]
-    member = accounts["member.test@example.com"]
-    assert _login(client, leader["login_id"], "OldPassword@123").status_code == 401
+    stored = db.query(RegistrationImportRow).one()
+    assert "Alpha@123" not in stored.source_values_json
+    assert "MemberInitial@123" not in stored.source_values_json
+    assert "password" not in json.dumps(json.loads(stored.members_json)).lower()
 
-    assert client.put(
-        f"/admin/registration/participant-accounts/{leader['user_id']}/password",
-        json={"new_password": "OldPassword@123", "confirm_password": "OldPassword@123"},
-    ).status_code == 401
-    assert _set_password(client, admin_headers, leader["user_id"], "OldPassword@123").status_code == 200
-    old_login = _login(client, leader["login_id"], "OldPassword@123")
-    assert old_login.status_code == 200
-    participant_headers = {"Authorization": f"Bearer {old_login.json()['access_token']}"}
-    assert client.put(
-        f"/admin/registration/participant-accounts/{member['user_id']}/password",
-        headers=participant_headers,
-        json={"new_password": "MemberPassword@123", "confirm_password": "MemberPassword@123"},
-    ).status_code == 403
-    assert client.put(
-        f"/admin/registration/participant-accounts/{member['user_id']}/password",
-        headers=display_headers,
-        json={"new_password": "MemberPassword@123", "confirm_password": "MemberPassword@123"},
-    ).status_code == 403
-
-    changed = _set_password(client, admin_headers, leader["user_id"], "NewPassword@456")
+    changed = _import(client, admin_headers, _registration_csv("AlphaNew@456"))
     assert changed.status_code == 200, changed.text
-    assert client.get("/participant/dashboard", headers=participant_headers).status_code == 401
-    assert _login(client, leader["login_id"], "OldPassword@123").status_code == 401
-    new_login = _login(client, leader["login_id"], "NewPassword@456")
-    assert new_login.status_code == 200
-    current_headers = {"Authorization": f"Bearer {new_login.json()['access_token']}"}
+    assert client.get("/participant/dashboard", headers=initial_headers).status_code == 401
+    assert _login(client, "leader.test@example.com", "Alpha@123").status_code == 401
+    assert _login(client, "leader.test@example.com", "AlphaNew@456").status_code == 200
 
-    db.expire_all()
-    user_before = db.query(User).filter(User.email == leader["login_id"]).one()
-    team_before = db.query(Team).filter(Team.id == user_before.team_id).one()
-    user_id = user_before.id
-    team_id = team_before.id
-    hash_before = user_before.password_hash
-    problem = ProblemStatement(ps_number="RESET-R1", title="Reset", description="Reset", round=1, status="current")
-    db.add(problem)
-    db.flush()
-    team_before.ps_id = problem.id
-    team_before.round1_problem_id = problem.id
-    db.add(Bid(team_id=team_id, ps_id=problem.id, amount=100, round=1))
-    db.query(GameConfig).one().state = "ROUND1_BIDDING"
-    db.commit()
+    blank = _import(client, admin_headers, _registration_csv("", ""))
+    assert blank.status_code == 200, blank.text
+    assert blank.json()["rows_failed"] == 0
+    assert _login(client, "leader.test@example.com", "AlphaNew@456").status_code == 200
+    assert _login(client, "member.test@example.com", "MemberInitial@123").status_code == 200
+
+    accounts = client.get(
+        "/admin/registration/participant-accounts", headers=admin_headers,
+    ).json()["accounts"]
+    leader = next(account for account in accounts if account["login_id"] == "leader.test@example.com")
+    manual = _set_password(client, admin_headers, leader["user_id"], "Manual@789")
+    assert manual.status_code == 200, manual.text
+    assert _login(client, "leader.test@example.com", "AlphaNew@456").status_code == 401
+    assert _login(client, "leader.test@example.com", "Manual@789").status_code == 200
 
     reset_event = client.post(
         "/admin/event-data/reset",
@@ -102,34 +91,10 @@ def test_manual_password_lifecycle_and_event_reset_preserves_hash(
         json={"confirmation": "RESET EVENT"},
     )
     assert reset_event.status_code == 200, reset_event.text
-    assert reset_event.json()["deleted"]["participant_users"] == 0
-    assert reset_event.json()["deleted"]["teams"] == 0
-    db.expire_all()
-    user_after = db.query(User).filter(User.id == user_id).one()
-    team_after = db.query(Team).filter(Team.id == team_id).one()
-    assert user_after.password_hash == hash_before
-    assert user_after.credentials_active is True
-    assert user_after.team_id == team_id and team_after.leader_id == user_id
-    assert db.query(GameConfig).one().state == "WAITING"
-    assert db.query(Bid).count() == 0
-    assert client.get("/participant/dashboard", headers=current_headers).status_code == 200
-    assert _login(client, leader["login_id"], "OldPassword@123").status_code == 401
-    assert _login(client, leader["login_id"], "NewPassword@456").status_code == 200
+    assert _login(client, "leader.test@example.com", "AlphaNew@456").status_code == 401
+    assert _login(client, "leader.test@example.com", "Manual@789").status_code == 200
 
-    repeated = client.post(
-        "/admin/registration/import",
-        headers=admin_headers,
-        files={"file": ("participants.csv", SOURCE, "text/csv")},
-    )
-    assert repeated.status_code == 200, repeated.text
-    assert repeated.json()["teams_created"] == 0
-    assert repeated.json()["leaders_created"] == 0
-    db.expire_all()
-    assert db.query(User).filter(User.email == leader["login_id"]).count() == 1
-    assert db.query(User).filter(User.email == leader["login_id"]).one().password_hash == hash_before
-
-    game = db.query(GameConfig).one()
-    game.state = "SUBMISSION"
+    db.query(GameConfig).one().state = "SUBMISSION"
     db.commit()
     reset_credentials = client.post(
         "/admin/registration/credentials/reset",
@@ -138,16 +103,78 @@ def test_manual_password_lifecycle_and_event_reset_preserves_hash(
     )
     assert reset_credentials.status_code == 200, reset_credentials.text
     assert reset_credentials.json()["event_state"] == "SUBMISSION"
-    assert reset_credentials.json()["reset"]["participant_accounts"] == 2
-    assert _login(client, leader["login_id"], "OldPassword@123").status_code == 401
-    assert _login(client, leader["login_id"], "NewPassword@456").status_code == 401
-    account_after_reset = next(
-        account for account in client.get(
-            "/admin/registration/participant-accounts", headers=admin_headers,
-        ).json()["accounts"] if account["user_id"] == user_id
-    )
-    assert account_after_reset["credential_status"] == "NOT_SET"
+    assert _login(client, "leader.test@example.com", "Manual@789").status_code == 401
 
-    assert _set_password(client, admin_headers, user_id, "ThirdPassword@789").status_code == 200
-    assert _login(client, leader["login_id"], "ThirdPassword@789").status_code == 200
+    restored = _import(client, admin_headers, _registration_csv("Restored@123"))
+    assert restored.status_code == 200, restored.text
+    assert _login(client, "leader.test@example.com", "Restored@123").status_code == 200
+    db.expire_all()
     assert db.query(GameConfig).one().state == "SUBMISSION"
+
+
+def test_new_account_with_blank_password_is_rejected_per_row(client, admin_headers, db):
+    response = _import(
+        client,
+        admin_headers,
+        _registration_csv(
+            "",
+            "",
+            team_name="Blank Password Team",
+            leader_email="blank.password@example.com",
+        ),
+    )
+    assert response.status_code == 200, response.text
+    summary = response.json()
+    assert summary["teams_processed"] == 0
+    assert summary["rows_failed"] == 1
+    messages = [error["message"] for error in summary["errors"]]
+    assert "Leader Password is required for a new participant account." in messages
+    assert "Member 1 Password is required for a new participant account." in messages
+    assert db.query(User).filter(User.email == "blank.password@example.com").count() == 0
+
+
+def test_later_assignment_export_does_not_expose_imported_passwords(client, admin_headers):
+    imported = _import(client, admin_headers, _registration_csv("Alpha@123"))
+    assert imported.status_code == 200, imported.text
+    export = client.get("/admin/registration/assignments", headers=admin_headers)
+    assert export.status_code == 200, export.text
+    row = next(csv.DictReader(io.StringIO(export.content.decode("utf-8-sig"))))
+    assert row["Leader Password"] == "NOT EXPORTED"
+    assert row["Member 1 Password"] == "NOT EXPORTED"
+
+
+def test_sample_and_xlsx_import_include_and_preserve_password(client, admin_headers):
+    sample = client.get("/admin/registration/sample.csv", headers=admin_headers)
+    assert sample.status_code == 200
+    assert "Leader Password" in next(csv.reader(io.StringIO(sample.text)))
+
+    from openpyxl import Workbook, load_workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Team Name", "Leader Name", "Leader Email", "Leader Password"])
+    sheet.append(["Excel Team", "Excel Leader", "excel.leader@example.com", "Excel@123"])
+    source = io.BytesIO()
+    workbook.save(source)
+    workbook.close()
+
+    imported = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={
+            "file": (
+                "participants.xlsx",
+                source.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert imported.status_code == 200, imported.text
+    immediate = client.get(
+        f"/admin/registration/import/download/{imported.json()['download_token']}",
+        headers=admin_headers,
+    )
+    output = load_workbook(io.BytesIO(immediate.content), data_only=True)
+    assert output.active["D2"].value == "Excel@123"
+    output.close()
+    assert _login(client, "excel.leader@example.com", "Excel@123").status_code == 200

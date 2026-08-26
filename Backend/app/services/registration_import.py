@@ -30,10 +30,14 @@ _HEADER_ALIASES: Dict[str, List[str]] = {
         "emailid", "email", "leaderemailaddress", "emailidofteamleader",
         "whatistheemailidofyourteamleader", "teammembersemail",
     ],
+    "leader_password": [
+        "leaderpassword", "leaderloginpassword", "temporarypassword",
+    ],
 }
 
 _MEMBER_NAME_PATTERN = re.compile(r"^(?:member|teammate|participant)\s*(\d+)(?:\s*(?:name|fullname))?$")
 _MEMBER_EMAIL_PATTERN = re.compile(r"^(?:member|teammate|participant)\s*(\d+)(?:\s*(?:email|emailid))$")
+_MEMBER_PASSWORD_PATTERN = re.compile(r"^(?:member|teammate|participant)\s*(\d+)(?:\s*(?:password|loginpassword))$")
 
 def _norm_header(header: str) -> str:
     return re.sub(r"[^a-z0-9]", "", header.lower())
@@ -42,16 +46,19 @@ def _detect_columns(headers: List[str]) -> Dict[str, Any]:
     """Map spreadsheet headers to canonical fields.
 
     Returns {"team_name": col_idx, "leader_name": idx, "leader_email": idx,
-             "member_names": {1: idx, ...}, "member_emails": {1: idx, ...}}
+             "leader_password": idx, "member_names": {1: idx, ...},
+             "member_emails": {1: idx, ...}, "member_passwords": {1: idx, ...}}
     and an "errors" list for anything unresolved.
     """
     mapping: Dict[str, Any] = {
         "col_to_family": {},
         "member_names": {},
         "member_emails": {},
+        "member_passwords": {},
         "team_name": None,
         "leader_name": None,
         "leader_email": None,
+        "leader_password": None,
     }
     normalized = [_norm_header(h) for h in headers]
     used_families: Dict[str, int] = {}
@@ -88,6 +95,15 @@ def _detect_columns(headers: List[str]) -> Dict[str, Any]:
                     mapping["member_emails"][number] = idx
                     mapping["col_to_family"][idx] = f"member_email:{number}"
                 matched = True
+                continue
+
+        m = _MEMBER_PASSWORD_PATTERN.match(norm)
+        if m:
+            number = int(m.group(1))
+            if number >= 1:
+                if number not in mapping["member_passwords"]:
+                    mapping["member_passwords"][number] = idx
+                    mapping["col_to_family"][idx] = f"member_password:{number}"
                 continue
 
     errors = []
@@ -137,11 +153,11 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
         return {**empty_result, "errors": ["The file contains no rows."]}
 
     headers = [str(value).strip() if value is not None else "" for value in data[0]]
-    password_column_indexes = {
-        index for index, header in enumerate(headers)
-        if _norm_header(header) in {"leaderpassword", "leaderloginpassword", "temporarypassword"}
-    }
     mapping, header_errors = _detect_columns(headers)
+    password_column_indexes = {
+        index for index, family in mapping.get("col_to_family", {}).items()
+        if family == "leader_password" or family.startswith("member_password:")
+    }
     errors = list(header_errors)
     warnings: List[str] = []
     row_errors: List[Dict[str, Any]] = []
@@ -165,6 +181,7 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
         team_name = cell("team_name")
         leader_name = cell("leader_name")
         leader_email = cell("leader_email").lower()
+        leader_password = cell("leader_password")
         messages: List[str] = []
         missing = [
             label for label, value in (
@@ -191,19 +208,32 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
             seen_leaders[leader_email] = row_idx
 
         members: List[Dict[str, str]] = []
-        member_numbers = sorted(set(mapping["member_names"]) | set(mapping["member_emails"]))
+        member_numbers = sorted(
+            set(mapping["member_names"])
+            | set(mapping["member_emails"])
+            | set(mapping["member_passwords"])
+        )
         for number in member_numbers:
             name_index = mapping["member_names"].get(number)
             email_index = mapping["member_emails"].get(number)
+            password_index = mapping["member_passwords"].get(number)
             member_name = cells[name_index] if name_index is not None and name_index < len(cells) else ""
             member_email = cells[email_index].lower() if email_index is not None and email_index < len(cells) else ""
-            if not member_name and not member_email:
+            member_password = cells[password_index] if password_index is not None and password_index < len(cells) else ""
+            if not member_name and not member_email and not member_password:
                 continue
             if member_email and not member_name:
                 messages.append(f"Member {number} has an email but no name.")
+            if member_password and not member_email:
+                messages.append(f"Member {number} has a password but no email/login ID.")
             if member_email and not _is_valid_email(member_email):
                 messages.append(f"Member {number} email '{member_email}' is not a valid email.")
-            members.append({"name": member_name, "email": member_email})
+            members.append({
+                "number": number,
+                "name": member_name,
+                "email": member_email,
+                "password": member_password,
+            })
 
         identities = [(leader_email, "leader")]
         identities.extend((member["email"], "member") for member in members if member["email"])
@@ -239,6 +269,7 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
             "team_name": team_name,
             "leader_name": leader_name,
             "leader_email": leader_email,
+            "leader_password": leader_password,
             "members": members,
             "warnings": [],
             "status": "new",
@@ -293,13 +324,6 @@ def build_registration_credential_workbook(
         for row in _read_csv(content):
             sheet.append(row)
 
-    for column in range(1, sheet.max_column + 1):
-        if _norm_header(sheet.cell(row=1, column=column).value) in {
-            "leaderpassword", "leaderloginpassword", "temporarypassword",
-        }:
-            for row_number in range(2, sheet.max_row + 1):
-                sheet.cell(row=row_number, column=column, value="NOT EXPORTED")
-
     login_column = sheet.max_column + 1
     status_column = login_column + 1
     sheet.cell(row=1, column=login_column, value="Leader Login Email")
@@ -336,15 +360,10 @@ def build_registration_credential_csv(
     source_rows = _read_csv(content)
     if not source_rows:
         return b""
-    password_columns = {
-        index for index, header in enumerate(source_rows[0])
-        if _norm_header(header) in {"leaderpassword", "leaderloginpassword", "temporarypassword"}
-    }
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\r\n")
     writer.writerow([*source_rows[0], "Leader Login Email", "Credential Status"])
     for row_number, row in enumerate(source_rows[1:], start=2):
-        row = ["NOT EXPORTED" if index in password_columns else value for index, value in enumerate(row)]
         credential = leader_credentials.get(row_number, {"email": "", "status": ""})
         writer.writerow([*row, credential["email"], credential["status"]])
     return output.getvalue().encode("utf-8-sig")

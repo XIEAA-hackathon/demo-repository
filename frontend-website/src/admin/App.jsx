@@ -776,10 +776,10 @@ function RegistrationImport() {
   ] : [];
 
   return <section className="registration-import">
-    <div className="registration-import__intro"><div><h2>Registration import</h2><p>Import approved team and participant identities. Passwords are assigned separately by an Admin.</p></div><span className="registration-import__format">XLSX / CSV · MAX 10 MB</span></div>
+    <div className="registration-import__intro"><div><h2>Registration import</h2><p>Import approved team and participant identities with their initial passwords.</p></div><span className="registration-import__format">XLSX / CSV · MAX 10 MB</span></div>
     <div className="registration-import__grid">
       <section className="registration-upload-panel">
-        <div className="event-section-heading"><h3>Upload registration sheet</h3><p>The returned sheet contains login IDs and credential status, never passwords.</p><div className="round-inline-actions"><button className="secondary-button" onClick={() => void downloadDemo()}>Download demo CSV</button><button className="secondary-button" onClick={() => void downloadSample()}>Download blank sample</button><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>Download updated registration sheet</button></div></div>
+        <div className="event-section-heading"><h3>Upload registration sheet</h3><p>The immediate returned sheet preserves the uploaded passwords and adds login IDs and credential status. Later assignment exports do not expose passwords.</p><div className="round-inline-actions"><button className="secondary-button" onClick={() => void downloadDemo()}>Download demo CSV</button><button className="secondary-button" onClick={() => void downloadSample()}>Download blank sample</button><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>Download updated registration sheet</button></div></div>
         <label className={`registration-dropzone ${file ? "registration-dropzone--ready" : ""}`}>
           <input type="file" accept=".xlsx,.csv" onChange={(event) => { setFile(event.target.files?.[0] || null); setResult(null); setError(""); }} />
           <span className="registration-dropzone__mark" aria-hidden="true" />
@@ -792,7 +792,7 @@ function RegistrationImport() {
       </section>
 
       <section className="registration-result-panel" aria-live="polite">
-        <div className="event-section-heading"><h3>Import summary</h3><p>{result ? "Identity data committed. Review rejected rows, then set participant passwords below." : "Summary and account-status download will appear after a completed import."}</p></div>
+        <div className="event-section-heading"><h3>Import summary</h3><p>{result ? "Identity and supplied password data committed. Review rejected rows or manage participant passwords below." : "Summary and account-status download will appear after a completed import."}</p></div>
         {result ? <>
           <dl className="registration-summary">{summaryRows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
           <div className="registration-errors"><h4>Errors</h4>{result.errors.length ? <ul>{result.errors.map((item, index) => <li key={`${item.row_number}-${index}`}><strong>Row {item.row_number}</strong><span>{item.message}</span></li>)}</ul> : <p>No row-level errors.</p>}</div>

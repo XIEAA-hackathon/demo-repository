@@ -56,8 +56,8 @@ _EXPORT_DIRECTORY = Path(tempfile.gettempdir()) / "bid_to_build_credential_expor
 @router.get("/admin/registration/sample.csv")
 def registration_sample(current_user=Depends(get_current_active_admin)):
     sample = (
-        "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email,Member 2 Name,Member 2 Email\r\n"
-        "Demo Team,Demo Leader,leader@example.com,Member One,member1@example.com,Member Two,member2@example.com\r\n"
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password,Member 2 Name,Member 2 Email,Member 2 Password\r\n"
+        "Demo Team,Demo Leader,leader@example.com,DemoLeader@123,Member One,member1@example.com,DemoMember1@123,Member Two,member2@example.com,DemoMember2@123\r\n"
     )
     return Response(sample, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=registration-import-sample.csv"})
 
@@ -65,9 +65,9 @@ def registration_sample(current_user=Depends(get_current_active_admin)):
 @router.get("/admin/registration/demo.csv")
 def registration_demo(current_user=Depends(get_current_active_admin)):
     sample = (
-        "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email,Member 2 Name,Member 2 Email\r\n"
-        "Team Alpha,Alice Sharma,alice@example.com,Bob Kumar,bob@example.com,Carol Singh,carol@example.com\r\n"
-        "Team Beta,David Rao,david@example.com,Esha Patel,esha@example.com,Farhan Ali,farhan@example.com\r\n"
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password,Member 2 Name,Member 2 Email,Member 2 Password\r\n"
+        "Team Alpha,Alice Sharma,alice@example.com,Alpha@123,Bob Kumar,bob@example.com,AlphaMember1@123,Carol Singh,carol@example.com,AlphaMember2@123\r\n"
+        "Team Beta,David Rao,david@example.com,Beta@123,Esha Patel,esha@example.com,BetaMember1@123,Farhan Ali,farhan@example.com,BetaMember2@123\r\n"
     )
     return Response(sample, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=bid-to-build-demo-registration.csv"})
 
@@ -501,13 +501,20 @@ def _disabled_password_hash() -> str:
     return get_password_hash(secrets.token_urlsafe(48))
 
 
+def _participant_password_error(password: str) -> str | None:
+    if len(password.encode("utf-8")) > 72:
+        return "Password must be 72 bytes or fewer."
+    return None
+
+
 def _validate_participant_password(password: str, confirmation: str) -> None:
     if not password:
         raise HTTPException(status_code=422, detail="Password is required.")
     if password != confirmation:
         raise HTTPException(status_code=422, detail="Password confirmation does not match.")
-    if len(password.encode("utf-8")) > 72:
-        raise HTTPException(status_code=422, detail="Password must be 72 bytes or fewer.")
+    password_error = _participant_password_error(password)
+    if password_error:
+        raise HTTPException(status_code=422, detail=password_error)
 
 
 def _participant_account_payload(db: Session, account: User) -> dict:
@@ -529,7 +536,7 @@ async def import_registrations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin),
 ):
-    """Import registration identities without generating or changing passwords."""
+    """Import participant identities and hash passwords supplied by the Admin."""
     filename = file.filename or "registrations.xlsx"
     _validate_registration_filename(filename)
     content = await file.read()
@@ -556,12 +563,29 @@ async def import_registrations(
             row_messages.append(f"Leader email '{row['leader_email']}' already belongs to another team.")
         if team and team.leader_id and (not leader or team.leader_id != leader.id):
             row_messages.append(f"Team '{row['team_name']}' already has a different leader account.")
+        leader_password = row.get("leader_password") or ""
+        if not leader and not leader_password:
+            row_messages.append("Leader Password is required for a new participant account.")
+        elif leader_password:
+            password_error = _participant_password_error(leader_password)
+            if password_error:
+                row_messages.append(f"Leader Password: {password_error}")
 
         for member in row["members"]:
             member_email = (member.get("email") or "").strip().lower()
             if not member_email:
                 continue
             member_user = _user_by_login(db, member_email)
+            member_password = member.get("password") or ""
+            member_number = member.get("number") or ""
+            if not member_user and not member_password:
+                row_messages.append(
+                    f"Member {member_number} Password is required for a new participant account."
+                )
+            elif member_password:
+                password_error = _participant_password_error(member_password)
+                if password_error:
+                    row_messages.append(f"Member {member_number} Password: {password_error}")
             if member_user and (not team or member_user.team_id != team.id):
                 row_messages.append(f"Member email '{member_email}' belongs to another account or team.")
             member_record = db.query(Member).filter(func.lower(Member.email) == member_email).first()
@@ -612,18 +636,23 @@ async def import_registrations(
                 ))
 
             leader_email = row["leader_email"].strip().lower()
+            leader_password = row.get("leader_password") or ""
             leader = _user_by_login(db, leader_email)
             if leader:
                 existing_leaders += 1
+                if leader_password:
+                    leader.password_hash = get_password_hash(leader_password)
+                    leader.credentials_active = True
+                    leader.session_id = None
             else:
                 leader = User(
                     name=row["leader_name"],
                     email=leader_email,
-                    password_hash=_disabled_password_hash(),
+                    password_hash=get_password_hash(leader_password),
                     role="leader",
                     team_id=team.id,
                     account_source="IMPORTED",
-                    credentials_active=False,
+                    credentials_active=True,
                 )
                 db.add(leader)
                 db.flush()
@@ -642,17 +671,21 @@ async def import_registrations(
                 if not member_name:
                     continue
                 member_email = (member.get("email") or "").strip().lower() or None
+                member_password = member.get("password") or ""
                 login_id = member_email if member_email and _is_valid_email(member_email) else _participant_id(db, team.id, position)
                 member_user = _user_by_login(db, login_id)
                 if not member_user:
                     member_user = User(
                         name=member_name,
                         email=login_id,
-                        password_hash=_disabled_password_hash(),
+                        password_hash=(
+                            get_password_hash(member_password)
+                            if member_password else _disabled_password_hash()
+                        ),
                         role="member",
                         team_id=team.id,
                         account_source="IMPORTED",
-                        credentials_active=False,
+                        credentials_active=bool(member_password),
                     )
                     db.add(member_user)
                     db.flush()
@@ -661,6 +694,10 @@ async def import_registrations(
                     member_user.name = member_name
                     member_user.role = "member"
                     member_user.team_id = team.id
+                    if member_password:
+                        member_user.password_hash = get_password_hash(member_password)
+                        member_user.credentials_active = True
+                        member_user.session_id = None
                 db.add(Member(team_id=team.id, member_name=member_name, email=login_id))
                 members_imported += 1
 
@@ -674,7 +711,10 @@ async def import_registrations(
                 team_name=row["team_name"],
                 leader_name=row["leader_name"],
                 leader_email=leader_email,
-                members_json=json.dumps(row["members"]),
+                members_json=json.dumps([
+                    {key: value for key, value in member.items() if key != "password"}
+                    for member in row["members"]
+                ]),
                 status="committed",
                 warnings_json=json.dumps(row.get("warnings") or []),
                 source_values_json=json.dumps(row.get("source_values") or []),
@@ -922,6 +962,7 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], st
     password_indexes = [
         index for index, normalized in enumerate(normalized_headers)
         if normalized in {"leaderpassword", "leaderloginpassword", "temporarypassword"}
+        or normalized.endswith("password")
     ]
 
     output_rows: list[list[str]] = []
