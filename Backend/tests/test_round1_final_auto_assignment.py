@@ -8,6 +8,7 @@ from app.core.database import Base
 from app.models.models import Bid, EventConfig, GameConfig, ProblemStatement, RoundControl, Team, WalletTransaction
 from app.services.round1_auto_assignment import (
     auto_assign_final_problem,
+    final_auto_assignment_summary,
     final_problem_price,
     update_round1_winning_bid_aggregate,
 )
@@ -41,7 +42,7 @@ def _seed_final_problem_case(db, remaining_count: int, *, prices: list[int] | No
     return control.id, final.id
 
 
-@pytest.mark.parametrize("remaining_count", [5, 3, 7])
+@pytest.mark.parametrize("remaining_count", [5, 4, 3, 2, 1, 7])
 def test_final_problem_assigns_any_number_of_remaining_teams_at_running_average(db, remaining_count):
     control_id, final_id = _seed_final_problem_case(db, remaining_count, prices=[100, 200, 300, 400])
     result = auto_assign_final_problem(db, db.get(RoundControl, control_id))
@@ -60,6 +61,34 @@ def test_final_problem_assigns_any_number_of_remaining_teams_at_running_average(
     assert control.round1_winning_bid_count == 4
     assert control.status == "READY" and control.ended is not True and control.current_problem_id is None
     assert db.query(GameConfig).one().state == "ROUND1_RESULT"
+
+
+def test_three_team_preview_and_confirmation_use_aggregate_without_mutating_it(db):
+    prices = [
+        100, 200, 300, 400, 500,
+        200, 300, 400, 500, 600,
+        300, 400, 500, 600, 700,
+    ]
+    control_id, final_id = _seed_final_problem_case(db, 3, prices=prices)
+    control = db.get(RoundControl, control_id)
+
+    preview = final_auto_assignment_summary(db, control)
+    assert preview["status"] == "PENDING"
+    assert preview["team_count"] == 3
+    assert preview["round1_winning_bid_sum"] == 6000
+    assert preview["round1_winning_bid_count"] == 15
+    assert preview["suggested_deduction"] == 400
+
+    result = auto_assign_final_problem(db, control)
+    db.commit()
+
+    assert result["status"] == "COMPLETED"
+    assert result["team_count"] == 3
+    assert result["deduction_per_team"] == 400
+    teams = db.query(Team).filter(Team.team_name.like("Remaining %")).all()
+    assert all(team.round1_problem_id == final_id and team.coins == 600 for team in teams)
+    db.refresh(control)
+    assert (control.round1_winning_bid_sum, control.round1_winning_bid_count) == (6000, 15)
 
 
 def test_final_problem_uses_base_price_and_caps_charge_at_balance(db):

@@ -377,16 +377,21 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
       </div>}
       {!isWildcard && <button className="danger-link round-end" disabled={data.ended || working} onClick={() => window.confirm("End Round 1? No further Round 1 selection or bidding will be allowed.") && run(endRoundOne, "Round 1 ended. Wildcard can now be opened.")}>{data.ended ? "Round 1 ended" : "End Round 1"}</button>}
     </section>
-    {!isWildcard && finalAuto && <section className="round-auto-allotment">
-      <div className="round-auto-allotment__heading"><span className="eyebrow">LAST PROBLEM AUTO ALLOTMENT</span><h3>{finalAuto.status === "COMPLETED" ? "Final allotment completed" : "Confirm final allotment"}</h3></div>
-      <dl className="round-auto-allotment__grid">
-        <div><dt>Final Problem</dt><dd>#{finalAuto.problem.problem_number} — {finalAuto.problem.title}</dd></div>
-        <div><dt>Remaining Teams</dt><dd>{finalAuto.team_count}</dd></div>
-        <div><dt>Suggested Deduction</dt><dd>{finalAuto.suggested_deduction} coins</dd></div>
-        <div><dt>Deduction Per Team</dt><dd>{finalAuto.status === "PENDING" ? <input aria-label="Deduction per team" type="number" min="0" step="1" value={autoDeduction} onChange={(event) => setAutoDeduction(event.target.value)} /> : `${finalAuto.deduction_per_team} coins`}</dd></div>
-        <div><dt>Completed Auctions</dt><dd>{finalAuto.completed_auctions}</dd></div>
-      </dl>
-      {finalAuto.status === "PENDING" ? <button className="primary-button" disabled={working || autoDeduction === ""} onClick={() => setAutoConfirming(true)}>CONFIRM AUTO ALLOTMENT</button> : <div className="round-auto-allotment__teams"><strong>Assigned teams</strong><span>{finalAuto.teams.map((team) => team.team_name).join(", ")}</span></div>}
+    {!isWildcard && <section className="round-auto-allotment">
+      {finalAuto ? <>
+        <div className="round-auto-allotment__heading"><span className="eyebrow">LAST PROBLEM AUTO ALLOTMENT</span><h3>{finalAuto.status === "COMPLETED" ? "Final allotment completed" : "Confirm final allotment"}</h3></div>
+        <dl className="round-auto-allotment__grid">
+          <div><dt>Final Problem</dt><dd>#{finalAuto.problem.problem_number} — {finalAuto.problem.title}</dd></div>
+          <div><dt>Remaining Teams</dt><dd>{finalAuto.team_count}<span className="round-auto-allotment__team-names">{finalAuto.teams.map((team) => team.team_name).join(", ")}</span></dd></div>
+          <div><dt>Suggested Deduction</dt><dd>{finalAuto.suggested_deduction} coins</dd></div>
+          <div><dt>Deduction Per Team</dt><dd>{finalAuto.status === "PENDING" ? <input aria-label="Deduction per team" type="number" min="0" step="1" value={autoDeduction} onChange={(event) => setAutoDeduction(event.target.value)} /> : `${finalAuto.deduction_per_team} coins`}</dd></div>
+          <div><dt>Completed Auctions</dt><dd>{finalAuto.completed_auctions}</dd></div>
+        </dl>
+        {finalAuto.status === "PENDING" ? <button className="primary-button" disabled={working || autoDeduction === ""} onClick={() => setAutoConfirming(true)}>CONFIRM AUTO ALLOTMENT</button> : <div className="round-auto-allotment__teams"><strong>Assigned teams</strong><span>{finalAuto.teams.map((team) => team.team_name).join(", ")}</span></div>}
+      </> : <>
+        <div className="round-auto-allotment__heading"><span className="eyebrow">LAST PROBLEM AUTO ALLOTMENT</span><h3>Available at the final Round 1 problem</h3></div>
+        <div className="round-empty"><strong>Waiting for the final allotment state</strong><p>The confirmation grid becomes available when exactly one unused Round 1 problem and at least one eligible unassigned team remain.</p></div>
+      </>}
     </section>}
     {!isWildcard && <div className="round-export-action"><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>DOWNLOAD ROUND 1 ASSIGNMENTS</button></div>}
     {autoConfirming && finalAuto?.status === "PENDING" && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="auto-allotment-title"><h3 id="auto-allotment-title">Confirm final problem auto allotment?</h3><p>Assign Problem #{finalAuto.problem.problem_number} — {finalAuto.problem.title} to all {finalAuto.team_count} remaining teams and deduct up to {autoDeduction} coins from each team?</p><div><button className="secondary-button" disabled={working} onClick={() => setAutoConfirming(false)}>Cancel</button><button className="primary-button" disabled={working} onClick={() => void confirmAutoAllotment()}>{working ? "Assigning…" : "Confirm Auto Allotment"}</button></div></section></div>}
