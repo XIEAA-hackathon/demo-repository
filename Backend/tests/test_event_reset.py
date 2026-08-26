@@ -147,7 +147,11 @@ def test_event_reset_is_allowed_from_every_active_stage(client, admin_headers, d
     assert db.query(Bid).count() == 0
     assert db.query(Submission).count() == 0
     assert db.query(FinalResult).count() == 0
-    assert db.query(Team).filter(Team.is_system_team.is_(False)).count() == 0
+    preserved_team = db.query(Team).filter(Team.id == team.id).one()
+    preserved_leader = db.query(User).filter(User.id == leader.id).one()
+    assert preserved_team.ps_id is None and preserved_team.round1_problem_id is None
+    assert preserved_team.coins == db.query(EventConfig).first().starting_coins
+    assert preserved_leader.team_id == preserved_team.id
     controls = {control.round_type: control for control in db.query(RoundControl).all()}
     assert controls["ROUND1"].status == "IDLE"
     assert controls["ROUND1"].current_problem_id is None
@@ -157,7 +161,7 @@ def test_event_reset_is_allowed_from_every_active_stage(client, admin_headers, d
     assert controls["WILDCARD"].selection_started_at is None
     assert controls["WILDCARD"].selection_ends_at is None
     assert controls["WILDCARD"].selection_duration_seconds is None
-    assert client.get("/participant/dashboard", headers=participant_headers).status_code == 401
+    assert client.get("/participant/dashboard", headers=participant_headers).status_code == 200
 
 
 def test_event_reset_rolls_back_if_any_step_fails(client, admin_headers, db, monkeypatch):
@@ -252,22 +256,23 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
     assert reset.status_code == 200, reset.text
     body = reset.json()
     assert body["status"] == "reset_complete"
-    assert body["deleted"]["teams"] == 2
-    assert body["deleted"]["participant_users"] == 2
+    assert body["deleted"]["teams"] == 0
+    assert body["deleted"]["participant_users"] == 0
     assert body["deleted"]["round1_problems"] == 1
     assert body["deleted"]["wildcard_problems"] == 1
     assert body["event_state"] == "WAITING"
 
     db.expire_all()
-    assert db.query(Team).filter(Team.is_system_team.is_(False)).count() == 0
-    assert db.query(User).filter(User.role.in_(("leader", "member")), User.is_system_account.is_(False)).count() == 0
+    assert db.query(Team).filter(Team.is_system_team.is_(False)).count() == 2
+    assert db.query(User).filter(User.role.in_(("leader", "member")), User.is_system_account.is_(False)).count() == 2
     assert db.query(ProblemStatement).count() == 0
     assert db.query(Bid).count() == 0
     assert db.query(Wildcard).count() == 0
     assert db.query(WildcardBid).count() == 0
     assert db.query(WildcardSelectionPool).count() == 0
     assert db.query(ExchangeRequest).count() == 0
-    assert db.query(WalletTransaction).count() == 0
+    assert db.query(WalletTransaction).count() == 3
+    assert all(row.transaction_type == "INITIAL_ALLOCATION" for row in db.query(WalletTransaction).all())
     assert db.query(Submission).count() == 0
     assert db.query(EventActivityLog).count() == 1
     controls = {row.round_type: row for row in db.query(RoundControl).all()}
@@ -282,7 +287,7 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
     assert client.get("/admin/state", headers=demo_admin_headers).status_code == 200
     assert _login(client, system_leader.email, settings.DEMO_LEADER_PASSWORD)
     assert _login(client, settings.DEMO_ADMIN_EMAIL, settings.DEMO_ADMIN_PASSWORD)
-    assert client.post("/login", data={"username": imported_alpha_email, "password": "temp-pass"}).status_code == 401
+    assert client.post("/login", data={"username": imported_alpha_email, "password": "temp-pass"}).status_code == 200
     assert db.query(Team).filter(Team.id == system_team.id, Team.is_system_team.is_(True)).count() == 1
     assert db.query(User).filter(User.id == system_leader.id, User.is_system_account.is_(True)).count() == 1
     assert client.get("/leaderboard/round-1", headers=display_headers).status_code == 200
@@ -300,14 +305,19 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
     )
     assert imported.status_code == 200, imported.text
     assert imported.json()["teams_created"] == 1
-    download = client.get(
-        f"/admin/registration/import/download/{imported.json()['download_token']}",
-        headers=_login(client, settings.DEMO_ADMIN_EMAIL, settings.DEMO_ADMIN_PASSWORD),
-    )
-    assert download.status_code == 200
-    row = next(csv.DictReader(io.StringIO(download.content.decode("utf-8-sig"))))
-    generated = client.post(
+    account = db.query(User).filter(User.email == "real.leader@event.test").one()
+    assert account.credentials_active is False
+    assert client.post(
         "/login",
-        data={"username": row["Leader Login Email"], "password": row["Leader Password"]},
+        data={"username": account.email, "password": "NoGeneratedPassword@123"},
+    ).status_code == 401
+    assigned = client.put(
+        f"/admin/registration/participant-accounts/{account.id}/password",
+        headers=_login(client, settings.DEMO_ADMIN_EMAIL, settings.DEMO_ADMIN_PASSWORD),
+        json={"new_password": "ManualPassword@123", "confirm_password": "ManualPassword@123"},
     )
-    assert generated.status_code == 200
+    assert assigned.status_code == 200
+    assert client.post(
+        "/login",
+        data={"username": account.email, "password": "ManualPassword@123"},
+    ).status_code == 200

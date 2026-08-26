@@ -279,7 +279,7 @@ def build_registration_credential_workbook(
     content: bytes,
     leader_credentials: Dict[int, Dict[str, str]],
 ) -> bytes:
-    """Preserve the uploaded sheet and append one-time leader credentials."""
+    """Preserve the uploaded sheet and append login plus credential status."""
     from copy import copy
     from io import BytesIO
     from openpyxl import Workbook, load_workbook
@@ -293,14 +293,21 @@ def build_registration_credential_workbook(
         for row in _read_csv(content):
             sheet.append(row)
 
+    for column in range(1, sheet.max_column + 1):
+        if _norm_header(sheet.cell(row=1, column=column).value) in {
+            "leaderpassword", "leaderloginpassword", "temporarypassword",
+        }:
+            for row_number in range(2, sheet.max_row + 1):
+                sheet.cell(row=row_number, column=column, value="NOT EXPORTED")
+
     login_column = sheet.max_column + 1
-    password_column = login_column + 1
+    status_column = login_column + 1
     sheet.cell(row=1, column=login_column, value="Leader Login Email")
-    sheet.cell(row=1, column=password_column, value="Leader Password")
+    sheet.cell(row=1, column=status_column, value="Credential Status")
 
     if login_column > 1:
         source_header = sheet.cell(row=1, column=login_column - 1)
-        for column in (login_column, password_column):
+        for column in (login_column, status_column):
             target = sheet.cell(row=1, column=column)
             target._style = copy(source_header._style)
             target.font = copy(source_header.font)
@@ -311,10 +318,10 @@ def build_registration_credential_workbook(
 
     for row_number, credential in leader_credentials.items():
         sheet.cell(row=row_number, column=login_column, value=credential["email"])
-        sheet.cell(row=row_number, column=password_column, value=credential["password"])
+        sheet.cell(row=row_number, column=status_column, value=credential["status"])
 
     sheet.column_dimensions[sheet.cell(row=1, column=login_column).column_letter].width = 34
-    sheet.column_dimensions[sheet.cell(row=1, column=password_column).column_letter].width = 24
+    sheet.column_dimensions[sheet.cell(row=1, column=status_column).column_letter].width = 24
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -325,16 +332,21 @@ def build_registration_credential_csv(
     content: bytes,
     leader_credentials: Dict[int, Dict[str, str]],
 ) -> bytes:
-    """Preserve CSV cell values and append one-time leader credentials."""
+    """Preserve CSV cell values and append login plus credential status."""
     source_rows = _read_csv(content)
     if not source_rows:
         return b""
+    password_columns = {
+        index for index, header in enumerate(source_rows[0])
+        if _norm_header(header) in {"leaderpassword", "leaderloginpassword", "temporarypassword"}
+    }
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\r\n")
-    writer.writerow([*source_rows[0], "Leader Login Email", "Leader Password"])
+    writer.writerow([*source_rows[0], "Leader Login Email", "Credential Status"])
     for row_number, row in enumerate(source_rows[1:], start=2):
-        credential = leader_credentials.get(row_number, {"email": "", "password": ""})
-        writer.writerow([*row, credential["email"], credential["password"]])
+        row = ["NOT EXPORTED" if index in password_columns else value for index, value in enumerate(row)]
+        credential = leader_credentials.get(row_number, {"email": "", "status": ""})
+        writer.writerow([*row, credential["email"], credential["status"]])
     return output.getvalue().encode("utf-8-sig")
 
 
@@ -382,18 +394,3 @@ def build_registration_assignment_workbook(headers: List[str], rows: List[List[A
     workbook.save(output)
     workbook.close()
     return output.getvalue()
-
-def generate_credentials(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """Produce one credential per leader account from parsed rows (passwords NOT persisted)."""
-    credentials = []
-    for row in rows:
-        password = _default_password()
-        credentials.append({
-            "team_name": row["team_name"],
-            "name": row["leader_name"],
-            "email": row["leader_email"],
-            "username": row["leader_email"],
-            "temporary_password": password,
-            "role": "leader",
-        })
-    return credentials

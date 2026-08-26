@@ -54,27 +54,15 @@ def reset_imported_participant_credentials(db: Session, *, actor: User) -> dict:
 
 
 def reset_event_and_imported_participants(db: Session, *, actor: User, action: str) -> dict:
-    """Stage a complete event reset in the caller's database transaction.
-
-    Imported participants, problem uploads, and their registration records are
-    removed to preserve the existing Reset Event contract. Marked system/demo
-    accounts and teams, plus unrelated global EventConfig values, are retained.
-    """
+    """Stage an event-only reset without touching account credentials or identities."""
     event = get_or_create_event_config(db)
     game = get_or_create_game_config(db)
-    non_system_teams = db.query(Team).filter(Team.is_system_team.is_(False)).all()
-    non_system_team_ids = [team.id for team in non_system_teams]
-    participant_users = db.query(User).filter(
-        User.role.in_(("leader", "member")),
-        User.is_system_account.is_(False),
-    ).all()
-    participant_user_ids = [user.id for user in participant_users]
 
     deleted = {
-        "teams": len(non_system_teams),
-        "participant_users": len(participant_users),
-        "team_members": db.query(Member).filter(Member.team_id.in_(non_system_team_ids)).count() if non_system_team_ids else 0,
-        "registration_imports": db.query(RegistrationImport).count(),
+        "teams": 0,
+        "participant_users": 0,
+        "team_members": 0,
+        "registration_imports": 0,
         "round1_problems": db.query(ProblemStatement).filter(ProblemStatement.round == 1).count(),
         "wildcard_problems": db.query(ProblemStatement).filter(ProblemStatement.round == 2).count(),
         "bids": db.query(Bid).count(),
@@ -88,7 +76,9 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
         "activity_entries": db.query(EventActivityLog).count(),
     }
 
-    # Delete dependent event records before teams, users, and problems.
+    # Delete dependent event records before uploaded problems. Registration,
+    # teams, users, password hashes, credential state, and sessions are identity
+    # data and deliberately remain outside this transaction's reset scope.
     for model in (
         FinalResult,
         Submission,
@@ -100,11 +90,9 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
         WalletTransaction,
     ):
         db.query(model).delete(synchronize_session=False)
-    db.query(RegistrationImportRow).delete(synchronize_session=False)
-    db.query(RegistrationImport).delete(synchronize_session=False)
     db.query(EventActivityLog).delete(synchronize_session=False)
 
-    for team in db.query(Team).filter(Team.is_system_team.is_(True)).all():
+    for team in db.query(Team).all():
         team.coins = event.starting_coins
         team.ps_id = None
         team.round1_problem_id = None
@@ -112,16 +100,12 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
         team.round1_assignment_type = None
         team.round1_assignment_cost = None
         team.is_approved = True
-
-    if non_system_team_ids:
-        db.query(Member).filter(Member.team_id.in_(non_system_team_ids)).delete(synchronize_session=False)
-        db.query(User).filter(User.team_id.in_(non_system_team_ids)).update(
-            {User.team_id: None, User.session_id: None},
-            synchronize_session=False,
-        )
-        db.query(Team).filter(Team.id.in_(non_system_team_ids)).delete(synchronize_session=False)
-    if participant_user_ids:
-        db.query(User).filter(User.id.in_(participant_user_ids)).delete(synchronize_session=False)
+        db.add(WalletTransaction(
+            team_id=team.id,
+            transaction_type="INITIAL_ALLOCATION",
+            amount=event.starting_coins,
+            description="Initial AlumniCoins after event reset",
+        ))
 
     db.query(RoundControl).delete(synchronize_session=False)
     db.query(ProblemStatement).delete(synchronize_session=False)
@@ -150,8 +134,8 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
         action,
         actor=actor,
         metadata={
-            "deleted_teams": deleted["teams"],
-            "deleted_participant_users": deleted["participant_users"],
+            "preserved_teams": db.query(Team).count(),
+            "authentication_records_touched": False,
         },
     )
     return deleted

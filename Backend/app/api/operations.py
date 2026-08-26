@@ -187,7 +187,7 @@ async def reset_event_data(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin),
 ):
-    """Transactionally reset any event state while preserving system access."""
+    """Transactionally reset event-scoped data while preserving every account."""
     if payload.confirmation != "RESET EVENT":
         raise HTTPException(status_code=422, detail="Enter RESET EVENT to confirm the event data reset.")
 
@@ -214,9 +214,11 @@ async def reset_event_data(
             "system_accounts": db.query(User).filter(User.is_system_account.is_(True)).count(),
             "system_teams": db.query(Team).filter(Team.is_system_team.is_(True)).count(),
             "admin_accounts": db.query(User).filter(User.role == "admin").count(),
+            "participant_accounts": db.query(User).filter(User.role.in_(("leader", "member"))).count(),
+            "teams": db.query(Team).count(),
         },
         "event_state": "WAITING",
-        "next_action": "registration_import",
+        "next_action": "round1_setup",
     }
 
 

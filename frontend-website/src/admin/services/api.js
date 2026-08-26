@@ -98,6 +98,8 @@ export const importRegistrations = (file) => {
   return request("/admin/registration/import", { method: "POST", body });
 };
 export const resetRegistrationCredentials = (confirmation) => request("/admin/registration/credentials/reset", { method: "POST", body: JSON.stringify({ confirmation }) });
+export const getImportedParticipantAccounts = () => request("/admin/registration/participant-accounts");
+export const setImportedParticipantPassword = (userId, payload) => request(`/admin/registration/participant-accounts/${userId}/password`, { method: "PUT", body: JSON.stringify(payload) });
 export const downloadRegistrationCredentials = (token) => request(`/admin/registration/import/download/${encodeURIComponent(token)}`, { responseType: "blob" });
 export const downloadRegistrationAssignments = () => request("/admin/registration/assignments", { responseType: "blob" });
 export const downloadRoundOneAssignments = () => request("/admin/rounds/round-1/assignments/export", { responseType: "blob" });

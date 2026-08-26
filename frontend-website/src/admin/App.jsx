@@ -5,7 +5,7 @@ import {
   getAdminConfig, getAdminState, getBidHistory, getLeaderboard,
   getProblemStatements, getTeamCredentials, getTeams, hasToken, logout, pauseTimer,
   importRegistrations, removeTime, resetParticipantPassword, resumeTimer, setProblemVisibility,
-  resetRegistrationCredentials,
+  resetRegistrationCredentials, getImportedParticipantAccounts, setImportedParticipantPassword,
   updateAdminConfig, createTeamCredentials, getRoundControl, importRoundProblems, downloadRoundProblemSample,
   downloadRoundOneAssignments, downloadWildcardAssignments,
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
@@ -563,7 +563,7 @@ function RecoveryPage({ onGlobalSync, onNavigate }) {
   const load = useCallback(async () => { try { setData(await getRecoveryState()); setError(""); return true; } catch (cause) { setError(cause.message || "Recovery state could not be loaded."); return false; } }, []);
   useEffect(() => { void load(); const timer = setInterval(() => { if (!document.hidden) void load(); }, 5000); return () => clearInterval(timer); }, [load]);
   const run = async (operation, success) => { setWorking(true); setError(""); setNotice(""); try { const result = await operation(); setData(result?.current_phase ? result : await getRecoveryState()); setNotice(success); await onGlobalSync(); } catch (cause) { setError(cause.message || "Recovery action failed."); await load(); } finally { setWorking(false); } };
-  const resetEvent = async () => { setWorking(true); setError(""); setNotice(""); try { const result = await resetEventData(eventResetConfirmation); setResetSummary(result); setEventResetConfirmation(""); setData(await getRecoveryState()); setNotice("Event data reset successfully. The system is ready for a new participant import."); await onGlobalSync(); } catch (cause) { setError(cause.message || "Event data reset failed."); await load(); } finally { setWorking(false); } };
+  const resetEvent = async () => { setWorking(true); setError(""); setNotice(""); try { const result = await resetEventData(eventResetConfirmation); setResetSummary(result); setEventResetConfirmation(""); setData(await getRecoveryState()); setNotice("Event data reset successfully. Participant accounts and passwords were preserved."); await onGlobalSync(); } catch (cause) { setError(cause.message || "Event data reset failed."); await load(); } finally { setWorking(false); } };
   const resetCredentials = async () => { setWorking(true); setError(""); setNotice(""); try { const result = await resetRegistrationCredentials(credentialResetConfirmation); setCredentialResetSummary(result); setCredentialResetConfirmation(""); setData(await getRecoveryState()); setNotice("Imported participant credentials reset. Event data was preserved."); await onGlobalSync(); } catch (cause) { setError(cause.message || "Participant credential reset failed."); await load(); } finally { setWorking(false); } };
   if (!data) return <div className="loading-screen"><div className="loader" />Loading recovery state…</div>;
   const fields = [
@@ -574,7 +574,7 @@ function RecoveryPage({ onGlobalSync, onNavigate }) {
     ["Wildcard auction", data.wildcard_auction_state], ["Selection rank", data.wildcard_selection_rank ?? "None"],
     ["Submissions", data.submission_state], ["Last state update", data.last_state_update ? new Date(data.last_state_update).toLocaleString() : "Not recorded"],
   ];
-  return <section className="operations-page"><header><div><h2>Safe event recovery</h2><p>Restore and re-synchronize the authoritative server state. Completed stages cannot be reopened here.</p></div></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}<dl className="recovery-grid">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><div className="recovery-actions"><button className="secondary-button" disabled={working || !data.timer.paused} onClick={() => run(resumeRecoveryTimer, "Current timer resumed from server state.")}>Resume current timer</button><button className="secondary-button" disabled={working} onClick={() => run(reloadRecoveryState, "Server state reloaded.")}>Reload server state</button><button className="secondary-button" disabled={working} onClick={() => run(resyncClients, "Connected clients were asked to re-sync.")}>Re-sync clients</button><button className="secondary-button" disabled={working} onClick={() => run(retryCurrentTransition, "Current transition re-evaluated safely.")}>Retry current transition</button></div><section className="event-data-reset"><div><strong>Reset event data</strong><h3>Prepare a clean event</h3><p>Permanently removes imported teams and participant accounts, problem uploads, bids, assignments, Wildcard progress, submissions, timers, leaderboards, registration imports, and event activity. Built-in Admin/demo system accounts and unrelated global configuration are preserved; Round 1 and Wildcard base prices return to their defaults.</p><p>This cannot be undone. Reset is available at every event stage.</p></div><label>Type RESET EVENT<input value={eventResetConfirmation} onChange={(event) => setEventResetConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || eventResetConfirmation !== "RESET EVENT"} onClick={() => window.confirm("Are you absolutely sure? This permanently removes all current event and imported participant data.") && void resetEvent()}>Reset event data</button>{resetSummary && <div className="reset-summary"><strong>Event data reset complete</strong><span>Imported teams: {resetSummary.deleted.teams} removed · Participants: {resetSummary.deleted.participant_users} removed · Problems: {resetSummary.deleted.round1_problems + resetSummary.deleted.wildcard_problems} removed · Bids: {resetSummary.deleted.bids} removed · Submissions: {resetSummary.deleted.submissions} removed</span><button className="primary-button" onClick={() => onNavigate("imports")}>Go to registration import</button></div>}</section><section className="event-data-reset"><div><strong>Reset credentials</strong><h3>Invalidate imported participant access</h3><p>Invalidates imported participant passwords and active sessions. Teams, assignments, bids, Wildcard progress, submissions, timers, and the current event stage are preserved.</p><p>Re-import registration data to generate fresh participant passwords. Permanent Admin, demo, and leaderboard display accounts remain available.</p></div><label>Type RESET CREDENTIALS<input value={credentialResetConfirmation} onChange={(event) => setCredentialResetConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || credentialResetConfirmation !== "RESET CREDENTIALS"} onClick={() => window.confirm("Invalidate imported participant credentials? The current event and all competition data will be preserved.") && void resetCredentials()}>Reset participant credentials</button>{credentialResetSummary && <div className="reset-summary"><strong>Credential reset complete</strong><span>Imported participant accounts reset: {credentialResetSummary.reset.participant_accounts} · Teams and event data preserved</span><button className="primary-button" onClick={() => onNavigate("imports")}>Go to registration import</button></div>}</section>{data.reset_enabled && <section className="development-reset"><div><strong>Development only</strong><h3>Force-reset rehearsal state</h3><p>Available only when ENABLE_EVENT_RESET is enabled. This keeps registrations and imported problems.</p></div><label>Type RESET DEVELOPMENT EVENT<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || confirmation !== "RESET DEVELOPMENT EVENT"} onClick={() => window.confirm("Reset this development rehearsal? This cannot be undone.") && run(() => developmentReset(confirmation), "Development rehearsal reset completed.")}>Reset development event</button></section>}</section>;
+  return <section className="operations-page"><header><div><h2>Safe event recovery</h2><p>Restore and re-synchronize the authoritative server state. Completed stages cannot be reopened here.</p></div></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}<dl className="recovery-grid">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><div className="recovery-actions"><button className="secondary-button" disabled={working || !data.timer.paused} onClick={() => run(resumeRecoveryTimer, "Current timer resumed from server state.")}>Resume current timer</button><button className="secondary-button" disabled={working} onClick={() => run(reloadRecoveryState, "Server state reloaded.")}>Reload server state</button><button className="secondary-button" disabled={working} onClick={() => run(resyncClients, "Connected clients were asked to re-sync.")}>Re-sync clients</button><button className="secondary-button" disabled={working} onClick={() => run(retryCurrentTransition, "Current transition re-evaluated safely.")}>Retry current transition</button></div><section className="event-data-reset"><div><strong>Reset event data</strong><h3>Prepare a clean event</h3><p>Permanently removes problem uploads, bids, assignments, Wildcard progress, submissions, timers, results, leaderboard event state, and event activity. Team registration, participant accounts, and every account password are preserved.</p><p>This cannot be undone. Reset is available at every event stage.</p></div><label>Type RESET EVENT<input value={eventResetConfirmation} onChange={(event) => setEventResetConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || eventResetConfirmation !== "RESET EVENT"} onClick={() => window.confirm("Reset current event state and competition data? Team registration and all account credentials will be preserved.") && void resetEvent()}>Reset event data</button>{resetSummary && <div className="reset-summary"><strong>Event data reset complete</strong><span>Teams preserved: {resetSummary.preserved.teams} · Participant accounts preserved: {resetSummary.preserved.participant_accounts} · Problems removed: {resetSummary.deleted.round1_problems + resetSummary.deleted.wildcard_problems} · Bids removed: {resetSummary.deleted.bids} · Submissions removed: {resetSummary.deleted.submissions}</span><button className="primary-button" onClick={() => onNavigate("round1")}>Go to Round 1</button></div>}</section><section className="event-data-reset"><div><strong>Reset credentials</strong><h3>Invalidate imported participant access</h3><p>Invalidates imported participant passwords and active sessions. Teams, assignments, bids, Wildcard progress, submissions, timers, and the current event stage are preserved.</p><p>Use Participant Passwords in Registration Import to assign new passwords. Permanent Admin, demo, and leaderboard display accounts remain available.</p></div><label>Type RESET CREDENTIALS<input value={credentialResetConfirmation} onChange={(event) => setCredentialResetConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || credentialResetConfirmation !== "RESET CREDENTIALS"} onClick={() => window.confirm("Invalidate imported participant credentials? The current event and all competition data will be preserved.") && void resetCredentials()}>Reset participant credentials</button>{credentialResetSummary && <div className="reset-summary"><strong>Credential reset complete</strong><span>Imported participant accounts reset: {credentialResetSummary.reset.participant_accounts} · Teams and event data preserved</span><button className="primary-button" onClick={() => onNavigate("imports")}>Set participant passwords</button></div>}</section>{data.reset_enabled && <section className="development-reset"><div><strong>Development only</strong><h3>Force-reset rehearsal state</h3><p>Available only when ENABLE_EVENT_RESET is enabled. This keeps registrations and imported problems.</p></div><label>Type RESET DEVELOPMENT EVENT<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || confirmation !== "RESET DEVELOPMENT EVENT"} onClick={() => window.confirm("Reset this development rehearsal? This cannot be undone.") && run(() => developmentReset(confirmation), "Development rehearsal reset completed.")}>Reset development event</button></section>}</section>;
 }
 
 function ActivityLogPage() {
@@ -681,10 +681,24 @@ function RegistrationImport() {
   const [resetConfirmation, setResetConfirmation] = useState("");
   const [resetResult, setResetResult] = useState(null);
   const [resetError, setResetError] = useState("");
+  const [participantAccounts, setParticipantAccounts] = useState([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountsError, setAccountsError] = useState("");
+  const [passwordTarget, setPasswordTarget] = useState(null);
+  const [passwordForm, setPasswordForm] = useState({ new_password: "", confirm_password: "" });
+  const [passwordWorking, setPasswordWorking] = useState(false);
+  const [passwordNotice, setPasswordNotice] = useState("");
+  const loadParticipantAccounts = useCallback(async () => {
+    setAccountsLoading(true); setAccountsError("");
+    try { setParticipantAccounts((await getImportedParticipantAccounts()).accounts || []); }
+    catch (cause) { setAccountsError(cause.message || "Participant accounts could not be loaded."); }
+    finally { setAccountsLoading(false); }
+  }, []);
+  useEffect(() => { void loadParticipantAccounts(); }, [loadParticipantAccounts]);
   const runImport = async () => {
     if (!file) return;
     setWorking(true); setError(""); setResult(null);
-    try { setResult(await importRegistrations(file)); }
+    try { setResult(await importRegistrations(file)); await loadParticipantAccounts(); }
     catch (cause) { setError(cause.message || "Registration import failed."); }
     finally { setWorking(false); }
   };
@@ -735,8 +749,24 @@ function RegistrationImport() {
       const response = await resetRegistrationCredentials(resetConfirmation);
       setResetResult(response);
       setResetConfirmation(""); setFile(null); setResult(null);
+      setPasswordTarget(null); setPasswordForm({ new_password: "", confirm_password: "" });
+      await loadParticipantAccounts();
     } catch (cause) { setResetError(cause.message || "Participant credentials could not be reset."); }
     finally { setWorking(false); }
+  };
+  const saveParticipantPassword = async () => {
+    if (!passwordTarget) return;
+    setPasswordNotice(""); setAccountsError("");
+    if (!passwordForm.new_password) { setAccountsError("Enter a new password."); return; }
+    if (passwordForm.new_password !== passwordForm.confirm_password) { setAccountsError("Password confirmation does not match."); return; }
+    setPasswordWorking(true);
+    try {
+      await setImportedParticipantPassword(passwordTarget.user_id, passwordForm);
+      setPasswordNotice(`Password ${passwordTarget.credential_status === "SET" ? "changed" : "set"} for ${passwordTarget.login_id}.`);
+      setPasswordTarget(null); setPasswordForm({ new_password: "", confirm_password: "" });
+      await loadParticipantAccounts();
+    } catch (cause) { setAccountsError(cause.message || "Participant password could not be saved."); }
+    finally { setPasswordWorking(false); }
   };
   const summaryRows = result ? [
     ["Teams processed", result.teams_processed], ["Teams created", result.teams_created],
@@ -746,15 +776,15 @@ function RegistrationImport() {
   ] : [];
 
   return <section className="registration-import">
-    <div className="registration-import__intro"><div><h2>Registration import</h2><p>Turn the organizer’s registration export into approved teams, leader logins, and a one-time credential workbook.</p></div><span className="registration-import__format">XLSX / CSV · MAX 10 MB</span></div>
+    <div className="registration-import__intro"><div><h2>Registration import</h2><p>Import approved team and participant identities. Passwords are assigned separately by an Admin.</p></div><span className="registration-import__format">XLSX / CSV · MAX 10 MB</span></div>
     <div className="registration-import__grid">
       <section className="registration-upload-panel">
-        <div className="event-section-heading"><h3>Upload registration sheet</h3><p>CSV imports return a CSV credential file; XLSX imports return XLSX.</p><div className="round-inline-actions"><button className="secondary-button" onClick={() => void downloadDemo()}>Download demo CSV</button><button className="secondary-button" onClick={() => void downloadSample()}>Download blank sample</button><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>Download updated registration sheet</button></div></div>
+        <div className="event-section-heading"><h3>Upload registration sheet</h3><p>The returned sheet contains login IDs and credential status, never passwords.</p><div className="round-inline-actions"><button className="secondary-button" onClick={() => void downloadDemo()}>Download demo CSV</button><button className="secondary-button" onClick={() => void downloadSample()}>Download blank sample</button><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>Download updated registration sheet</button></div></div>
         <label className={`registration-dropzone ${file ? "registration-dropzone--ready" : ""}`}>
           <input type="file" accept=".xlsx,.csv" onChange={(event) => { setFile(event.target.files?.[0] || null); setResult(null); setError(""); }} />
           <span className="registration-dropzone__mark" aria-hidden="true" />
           <strong>{file ? file.name : "Choose an XLSX or CSV file"}</strong>
-          <small>{file ? `${Math.max(1, Math.round(file.size / 1024))} KB ready to import` : "Original columns and values are preserved in the credential output file."}</small>
+          <small>{file ? `${Math.max(1, Math.round(file.size / 1024))} KB ready to import` : "Original columns and values are preserved in the account-status output file."}</small>
         </label>
         <div className="registration-requirements"><strong>Required registration data</strong><ul><li>Team name</li><li>Leader name and email</li><li>Member names</li><li>Member emails when available</li></ul></div>
         <button className="event-primary-action" disabled={!file || working} onClick={() => void runImport()}>{working ? "Importing registrations…" : "Import registrations"}<span className="action-arrow" aria-hidden="true" /></button>
@@ -762,17 +792,33 @@ function RegistrationImport() {
       </section>
 
       <section className="registration-result-panel" aria-live="polite">
-        <div className="event-section-heading"><h3>Import summary</h3><p>{result ? "Database changes committed. Review any rejected rows before distributing credentials." : "Summary and credential download will appear after a completed import."}</p></div>
+        <div className="event-section-heading"><h3>Import summary</h3><p>{result ? "Identity data committed. Review rejected rows, then set participant passwords below." : "Summary and account-status download will appear after a completed import."}</p></div>
         {result ? <>
           <dl className="registration-summary">{summaryRows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
           <div className="registration-errors"><h4>Errors</h4>{result.errors.length ? <ul>{result.errors.map((item, index) => <li key={`${item.row_number}-${index}`}><strong>Row {item.row_number}</strong><span>{item.message}</span></li>)}</ul> : <p>No row-level errors.</p>}</div>
-          <button className="primary-button registration-download" disabled={!result.download_token || working} onClick={() => void download()}>{result.download_token ? "Download credential sheet" : "Credential sheet downloaded"}</button>
-          <small className="registration-security-note">Leader passwords are available in this one-time download only and are never stored as plaintext.</small>
+          <button className="primary-button registration-download" disabled={!result.download_token || working} onClick={() => void download()}>{result.download_token ? "Download account status sheet" : "Account status sheet downloaded"}</button>
+          <small className="registration-security-note">Passwords are not generated, exported, or stored as plaintext during import.</small>
         </> : <div className="registration-result-empty"><span>Import results pending</span><p>Select a registration sheet to begin.</p></div>}
       </section>
     </div>
+    <section className="participant-passwords">
+      <div className="participant-passwords__heading"><div><h3>PARTICIPANT PASSWORDS</h3><p>Set or change passwords for imported participant accounts. Saving a password invalidates that participant’s current session.</p></div><button className="secondary-button" disabled={accountsLoading || passwordWorking} onClick={() => void loadParticipantAccounts()}>Refresh accounts</button></div>
+      {accountsError && <p className="global-error" role="alert">{accountsError}</p>}
+      {passwordNotice && <p className="admin-notice" role="status">{passwordNotice}</p>}
+      <div className="table-wrapper participant-passwords__table"><table><thead><tr><th>PARTICIPANT / LEADER</th><th>TEAM</th><th>ROLE</th><th>CREDENTIAL STATUS</th><th>ACTION</th></tr></thead><tbody>
+        {participantAccounts.map((account) => <tr key={account.user_id}><td><strong>{account.name}</strong><small>{account.login_id}</small></td><td>{account.team_name}</td><td>{account.role}</td><td><span className={`credential-status credential-status--${account.credential_status.toLowerCase()}`}>{account.credential_status === "SET" ? "PASSWORD SET" : "PASSWORD NOT SET"}</span></td><td><button className="secondary-button" disabled={passwordWorking} onClick={() => { setPasswordTarget(account); setPasswordForm({ new_password: "", confirm_password: "" }); setPasswordNotice(""); setAccountsError(""); }}>{account.credential_status === "SET" ? "Change Password" : "Set Password"}</button></td></tr>)}
+        {!accountsLoading && !participantAccounts.length && <tr><td colSpan="5"><div className="participant-passwords__empty">No imported participant accounts yet.</div></td></tr>}
+        {accountsLoading && <tr><td colSpan="5"><div className="participant-passwords__empty">Loading participant accounts…</div></td></tr>}
+      </tbody></table></div>
+      {passwordTarget && <div className="participant-password-form">
+        <div><strong>{passwordTarget.credential_status === "SET" ? "Change password" : "Set password"}</strong><span>{passwordTarget.login_id} · {passwordTarget.team_name}</span></div>
+        <label>New Password<input type="password" value={passwordForm.new_password} onChange={(event) => setPasswordForm({ ...passwordForm, new_password: event.target.value })} autoComplete="new-password" maxLength="72" /></label>
+        <label>Confirm Password<input type="password" value={passwordForm.confirm_password} onChange={(event) => setPasswordForm({ ...passwordForm, confirm_password: event.target.value })} autoComplete="new-password" maxLength="72" /></label>
+        <div className="round-inline-actions"><button className="secondary-button" disabled={passwordWorking} onClick={() => { setPasswordTarget(null); setPasswordForm({ new_password: "", confirm_password: "" }); }}>Cancel</button><button className="primary-button" disabled={passwordWorking || !passwordForm.new_password || !passwordForm.confirm_password} onClick={() => void saveParticipantPassword()}>{passwordWorking ? "Saving…" : passwordTarget.credential_status === "SET" ? "CHANGE PASSWORD" : "SET PASSWORD"}</button></div>
+      </div>}
+    </section>
     <section className="participant-credential-reset">
-      <div><strong>Participant credential reset</strong><h3>Reset imported participant credentials</h3><p>Invalidate imported participant passwords and sessions, then re-import registration data to generate fresh passwords.</p><p>Teams, event progress, assignments, bids, submissions, timers, and permanent system accounts remain unchanged.</p></div>
+      <div><strong>Participant credential reset</strong><h3>Reset imported participant credentials</h3><p>Invalidate imported participant passwords and sessions, returning each account to Password Not Set.</p><p>Teams, event progress, assignments, bids, submissions, timers, and permanent system accounts remain unchanged.</p></div>
       <label>Type RESET CREDENTIALS<input value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value)} autoComplete="off" /></label>
       <button className="danger-button" disabled={working || resetConfirmation !== "RESET CREDENTIALS"} onClick={() => window.confirm("Invalidate imported participant credentials? The current event and all competition data will be preserved.") && void resetCredentials()}>Reset participant credentials</button>
       {resetError && <p className="participant-credential-reset__error" role="alert">{resetError}</p>}

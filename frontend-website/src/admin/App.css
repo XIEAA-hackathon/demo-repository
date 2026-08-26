@@ -2152,6 +2152,29 @@ td strong {
 .registration-result-empty { min-height: 360px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #66576f; text-align: center; }
 .registration-result-empty span { color: #9e8aa7; font-size: 11px; font-weight: 800; }
 .registration-result-empty p { margin: 7px 0 0; font-size: 9px; }
+.participant-passwords { display: grid; gap: 18px; padding: 24px 26px; background: #100817; border: 1px solid rgba(190, 91, 243, .2); border-radius: 14px; box-shadow: 0 18px 48px rgba(2, 0, 5, .24); }
+.participant-passwords__heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; }
+.participant-passwords__heading h3 { margin: 0; color: #f7f0fb; font-size: 16px; letter-spacing: .04em; }
+.participant-passwords__heading p { max-width: 72ch; margin: 7px 0 0; color: #96849f; font-size: 10px; line-height: 1.6; }
+.participant-passwords__table { max-height: 390px; overflow: auto; }
+.participant-passwords__table td:first-child { min-width: 210px; }
+.participant-passwords__table td strong,
+.participant-passwords__table td small { display: block; min-width: 0; overflow-wrap: anywhere; }
+.participant-passwords__table td small { margin-top: 4px; color: #8f7d98; }
+.participant-passwords__table .secondary-button { white-space: nowrap; }
+.participant-passwords__empty { padding: 30px 16px; color: #85748e; text-align: center; }
+.credential-status { display: inline-flex; padding: 7px 9px; border-radius: 8px; font-size: 9px; font-weight: 850; letter-spacing: .04em; white-space: nowrap; }
+.credential-status--set { color: #75e6a7; background: rgba(56, 233, 139, .09); }
+.credential-status--not_set { color: #f1c96e; background: rgba(241, 188, 77, .09); }
+.participant-password-form { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(210px, .7fr) minmax(210px, .7fr) auto; gap: 16px; align-items: end; padding: 18px; background: rgba(196, 100, 244, .045); border: 1px solid rgba(196, 100, 244, .18); border-radius: 11px; }
+.participant-password-form > div:first-child { align-self: center; min-width: 0; }
+.participant-password-form > div:first-child strong,
+.participant-password-form > div:first-child span { display: block; overflow-wrap: anywhere; }
+.participant-password-form > div:first-child strong { color: #eee5f2; font-size: 11px; }
+.participant-password-form > div:first-child span { margin-top: 5px; color: #8e7c97; font-size: 9px; }
+.participant-password-form label { display: grid; gap: 7px; color: #cdbed3; font-size: 9px; }
+.participant-password-form input { min-width: 0; padding: 11px 12px; color: #fff; background: #0b0610; border: 1px solid rgba(196, 100, 244, .34); border-radius: 8px; font-size: 12px; }
+.participant-password-form input:focus-visible { outline: 3px solid rgba(196, 100, 244, .2); outline-offset: 2px; }
 .participant-credential-reset { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .48fr) auto; gap: 18px; align-items: end; margin-top: 8px; padding: 24px 26px; background: #19080e; border: 1px solid rgba(255, 83, 112, .32); border-radius: 14px; box-shadow: 0 18px 48px rgba(2, 0, 5, .24); }
 .participant-credential-reset > div:first-child { grid-column: 1 / -1; }
 .participant-credential-reset > div:first-child > strong { color: #ff8499; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
@@ -2177,6 +2200,10 @@ td strong {
   .registration-summary,
   .registration-requirements ul { grid-template-columns: 1fr; }
   .registration-import__intro { align-items: flex-start; flex-direction: column; }
+  .participant-passwords { padding: 22px 18px; }
+  .participant-passwords__heading { align-items: stretch; flex-direction: column; }
+  .participant-password-form { grid-template-columns: 1fr; }
+  .participant-password-form input { font-size: 16px; }
   .participant-credential-reset { grid-template-columns: 1fr; padding: 22px 18px; }
 }
 

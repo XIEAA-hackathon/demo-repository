@@ -36,7 +36,7 @@ from app.services.event_service import (
     adjust_event_timer,
 )
 from app.services.registration_import import (
-    parse_registration_file, generate_credentials, _default_password, _is_valid_email,
+    parse_registration_file, _default_password, _is_valid_email,
     build_registration_credential_csv, build_registration_credential_workbook,
     build_registration_assignment_csv, build_registration_assignment_workbook,
     ASSIGNMENT_HEADERS,
@@ -491,13 +491,45 @@ class ParticipantCredentialResetRequest(BaseModel):
     confirmation: str
 
 
+class ParticipantPasswordRequest(BaseModel):
+    new_password: str
+    confirm_password: str
+
+
+def _disabled_password_hash() -> str:
+    """Produce an unknowable placeholder hash guarded by credentials_active=False."""
+    return get_password_hash(secrets.token_urlsafe(48))
+
+
+def _validate_participant_password(password: str, confirmation: str) -> None:
+    if not password:
+        raise HTTPException(status_code=422, detail="Password is required.")
+    if password != confirmation:
+        raise HTTPException(status_code=422, detail="Password confirmation does not match.")
+    if len(password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=422, detail="Password must be 72 bytes or fewer.")
+
+
+def _participant_account_payload(db: Session, account: User) -> dict:
+    team = db.query(Team).filter(Team.id == account.team_id).first() if account.team_id else None
+    return {
+        "user_id": account.id,
+        "name": account.name,
+        "login_id": account.email,
+        "role": account.role,
+        "team_id": team.id if team else None,
+        "team_name": team.team_name if team else "Unassigned",
+        "credential_status": "SET" if account.credentials_active else "NOT_SET",
+    }
+
+
 @router.post("/admin/registration/import")
 async def import_registrations(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin),
 ):
-    """Import valid registration rows and prepare a one-time leader credential workbook."""
+    """Import registration identities without generating or changing passwords."""
     filename = file.filename or "registrations.xlsx"
     _validate_registration_filename(filename)
     content = await file.read()
@@ -547,6 +579,7 @@ async def import_registrations(
     existing_leaders = 0
     members_imported = 0
     leader_credentials: dict[int, dict[str, str]] = {}
+    participant_accounts_created = 0
 
     try:
         import_record = RegistrationImport(
@@ -582,22 +615,15 @@ async def import_registrations(
             leader = _user_by_login(db, leader_email)
             if leader:
                 existing_leaders += 1
-                if leader.account_source == "IMPORTED" and not leader.credentials_active:
-                    leader_password = _default_password()
-                    leader.password_hash = get_password_hash(leader_password)
-                    leader.credentials_active = True
-                else:
-                    leader_password = "EXISTING ACCOUNT"
             else:
-                leader_password = _default_password()
                 leader = User(
                     name=row["leader_name"],
                     email=leader_email,
-                    password_hash=get_password_hash(leader_password),
+                    password_hash=_disabled_password_hash(),
                     role="leader",
                     team_id=team.id,
                     account_source="IMPORTED",
-                    credentials_active=True,
+                    credentials_active=False,
                 )
                 db.add(leader)
                 db.flush()
@@ -611,17 +637,36 @@ async def import_registrations(
 
             for existing_member in list(team.members):
                 db.delete(existing_member)
-            for member in row["members"]:
+            for position, member in enumerate(row["members"], start=1):
                 member_name = (member.get("name") or "").strip()
                 if not member_name:
                     continue
                 member_email = (member.get("email") or "").strip().lower() or None
-                db.add(Member(team_id=team.id, member_name=member_name, email=member_email))
+                login_id = member_email if member_email and _is_valid_email(member_email) else _participant_id(db, team.id, position)
+                member_user = _user_by_login(db, login_id)
+                if not member_user:
+                    member_user = User(
+                        name=member_name,
+                        email=login_id,
+                        password_hash=_disabled_password_hash(),
+                        role="member",
+                        team_id=team.id,
+                        account_source="IMPORTED",
+                        credentials_active=False,
+                    )
+                    db.add(member_user)
+                    db.flush()
+                    participant_accounts_created += 1
+                else:
+                    member_user.name = member_name
+                    member_user.role = "member"
+                    member_user.team_id = team.id
+                db.add(Member(team_id=team.id, member_name=member_name, email=login_id))
                 members_imported += 1
 
             leader_credentials[row["row_number"]] = {
                 "email": leader_email,
-                "password": leader_password,
+                "status": "PASSWORD SET" if leader.credentials_active else "PASSWORD NOT SET",
             }
             db.add(RegistrationImportRow(
                 import_id=import_record.id,
@@ -635,9 +680,6 @@ async def import_registrations(
                 source_values_json=json.dumps(row.get("source_values") or []),
                 team_id=team.id,
             ))
-
-        if any(not leader_credentials[row["row_number"]]["password"] for row in valid_rows):
-            raise RuntimeError("A leader credential output value was not generated.")
 
         is_csv = filename.lower().endswith(".csv")
         output_bytes = (
@@ -662,7 +704,7 @@ async def import_registrations(
         raise
 
     output_suffix = ".csv" if is_csv else ".xlsx"
-    output_filename = f"bid_to_build_registration_credentials_{datetime.utcnow().year}{output_suffix}"
+    output_filename = f"bid_to_build_registration_accounts_{datetime.utcnow().year}{output_suffix}"
     download_token = _store_credential_export(output_bytes, output_suffix)
     summary = {
         "teams_processed": len(valid_rows),
@@ -671,6 +713,7 @@ async def import_registrations(
         "leaders_created": leaders_created,
         "existing_leaders": existing_leaders,
         "members_imported": members_imported,
+        "participant_accounts_created": participant_accounts_created,
         "rows_failed": len({error["row_number"] for error in errors}),
         "errors": errors,
         "download_token": download_token,
@@ -734,6 +777,59 @@ async def reset_registration_credentials(
     }
 
 
+@router.get("/admin/registration/participant-accounts")
+def list_imported_participant_accounts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    del current_user
+    accounts = (
+        db.query(User)
+        .filter(
+            User.account_source == "IMPORTED",
+            User.role.in_(("leader", "member")),
+            User.is_system_account.is_(False),
+        )
+        .order_by(func.lower(User.email).asc())
+        .all()
+    )
+    rows = [_participant_account_payload(db, account) for account in accounts]
+    rows.sort(key=lambda row: (row["team_name"].lower(), row["role"] != "leader", row["login_id"].lower()))
+    return {"accounts": rows, "count": len(rows)}
+
+
+@router.put("/admin/registration/participant-accounts/{user_id}/password")
+def set_imported_participant_password(
+    user_id: int,
+    payload: ParticipantPasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    _validate_participant_password(payload.new_password, payload.confirm_password)
+    account = db.query(User).filter(
+        User.id == user_id,
+        User.account_source == "IMPORTED",
+        User.role.in_(("leader", "member")),
+        User.is_system_account.is_(False),
+    ).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Imported participant account not found.")
+    account.password_hash = get_password_hash(payload.new_password)
+    account.credentials_active = True
+    account.session_id = None
+    record_event(
+        db,
+        "registration.participant_password_set",
+        actor=current_user,
+        entity_type="user",
+        entity_id=account.id,
+        metadata={"login_id": account.email, "role": account.role},
+    )
+    db.commit()
+    db.refresh(account)
+    return {"status": "password_set", "account": _participant_account_payload(db, account)}
+
+
 @router.get("/admin/registration/import/download/{download_token}")
 def download_registration_credentials(
     download_token: str,
@@ -749,7 +845,7 @@ def download_registration_credentials(
     content = export_path.read_bytes()
     suffix = export_path.suffix.lower()
     export_path.unlink(missing_ok=True)
-    filename = f"bid_to_build_registration_credentials_{datetime.utcnow().year}{suffix}"
+    filename = f"bid_to_build_registration_accounts_{datetime.utcnow().year}{suffix}"
     return StreamingResponse(
         BytesIO(content),
         media_type="text/csv; charset=utf-8" if suffix == ".csv" else XLSX_MEDIA_TYPE,
@@ -821,6 +917,7 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], st
         return len(headers) - 1
 
     login_index = ensure_column("Leader Login Email")
+    credential_status_index = ensure_column("Credential Status")
     assignment_indexes = [ensure_column(label) for label in ASSIGNMENT_HEADERS]
     password_indexes = [
         index for index, normalized in enumerate(normalized_headers)
@@ -831,8 +928,12 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], st
     for source_values, team, leader_email in source_rows:
         values = [*source_values, *([""] * (len(headers) - len(source_values)))]
         values[login_index] = leader_email
+        leader_account = _user_by_login(db, leader_email) if leader_email else None
+        values[credential_status_index] = (
+            "PASSWORD SET" if leader_account and leader_account.credentials_active else "PASSWORD NOT SET"
+        )
         for index in password_indexes:
-            values[index] = "EXISTING ACCOUNT" if team else ""
+            values[index] = "NOT EXPORTED"
         round1 = db.query(ProblemStatement).filter(ProblemStatement.id == team.round1_problem_id).first() if team and team.round1_problem_id else None
         wildcard = db.query(ProblemStatement).filter(ProblemStatement.id == team.wildcard_problem_id).first() if team and team.wildcard_problem_id else None
         final = wildcard or round1
@@ -1019,31 +1120,19 @@ async def confirm_registration_import(
         leader = _user_by_login(db, leader_email)
         if leader and leader.team_id not in (None, team.id):
             raise HTTPException(status_code=409, detail=f"ACCOUNT ALREADY EXISTS: {leader_email}")
-        row_as_dict = {
-            "team_name": row.team_name,
-            "leader_name": row.leader_name,
-            "leader_email": row.leader_email,
-        }
         if not leader:
-            created_password = generate_credentials([row_as_dict])[0]["temporary_password"]
             leader = User(
                 name=row.leader_name,
                 email=leader_email,
-                password_hash=get_password_hash(created_password),
+                password_hash=_disabled_password_hash(),
                 role="leader",
                 team_id=team.id,
                 account_source="IMPORTED",
-                credentials_active=True,
+                credentials_active=False,
             )
             db.add(leader)
             db.flush()
             accounts_created += 1
-            credentials.append(_credential(leader, team, created_password, leader_email))
-        elif leader.account_source == "IMPORTED" and not leader.credentials_active:
-            created_password = generate_credentials([row_as_dict])[0]["temporary_password"]
-            leader.password_hash = get_password_hash(created_password)
-            leader.credentials_active = True
-            credentials.append(_credential(leader, team, created_password, leader_email))
 
         team.leader_id = leader.id
         leader.team_id = team.id
@@ -1061,25 +1150,18 @@ async def confirm_registration_import(
             if member_user and member_user.team_id not in (None, team.id):
                 raise HTTPException(status_code=409, detail=f"ACCOUNT ALREADY EXISTS: {login_id}")
             if not member_user:
-                created_password = _default_password()
                 member_user = User(
                     name=member_name,
                     email=login_id,
-                    password_hash=get_password_hash(created_password),
+                    password_hash=_disabled_password_hash(),
                     role="member",
                     team_id=team.id,
                     account_source="IMPORTED",
-                    credentials_active=True,
+                    credentials_active=False,
                 )
                 db.add(member_user)
                 db.flush()
                 accounts_created += 1
-                credentials.append(_credential(member_user, team, created_password, member_email))
-            elif member_user.account_source == "IMPORTED" and not member_user.credentials_active:
-                created_password = _default_password()
-                member_user.password_hash = get_password_hash(created_password)
-                member_user.credentials_active = True
-                credentials.append(_credential(member_user, team, created_password, member_email))
             else:
                 member_user.name = member_name
                 member_user.role = "member"
@@ -1139,18 +1221,21 @@ def export_credentials_csv(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin),
 ):
-    """NOTE: temporary passwords are only shown once at confirm time and are not
-    stored. This endpoint returns the account list without passwords for re-checks."""
+    """Return imported account identifiers and status without password material."""
     import_record = db.query(RegistrationImport).filter(RegistrationImport.id == import_id).first()
     if not import_record:
         raise HTTPException(status_code=404, detail="Import not found")
     rows = db.query(RegistrationImportRow).filter(RegistrationImportRow.import_id == import_id).all()
-    lines = ["Team Name,Participant/Leader Name,Email,Username,Role"]
+    lines = ["Team Name,Participant/Leader Name,Email,Username,Role,Credential Status"]
     for row in rows:
-        lines.append(f"{row.team_name},{row.leader_name},{row.leader_email},{row.leader_email},leader")
+        leader = _user_by_login(db, row.leader_email)
+        leader_status = "PASSWORD SET" if leader and leader.credentials_active else "PASSWORD NOT SET"
+        lines.append(f"{row.team_name},{row.leader_name},{row.leader_email},{row.leader_email},leader,{leader_status}")
         for member in json.loads(row.members_json or "[]"):
             if member.get("email"):
-                lines.append(f"{row.team_name},{member.get('name', '')},{member['email']},{member['email']},member")
+                account = _user_by_login(db, member["email"])
+                status_value = "PASSWORD SET" if account and account.credentials_active else "PASSWORD NOT SET"
+                lines.append(f"{row.team_name},{member.get('name', '')},{member['email']},{member['email']},member,{status_value}")
     return JSONResponse(
         content={"content": "\n".join(lines)},
     )
