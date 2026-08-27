@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Login from "./pages/Login";
 import {
   addTime, approveTeam, clearToken, deleteTeam, downloadRegistrationAssignments, downloadRegistrationCredentials, downloadRegistrationDemo, downloadRegistrationSample, finalizeProblem,
-  getAdminConfig, getAdminState, getBidHistory, getLeaderboard,
+  getAdminConfig, getAdminState, getBidHistory,
   getProblemStatements, getTeamCredentials, getTeams, hasToken, logout, pauseTimer,
   importRegistrations, removeTime, resetParticipantPassword, resumeTimer, setProblemVisibility,
   resetRegistrationCredentials, getImportedParticipantAccounts, setImportedParticipantPassword,
@@ -10,7 +10,7 @@ import {
   downloadRoundOneAssignments, downloadWildcardAssignments,
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
   confirmRoundOneAutoAllotment, endRoundOne, openWildcardApplications, closeWildcardApplications,
-  confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding, endWildcardSelectionTurn,
+  confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding, endWildcardSelectionTurn, endWildcard,
   getAdminSubmissions, openSubmissions, closeSubmissions, ApiError,
   getJudging, saveJudgingWinners, publishJudgingResults,
   getAdminHealth, runPreflight, getRecoveryState, resumeRecoveryTimer, reloadRecoveryState,
@@ -90,7 +90,6 @@ function AdminApplication({ onLogout }) {
   const [teams, setTeams] = useState([]);
   const [problems, setProblems] = useState([]);
   const [bids, setBids] = useState([]);
-  const [leaderboard, setLeaderboard] = useState([]);
   const [state, setState] = useState(null);
   const [config, setConfig] = useState(null);
   const [socketStatus, setSocketStatus] = useState("connecting");
@@ -113,16 +112,15 @@ function AdminApplication({ onLogout }) {
     const request = (async () => {
       try {
         const results = await Promise.allSettled([
-          getTeams(), getProblemStatements(), getBidHistory(), getLeaderboard(), getAdminState(), getAdminConfig(),
+          getTeams(), getProblemStatements(), getBidHistory(), getAdminState(), getAdminConfig(),
         ]);
-        const [teamResult, problemResult, bidResult, boardResult, eventStateResult, configResult] = results;
+        const [teamResult, problemResult, bidResult, eventStateResult, configResult] = results;
         const fulfilled = (result) => result.status === "fulfilled";
         const eventStateFresh = fulfilled(eventStateResult);
 
         if (fulfilled(teamResult)) setTeams(teamResult.value);
         if (fulfilled(problemResult)) setProblems(problemResult.value);
         if (fulfilled(bidResult)) setBids(bidResult.value);
-        if (fulfilled(boardResult)) setLeaderboard(boardResult.value.teams || boardResult.value);
         if (fulfilled(configResult)) setConfig(configResult.value);
 
         let healthFailed = false;
@@ -209,6 +207,10 @@ function AdminApplication({ onLogout }) {
           ]);
           return;
         }
+        if (message.type === "participant_presence_changed") {
+          setState((current) => ({ ...current, ...message.payload }));
+          return;
+        }
         if (["event_snapshot", "event_state_changed", "timer_sync"].includes(message.type) && message.payload?.event_state) {
           const syncedAt = Date.now();
           setState((current) => ({ ...current, ...message.payload, timing: { ...message.payload.timing, received_at: syncedAt } }));
@@ -247,10 +249,11 @@ function AdminApplication({ onLogout }) {
             <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
           ))}
           <span className="sidebar-section-title sidebar-section-title--management">Management</span>
-          {[["admin-users", "Admin Users", "A"], ["leaderboard-users", "Leaderboard Users", "D"], ["teams", "Teams", "T"], ["problems", "Problems", "P"], ["imports", "Registration import", "⇧"], ["leaderboard", "Leaderboard", "≡"], ["activity", "Event log", "L"]].map(([id, label, icon]) => (
+          {[["admin-users", "Admin Users", "A"], ["leaderboard-users", "Leaderboard Users", "D"], ["teams", "Teams", "T"], ["problems", "Problems", "P"], ["imports", "Registration import", "⇧"], ["activity", "Event log", "L"]].map(([id, label, icon]) => (
             <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
           ))}
         </nav>
+        <div className="admin-profile" aria-live="polite"><div className="admin-avatar">P</div><div><strong>Participants Logged In</strong><span>{state?.participant_logged_in_count ?? 0} / {state?.registered_participant_count ?? teams.length}</span></div></div>
         <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">A</div><div><strong>Event Admin</strong><span>Backend verified</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
       </aside>
       <main className="main-content">
@@ -269,7 +272,6 @@ function AdminApplication({ onLogout }) {
           {page === "teams" && <Teams teams={teams} onAction={action} />}
           {page === "problems" && <Problems problems={problems} state={state} onAction={action} />}
           {page === "imports" && <RegistrationImport onAction={action} />}
-          {page === "leaderboard" && <Leaderboard rows={leaderboard} />}
           {page === "recovery" && <RecoveryPage onGlobalSync={load} onNavigate={setPage} />}
           {page === "activity" && <ActivityLogPage />}
         </div>
@@ -295,6 +297,7 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   const [notice, setNotice] = useState("");
   const [autoDeduction, setAutoDeduction] = useState("");
   const [autoConfirming, setAutoConfirming] = useState(false);
+  const [endConfirming, setEndConfirming] = useState(false);
   const loadRound = useCallback(() => getRoundControl(round).then(setData).catch((cause) => setError(cause.message)), [round]);
   useEffect(() => { void loadRound(); }, [loadRound, state?.timing?.server_time]);
   const run = async (operation, success) => {
@@ -395,7 +398,7 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
         {isWildcard && <label>Wildcard slots<input type="number" min="1" value={config.wildcard_slots} onChange={(event) => onConfig({ ...config, wildcard_slots: Number(event.target.value) })} /></label>}
         <button className={`${isWildcard ? "secondary-button" : "primary-button"} round-settings__save`} disabled={working} onClick={saveSettings}>{working ? "Saving…" : "Save settings"}</button>
       </div>}
-      {!isWildcard && <button className="danger-link round-end" disabled={data.ended || working} onClick={() => window.confirm("End Round 1? No further Round 1 selection or bidding will be allowed.") && run(endRoundOne, "Round 1 ended. Wildcard can now be opened.")}>{data.ended ? "Round 1 ended" : "End Round 1"}</button>}
+      {!isWildcard && <button className="danger-link round-end" disabled={data.ended || working} onClick={() => setEndConfirming(true)}>{data.ended ? "Round 1 ended" : "END ROUND 1"}</button>}
     </section>
     {!isWildcard && <section className="round-auto-allotment">
       {finalAuto ? <>
@@ -415,11 +418,13 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
     </section>}
     {!isWildcard && <div className="round-export-action"><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>DOWNLOAD ROUND 1 ASSIGNMENTS</button></div>}
     {autoConfirming && finalAuto?.status === "PENDING" && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="auto-allotment-title"><h3 id="auto-allotment-title">Confirm final problem auto allotment?</h3><p>Assign Problem #{finalAuto.problem.problem_number} — {finalAuto.problem.title} to all {finalAuto.team_count} remaining teams and deduct up to {autoDeduction} coins from each team?</p><div><button className="secondary-button" disabled={working} onClick={() => setAutoConfirming(false)}>Cancel</button><button className="primary-button" disabled={working} onClick={() => void confirmAutoAllotment()}>{working ? "Assigning…" : "Confirm Auto Allotment"}</button></div></section></div>}
+    {endConfirming && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="end-round1-title"><h3 id="end-round1-title">END ROUND 1?</h3><p>This immediately stops Round 1. Existing assignments and balances remain unchanged; unassigned teams will stay unassigned.</p><dl><div><dt>Current problem</dt><dd>{current ? `#${current.problem_number} — ${current.title}` : finalAuto?.problem ? `#${finalAuto.problem.problem_number} — ${finalAuto.problem.title}` : "None"}</dd></div><div><dt>Assigned teams</dt><dd>{data.assigned_team_count ?? 0}</dd></div><div><dt>Unassigned teams</dt><dd>{data.unassigned_team_count ?? 0}</dd></div></dl><div><button className="secondary-button" disabled={working} onClick={() => setEndConfirming(false)}>Cancel</button><button className="danger-button" disabled={working} onClick={() => { setEndConfirming(false); void run(endRoundOne, "Round 1 ended. Wildcard can now be opened."); }}>{working ? "Ending…" : "END ROUND 1"}</button></div></section></div>}
   </section>;
 }
 
 function WildcardControlPage({ state, config, remaining, onConfig }) {
   const [data, setData] = useState(null);
+  const [endConfirming, setEndConfirming] = useState(false);
   const selectionRemaining = useServerCountdown({ server_time: data?.event?.timing?.server_time, ends_at: data?.selection?.ends_at, received_at: data?.selection?.received_at, remaining_seconds: data?.selection?.remaining_seconds, paused: false }, data?.selection?.current_rank);
   const [tab, setTab] = useState("applications");
   const [slots, setSlots] = useState(1);
@@ -484,7 +489,7 @@ function WildcardControlPage({ state, config, remaining, onConfig }) {
   };
 
   return <section className="round-console wildcard-console">
-    <header className="round-console__header"><div><span className="eyebrow">EVENT / WILDCARD</span><h2>Wildcard</h2><p>Applications, one slot auction, then ranked problem selection.</p></div><a className="round-leaderboard-button" href="/leaderboard" target="_blank" rel="noreferrer">Open public leaderboard ↗</a></header>
+    <header className="round-console__header"><div><span className="eyebrow">EVENT / WILDCARD</span><h2>Wildcard</h2><p>Applications, one slot auction, then ranked problem selection.</p></div><div className="round-inline-actions"><button className="danger-button" disabled={data.ended || working} onClick={() => setEndConfirming(true)}>{data.ended ? "Wildcard ended" : "END WILDCARD"}</button><a className="round-leaderboard-button" href="/leaderboard" target="_blank" rel="noreferrer">Open public leaderboard ↗</a></div></header>
     {error && <div className="global-error" role="alert"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
     {notice && <div className="admin-notice">{notice}</div>}
     <section className="wildcard-stage-banner"><div><span className="eyebrow">CURRENT STATUS</span><h3>{stageCopy}</h3></div><strong>{data.status.replaceAll("_", " ")}</strong></section>
@@ -510,6 +515,7 @@ function WildcardControlPage({ state, config, remaining, onConfig }) {
       <section className="round-problem-bank wildcard-stage-card"><div className="round-section-heading"><div><span className="eyebrow">WILDCARD PROBLEMS</span><h3>Separate problem bank</h3></div><div className="round-inline-actions"><label className="secondary-button round-upload">Upload XLSX / CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-button" onClick={() => void downloadSample()}>Download sample CSV</button>{file && <button className="primary-button" disabled={working} onClick={() => run(() => importRoundProblems("wildcard", file), `${file.name} imported.`)}>Import {file.name}</button>}</div></div><div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><div className="round-problem-copy"><b>{problem.title}</b><p title={problem.description}>{problem.description}</p></div><span>{problem.status}</span></article>) : <div className="round-empty"><strong>No wildcard problems imported</strong><p>Upload XLSX or CSV before confirming slots.</p></div>}</div></section>
     </div>}
     <div className="round-export-action"><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>DOWNLOAD WILDCARD ASSIGNMENTS</button></div>
+    {endConfirming && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="end-wildcard-title"><h3 id="end-wildcard-title">END WILDCARD?</h3><p>Ending now immediately stops applications, bidding, and problem selection. Completed assignments remain unchanged.</p><dl><div><dt>Applications</dt><dd>{data.applications.applied}</dd></div><div><dt>Wildcard winners</dt><dd>{data.selection.qualifications.length}</dd></div><div><dt>Final problem selections completed</dt><dd>{data.selection.qualifications.filter((row) => row.problem).length} / {data.selection.qualifications.length}</dd></div></dl><div><button className="secondary-button" disabled={working} onClick={() => setEndConfirming(false)}>Cancel</button><button className="danger-button" disabled={working} onClick={() => { setEndConfirming(false); void run(endWildcard, "Wildcard ended. Coding can now begin."); }}>{working ? "Ending…" : "END WILDCARD"}</button></div></section></div>}
   </section>;
 }
 

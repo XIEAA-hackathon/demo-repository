@@ -54,7 +54,7 @@ class Team(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     team_name = Column(String, unique=True, index=True, nullable=False)
-    coins = Column(Integer, default=1000)
+    coins = Column(Integer, default=5000)
     leader_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True)
     ps_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
     round1_problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
@@ -248,7 +248,7 @@ class EventConfig(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     # Starting coins
-    starting_coins = Column(Integer, default=1000)
+    starting_coins = Column(Integer, default=5000)
 
     # Round 1
     round1_preview_seconds = Column(Integer, default=60)

@@ -73,7 +73,7 @@ def test_admin_generates_individual_accounts_and_shared_team_wallet(client, admi
         dashboards.append(dashboard.json())
 
     assert len(dashboards[0]["team"]["members"]) == 3
-    assert {dashboard["wallet"]["balance"] for dashboard in dashboards} == {1000}
+    assert {dashboard["wallet"]["balance"] for dashboard in dashboards} == {5000}
     assert sum(bool(dashboard["isLeader"]) for dashboard in dashboards) == 1
 
 

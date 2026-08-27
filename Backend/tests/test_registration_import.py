@@ -55,7 +55,7 @@ def test_confirm_import_creates_teams_members_leader_and_wallets(client, admin_h
     team_alpha = db.query(Team).filter(Team.team_name == "Team Alpha").first()
     assert team_alpha is not None
     assert team_alpha.is_approved is True
-    assert team_alpha.coins == 1000  # EventConfig.starting_coins
+    assert team_alpha.coins == 5000  # EventConfig.starting_coins
 
     leader_email = db.query(User).filter(User.email == "alice@test.com").first()
     assert leader_email is not None
@@ -82,7 +82,7 @@ def test_confirm_import_creates_teams_members_leader_and_wallets(client, admin_h
     tx = db.query(WalletTransaction).filter(WalletTransaction.team_id == team_alpha.id).first()
     assert tx is not None
     assert tx.transaction_type == "INITIAL_ALLOCATION"
-    assert tx.amount == 1000
+    assert tx.amount == 5000
 
 
 def test_duplicate_import_does_not_create_duplicates(client, admin_headers, csv_bytes, db):

@@ -206,7 +206,8 @@ def test_legacy_normal_finalize_updates_aggregate_once(client, admin_headers, db
         round=1,
         status="current",
     )
-    db.add(problem)
+    final_problem = ProblemStatement(ps_number="R1-FINAL", title="Final auto allotment", round=1, status="available")
+    db.add_all([problem, final_problem])
     db.flush()
     for index, amount in enumerate((100, 200, 300, 400, 500, 600), start=1):
         team = Team(team_name=f"Legacy Team {index}", coins=1000, is_approved=True)

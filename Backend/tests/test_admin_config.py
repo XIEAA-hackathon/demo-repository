@@ -6,7 +6,7 @@ def test_admin_get_config(client, admin_headers, db):
     response = client.get("/admin/config", headers=admin_headers)
     assert response.status_code == 200, response.text
     data = response.json()
-    assert data["starting_coins"] == 1000
+    assert data["starting_coins"] == 5000
     assert data["round1_winner_count"] == 5
 
 

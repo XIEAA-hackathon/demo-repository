@@ -31,6 +31,7 @@ from app.services.round1_auto_assignment import (
     ROUND1_FINALIZATION_LOCK,
     auto_assign_final_problem,
     final_auto_assignment_summary,
+    is_final_auto_allotment_problem,
     update_round1_winning_bid_aggregate,
 )
 from app.services.wildcard_service import ranking_payload, wildcard_payload
@@ -178,9 +179,18 @@ def _round_payload(db: Session, meta: dict) -> dict:
             "winner_count": ROUND1_WINNER_COUNT,
         },
         "final_auto_assignment": final_auto_assignment_summary(db, control),
+        "assigned_team_count": db.query(Team).filter(Team.round1_problem_id.is_not(None)).count(),
+        "unassigned_team_count": db.query(Team).filter(
+            Team.is_approved.is_(True), Team.is_system_team.is_(False), Team.round1_problem_id.is_(None)
+        ).count(),
         "event": event_snapshot(db),
     }
     return payload
+
+
+def _reject_final_problem_auction(db: Session, control: RoundControl) -> None:
+    if is_final_auto_allotment_problem(db, control.current_problem_id):
+        raise HTTPException(status_code=409, detail="Final Round 1 problem must use auto allotment.")
 
 
 @router.get("/admin/rounds/{round_slug}")
@@ -276,6 +286,7 @@ async def start_preview(round_slug: str, db: Session = Depends(get_db), current_
         return _round_payload(db, meta)
     if control.ended or not control.current_problem_id:
         raise HTTPException(status_code=409, detail="Select an available problem before starting preview.")
+    _reject_final_problem_auction(db, control)
     state = "ROUND1_PREVIEW" if meta["number"] == 1 else "WILDCARD_PREVIEW"
     transition_event_state(db, state, validate=False, commit=False)
     control.status = "PREVIEW"
@@ -297,6 +308,7 @@ async def start_bidding(round_slug: str, db: Session = Depends(get_db), current_
         return _round_payload(db, meta)
     if control.ended or not control.current_problem_id or control.status not in {"PREVIEW", "PREVIEW_EXPIRED", "READY"}:
         raise HTTPException(status_code=409, detail="Preview a selected problem before starting bidding.")
+    _reject_final_problem_auction(db, control)
     state = "ROUND1_BIDDING" if meta["number"] == 1 else "WILDCARD_BIDDING"
     transition_event_state(db, state, validate=False, commit=False)
     control.status = "BIDDING"
@@ -315,6 +327,7 @@ async def close_bidding(round_slug: str, db: Session = Depends(get_db), current_
     sync_expired_event_state(db)
     db.refresh(control)
     game = get_or_create_game_config(db)
+    _reject_final_problem_auction(db, control)
     if control.status == "READY" and game.state == "ROUND1_RESULT":
         return _round_payload(db, meta)
     if control.status != "BIDDING":
@@ -341,6 +354,7 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
         control = get_or_create_round_control(db, meta["type"])
         if control.current_problem_id is None and control.status == "READY":
             return {"message": "Winner assignment already completed.", "winners": [], **_round_payload(db, meta)}
+        _reject_final_problem_auction(db, control)
         problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id, ProblemStatement.round == meta["number"]).first()
         if not problem or control.status != "READY":
             raise HTTPException(status_code=409, detail="Close bidding before assigning winners.")
@@ -430,15 +444,33 @@ async def end_round_one(db: Session = Depends(get_db), current_user=Depends(get_
     control = get_or_create_round_control(db, "ROUND1")
     if control.ended:
         return _round_payload(db, ROUND_META["round-1"])
-    if control.current_problem_id or control.status in {"PREVIEW", "BIDDING"}:
-        raise HTTPException(status_code=409, detail="Complete the current problem before ending Round 1.")
+    assigned_count = db.query(Team).filter(Team.round1_problem_id.is_not(None)).count()
+    unassigned_count = db.query(Team).filter(
+        Team.is_approved.is_(True), Team.is_system_team.is_(False), Team.round1_problem_id.is_(None)
+    ).count()
+    if control.current_problem_id:
+        current = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
+        if current and current.status == "current":
+            current.status = "available"
+    control.current_problem_id = None
     control.ended = True
     control.status = "CLOSED"
     transition_event_state(db, "ROUND1_RESULT", validate=False, commit=False)
-    record_event(db, "round1.ended", actor=current_user)
+    record_event(db, "round1.manually_ended", actor=current_user, metadata={
+        "assigned_team_count": assigned_count,
+        "unassigned_team_count": unassigned_count,
+    })
     db.commit()
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return _round_payload(db, ROUND_META["round-1"])
+    snapshot = event_snapshot(db)
+    response = _round_payload(db, ROUND_META["round-1"])
+    db.close()
+    await manager.broadcast_event("round1_ended", {
+        "manual": True,
+        "assigned_team_count": assigned_count,
+        "unassigned_team_count": unassigned_count,
+    })
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/admin/rounds/wildcard/applications/open")

@@ -1,5 +1,5 @@
 export const auctionConfig = {
-  startingCoins: 1000,
+  startingCoins: 5000,
   topWinners: 5,
   timerRange: '30\u201390 seconds',
   exampleTeams: 30,
@@ -73,8 +73,8 @@ export interface RuleItem {
 
 export const roundOneRules: RuleItem[] = [
   {
-    title: '1000 AlumniCoins',
-    description: 'Every team begins with 1000 AlumniCoins.',
+    title: '5000 AlumniCoins',
+    description: 'Every team begins with 5000 AlumniCoins.',
     icon: 'coins',
   },
   {
@@ -207,7 +207,7 @@ export const evaluationCriteria: RuleItem[] = [
 
 export const eventFlowSteps: RuleItem[] = [
   { title: 'Registration', description: 'Teams register for the event.', icon: 'file' },
-  { title: '1000 AlumniCoins', description: 'Every team receives 1000 AlumniCoins.', icon: 'coins' },
+  { title: '5000 AlumniCoins', description: 'Every team receives 5000 AlumniCoins.', icon: 'coins' },
   {
     title: 'Round 1 Part 1 \u2014 Problem Statement Auction',
     description: 'Top 5 teams win the same Problem Statement. Repeat until all teams have a PS.',
@@ -269,7 +269,7 @@ export const auctionRoundCard = {
   eyebrow: 'Bid to Build',
   badge: 'Round 1',
   title: 'Problem Statement Auction',
-  chips: ['Top 5 Win', '1000 AlumniCoins'],
+  chips: ['Top 5 Win', '5000 AlumniCoins'],
   footer: 'Bid to Build',
 }
 

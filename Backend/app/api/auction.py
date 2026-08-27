@@ -24,6 +24,7 @@ from app.services.bid_cooldown import bid_cooldown_rejection, bid_cooldown_remai
 from app.core.event_constants import ROUND1_WINNER_COUNT
 from app.services.round1_auto_assignment import (
     ROUND1_FINALIZATION_LOCK,
+    is_final_auto_allotment_problem,
     update_round1_winning_bid_aggregate,
 )
 
@@ -75,6 +76,8 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
     control = get_or_create_round_control(db, "ROUND1")
     if not ps or ps.id != control.current_problem_id or ps.status != "current":
         raise HTTPException(status_code=400, detail="Invalid or unavailable Problem Statement")
+    if is_final_auto_allotment_problem(db, ps.id):
+        raise HTTPException(status_code=409, detail="Final Round 1 problem must use auto allotment.")
 
     auction_bids = db.query(Bid).filter(
         Bid.ps_id == ps.id,
@@ -163,6 +166,8 @@ async def finalize_round_one(
         ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
         if not ps:
             raise HTTPException(status_code=404, detail="Problem Statement not found")
+        if ps.status != "allocated" and is_final_auto_allotment_problem(db, ps.id):
+            raise HTTPException(status_code=409, detail="Final Round 1 problem must use auto allotment.")
         if ps.status == "allocated":
             # Idempotent: the assignment and aggregate were already committed.
             existing_winners = db.query(Team).filter(Team.ps_id == ps.id).all()

@@ -9,6 +9,8 @@ from app.core.security import get_password_hash, verify_password, create_access_
 from jose import JWTError, jwt
 from app.core.config import settings
 from app.services.activity_log import record_event
+from app.services.participant_presence import participant_presence_payload
+from app.api.websockets import manager
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -103,7 +105,7 @@ def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends
     return {"message": "Registration successful, pending admin approval."}
 
 @router.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     login_id = form_data.username.strip().lower()
     user = db.query(User).filter(func.lower(User.email) == login_id).first()
     if not user or not user.credentials_active or not verify_password(form_data.password, user.password_hash):
@@ -123,7 +125,12 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         if not team or not team.is_approved:
             raise HTTPException(status_code=403, detail="Team is not approved by admin yet.")
             
-    return _issue_session(user, db)
+    token = _issue_session(user, db)
+    if user.role in ("leader", "member"):
+        presence = participant_presence_payload(db)
+        db.close()
+        await manager.broadcast_event("participant_presence_changed", presence)
+    return token
 
 
 @router.post("/leaderboard/login", response_model=Token)
@@ -139,8 +146,13 @@ def leaderboard_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Sess
     return _issue_session(user, db)
 
 @router.post("/logout")
-def logout(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def logout(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    participant_logout = current_user.role in ("leader", "member")
     record_event(db, "auth.logout", actor=current_user)
     current_user.session_id = None
     db.commit()
+    if participant_logout:
+        presence = participant_presence_payload(db)
+        db.close()
+        await manager.broadcast_event("participant_presence_changed", presence)
     return {"message": "Successfully logged out"}

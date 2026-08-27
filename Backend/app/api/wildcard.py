@@ -263,6 +263,42 @@ async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=De
     return await close_wildcard_slot_bidding(db, current_user)
 
 
+@router.post("/admin/rounds/wildcard/end")
+async def end_wildcard(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
+    control = get_or_create_round_control(db, "WILDCARD")
+    if control.ended:
+        return wildcard_payload(db)
+
+    applications = db.query(Wildcard).filter(Wildcard.status.in_(("applied", "qualified", "selected", "eliminated"))).count()
+    winners = db.query(Wildcard).filter(Wildcard.status.in_(("qualified", "selected"))).count()
+    selections = db.query(Wildcard).filter(Wildcard.status == "selected", Wildcard.problem_id.is_not(None)).count()
+    control.ended = True
+    control.status = "COMPLETE"
+    control.applications_open = False
+    control.current_problem_id = None
+    control.current_selection_rank = None
+    control.selection_started_at = None
+    control.selection_ends_at = None
+    transition_event_state(db, "CODING", validate=False, commit=False)
+    record_event(db, "wildcard.manually_ended", actor=current_user, metadata={
+        "application_count": applications,
+        "winner_count": winners,
+        "completed_selection_count": selections,
+    })
+    db.commit()
+    snapshot = event_snapshot(db)
+    response = wildcard_payload(db)
+    db.close()
+    await manager.broadcast_event("wildcard_ended", {
+        "manual": True,
+        "application_count": applications,
+        "winner_count": winners,
+        "completed_selection_count": selections,
+    })
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
+
+
 @router.post("/wildcard/select/{ps_id}")
 async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     team = ensure_leader(db, current_user)

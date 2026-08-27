@@ -118,7 +118,7 @@ class TokenData(BaseModel):
 
 # --- Event Config Schemas ---
 class EventConfigBase(BaseModel):
-    starting_coins: int = 1000
+    starting_coins: int = 5000
     round1_preview_seconds: int = 60
     round1_bid_seconds: int = 60
     round1_winner_count: int = 5

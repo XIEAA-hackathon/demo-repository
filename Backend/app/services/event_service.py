@@ -21,8 +21,10 @@ def get_or_create_event_config(db: Session) -> EventConfig:
         db.add(config)
         db.commit()
         db.refresh(config)
-    elif config.round1_winner_count != ROUND1_WINNER_COUNT:
+    elif config.round1_winner_count != ROUND1_WINNER_COUNT or config.starting_coins == 1000:
         config.round1_winner_count = ROUND1_WINNER_COUNT
+        if config.starting_coins == 1000:
+            config.starting_coins = 5000
         db.commit()
         db.refresh(config)
     return config

@@ -26,6 +26,7 @@ from app.schemas.schemas import (
 )
 from app.api.auth import get_current_active_admin
 from app.api.websockets import manager
+from app.services.participant_presence import participant_presence_payload
 from app.services.event_service import (
     event_snapshot,
     get_or_create_event_config,
@@ -285,6 +286,7 @@ def get_event_state_admin(
         **snapshot,
         "allowed_states": EVENT_STATES,
         "connected_clients": len(manager.active_connections),
+        **participant_presence_payload(db),
     }
 
 

@@ -33,6 +33,14 @@ def _selectable_problems(db: Session, *, lock: bool = False) -> list[ProblemStat
     return query.all()
 
 
+def is_final_auto_allotment_problem(db: Session, problem_id: int | None) -> bool:
+    """Return true when the referenced problem is the sole unused Round 1 problem."""
+    if problem_id is None:
+        return False
+    problems = _selectable_problems(db)
+    return len(problems) == 1 and problems[0].id == problem_id
+
+
 def _eligible_teams(db: Session, *, lock: bool = False) -> list[Team]:
     query = (
         db.query(Team)
