@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { API_URL } from "../services/api/config";
+import { WS_URL } from "../services/api/config";
+import { connectReconnectingSocket } from "../services/realtime/connectReconnectingSocket";
 import { useReconciledCountdown } from "../services/realtime/useReconciledCountdown";
 import "./Dashboard.css";
 
@@ -18,6 +20,7 @@ function ProblemStatementDisplay({ token, onUnauthorized, onLogout }) {
     let failures = 0;
     let hasDisplay = false;
     let inFlight = false;
+    let socketConnected = false;
     const schedule = (delay) => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(load, delay);
@@ -50,15 +53,27 @@ function ProblemStatementDisplay({ token, onUnauthorized, onLogout }) {
         }
       } finally {
         inFlight = false;
-        if (active) schedule(failures ? Math.min(30_000, 1000 * 2 ** failures) : document.hidden ? 30_000 : 2000);
+        if (active) schedule(failures ? Math.min(30_000, 1000 * 2 ** failures) : document.hidden && socketConnected ? 60_000 : socketConnected ? 30_000 : 12_000);
       }
     };
     const onVisibility = () => schedule(document.hidden ? 30_000 : 0);
+    const disconnect = connectReconnectingSocket({
+      url: `${WS_URL}/ws/auction`,
+      getToken: () => token,
+      onStatus: (status) => {
+        socketConnected = status === "connected" || status === "reconnected";
+        if (status === "reconnected") schedule(0);
+      },
+      onMessage: (message) => {
+        if (!["bid_updated", "wildcard_bid_updated"].includes(message.type)) schedule(200);
+      },
+    });
     void load();
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       active = false;
       if (timer) window.clearTimeout(timer);
+      disconnect();
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [onUnauthorized, token]);

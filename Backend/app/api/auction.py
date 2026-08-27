@@ -29,6 +29,25 @@ from app.services.round1_auto_assignment import (
 
 router = APIRouter()
 
+
+def _round1_bid_leaderboard(db: Session, ps_id: int, round_number: int) -> list[dict]:
+    rows = (
+        db.query(Bid, Team)
+        .join(Team, Team.id == Bid.team_id)
+        .filter(Bid.ps_id == ps_id, Bid.round == round_number)
+        .order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc())
+        .all()
+    )
+    return [
+        {
+            "rank": rank,
+            "team_id": team.id,
+            "team_name": team.team_name,
+            "amount": row.amount,
+        }
+        for rank, (row, team) in enumerate(rows, start=1)
+    ]
+
 def _assert_state(state: str, config: GameConfig, allowed: List[str]):
     if state not in allowed:
         raise HTTPException(status_code=409, detail=f"Action not allowed in state '{state}'. Allowed: {allowed}")
@@ -98,11 +117,25 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
         db.rollback()
         raise HTTPException(status_code=409, detail="The bid changed concurrently. Refresh and retry.") from exc
 
-    await manager.broadcast_event("bid_updated", {
+    payload = {
         "team_name": team.team_name,
         "team_id": team.id,
         "ps_id": ps.id,
         "amount": next_amount,
+        "round": "ROUND1",
+        "bid": {
+            "id": existing_bid.id if existing_bid else f"{ps.id}-{team.id}",
+            "team_id": team.id,
+            "ps_id": ps.id,
+            "amount": next_amount,
+            "round": config.current_round,
+            "timestamp": now.isoformat(),
+        },
+        "leaderboard": _round1_bid_leaderboard(db, ps.id, config.current_round),
+    }
+    db.close()
+    await manager.broadcast_event("bid_updated", {
+        **payload,
     })
     return {"message": "Bid placed successfully. Coins are not deducted yet.", "increment": bid.increment, "amount": next_amount}
 

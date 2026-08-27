@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -16,12 +17,13 @@ from app.services.event_service import event_snapshot, get_team_for_user
 router = APIRouter()
 
 
-def make_event(event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def make_event(event_type: str, payload: dict[str, Any] | None = None, *, version: int = 0) -> dict[str, Any]:
     timestamp = datetime.now(timezone.utc).isoformat()
     return jsonable_encoder({
         "type": event_type,
         "timestamp": timestamp,
         "server_time": timestamp,
+        "version": version,
         "payload": payload or {},
     })
 
@@ -31,6 +33,8 @@ class ConnectionManager:
 
     def __init__(self):
         self.active_connections: dict[WebSocket, dict[str, Any]] = {}
+        self._version = 0
+        self._broadcast_lock = asyncio.Lock()
 
     async def connect(self, websocket: WebSocket, identity: dict[str, Any]):
         await websocket.accept()
@@ -40,16 +44,22 @@ class ConnectionManager:
         self.active_connections.pop(websocket, None)
 
     async def send_event(self, websocket: WebSocket, event_type: str, payload: dict[str, Any] | None = None):
-        await websocket.send_json(make_event(event_type, payload))
+        await websocket.send_json(make_event(event_type, payload, version=self._version))
 
     async def broadcast_event(self, event_type: str, payload: dict[str, Any] | None = None):
-        message = make_event(event_type, payload)
-        dead: list[WebSocket] = []
-        for connection in list(self.active_connections):
-            try:
-                await connection.send_json(message)
-            except Exception:
-                dead.append(connection)
+        async with self._broadcast_lock:
+            self._version += 1
+            message = make_event(event_type, payload, version=self._version)
+            connections = list(self.active_connections)
+
+            async def send(connection: WebSocket) -> WebSocket | None:
+                try:
+                    await asyncio.wait_for(connection.send_json(message), timeout=2.0)
+                    return None
+                except Exception:
+                    return connection
+
+            dead = [connection for connection in await asyncio.gather(*(send(connection) for connection in connections)) if connection]
         for connection in dead:
             self.disconnect(connection)
 

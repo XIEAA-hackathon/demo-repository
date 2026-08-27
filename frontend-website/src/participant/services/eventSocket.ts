@@ -5,6 +5,7 @@ import { getAccessToken } from './apiClient'
 export interface EventMessage {
   type: string
   server_time: string
+  version: number
   payload: Record<string, unknown>
 }
 

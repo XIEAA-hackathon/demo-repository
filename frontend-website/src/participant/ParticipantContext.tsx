@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { participantService } from './services/apiParticipantService'
 import type { ParticipantService } from './services/participantService'
 import { connectEventSocket } from './services/eventSocket'
-import type { ParticipantDashboard } from './types'
+import type { EventMessage } from './services/eventSocket'
+import { participantEventStates, type ParticipantDashboard, type ParticipantEventState } from './types'
 import { getStageRoute } from './routeConfig'
 import type { ApiStatus } from '../services/realtime/timerReconciliation'
 
@@ -16,6 +17,7 @@ interface ParticipantContextValue {
   lastSyncAt: number | null
   documentHidden: boolean
   refreshPending: boolean
+  realtimeEvent: EventMessage | null
   service: ParticipantService
   refresh: () => Promise<ParticipantDashboard | null>
 }
@@ -31,9 +33,12 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
   const [documentHidden, setDocumentHidden] = useState(() => document.hidden)
   const [refreshPending, setRefreshPending] = useState(false)
+  const [realtimeEvent, setRealtimeEvent] = useState<EventMessage | null>(null)
   const refreshInFlight = useRef<Promise<ParticipantDashboard | null> | null>(null)
   const dashboardRef = useRef<ParticipantDashboard | null>(null)
   const lastSuccessfulRefreshStartedAt = useRef(0)
+  const lastEventVersion = useRef(0)
+  const socketStatusRef = useRef('connecting')
   const navigate = useNavigate()
 
   const refresh = useCallback(() => {
@@ -82,23 +87,24 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         if (stopped) return
         const next = await refresh()
         failures = next ? 0 : failures + 1
-        schedule(document.hidden ? 30_000 : next ? 5_000 : Math.min(30_000, 1_000 * 2 ** failures))
+        const connected = ['connected', 'reconnected'].includes(socketStatusRef.current)
+        schedule(document.hidden && connected ? 60_000 : connected && next ? 30_000 : next ? 12_000 : Math.min(30_000, 1_000 * 2 ** failures))
       }, delay)
     }
     const onVisibility = () => {
       setDocumentHidden(document.hidden)
       if (timer !== undefined) window.clearTimeout(timer)
       if (document.hidden) {
-        schedule(30_000)
+        schedule(['connected', 'reconnected'].includes(socketStatusRef.current) ? 60_000 : 15_000)
         return
       }
       void (async () => {
         const next = await refresh()
         failures = next ? 0 : failures + 1
-        schedule(next ? 5_000 : Math.min(30_000, 1_000 * 2 ** failures))
+        schedule(next ? 30_000 : Math.min(30_000, 1_000 * 2 ** failures))
       })()
     }
-    schedule(5_000)
+    schedule(30_000)
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
       stopped = true
@@ -129,13 +135,79 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       }, 300)
     }
     const disconnect = connectEventSocket((message) => {
-      // Live bid ranks are already refreshed by BiddingPanel's coalesced poll.
-      // A bid from another team must not make every participant fetch the much
-      // larger dashboard as well. The bidder still refreshes after its POST.
+      const previousVersion = lastEventVersion.current
+      if (message.version > 0) lastEventVersion.current = message.version
+      if (previousVersion > 0 && message.version > previousVersion + 1) queueRefresh()
+      setRealtimeEvent(message)
+
+      if (message.type === 'event_snapshot' || message.type === 'event_state_changed' || message.type === 'timer_sync') {
+        const rawState = message.payload.event_state
+        const nextState = typeof rawState === 'string' && participantEventStates.includes(rawState as ParticipantEventState)
+          ? rawState as ParticipantEventState
+          : null
+        const rawTiming = message.payload.timing as Record<string, unknown> | undefined
+        if (nextState || rawTiming) {
+          setDashboard((current) => {
+            if (!current) return current
+            const next = {
+              ...current,
+              eventState: nextState ?? current.eventState,
+              timing: rawTiming ? {
+                serverTime: String(rawTiming.server_time ?? message.server_time),
+                receivedAt: Date.now(),
+                startedAt: rawTiming.started_at == null ? null : String(rawTiming.started_at),
+                endsAt: rawTiming.ends_at == null ? null : String(rawTiming.ends_at),
+                paused: Boolean(rawTiming.paused),
+                pausedRemainingSeconds: rawTiming.paused_remaining_seconds == null ? null : Number(rawTiming.paused_remaining_seconds),
+              } : current.timing,
+            }
+            dashboardRef.current = next
+            setLastSyncAt(Date.now())
+            setApiStatus('healthy')
+            return next
+          })
+          if (nextState) navigate(getStageRoute(nextState).path, { replace: true })
+        }
+        return
+      }
+
       if (message.type === 'bid_updated' || message.type === 'wildcard_bid_updated') return
-      queueRefresh(message.type === 'event_snapshot' || message.type === 'event_state_changed')
+      if (message.type === 'round_updated' && message.payload.action === 'winners_assigned') {
+        const winners = Array.isArray(message.payload.winners) ? message.payload.winners : []
+        const winner = winners.find((row) => String((row as Record<string, unknown>).team_id) === dashboardRef.current?.team.id) as Record<string, unknown> | undefined
+        const rawProblem = message.payload.problem as Record<string, unknown> | undefined
+        if (winner && rawProblem) {
+          setDashboard((current) => {
+            if (!current) return current
+            const problem = {
+              id: String(rawProblem.id),
+              number: Number(rawProblem.number),
+              title: String(rawProblem.title),
+              summary: String(rawProblem.description ?? ''),
+              description: String(rawProblem.description ?? ''),
+              startingBid: Number(rawProblem.starting_bid ?? current.gameConfig.round1BaseBidPrice),
+            }
+            const amount = Number(winner.amount)
+            const next = {
+              ...current,
+              wallet: { ...current.wallet, balance: current.wallet.balance - amount },
+              currentProblem: problem,
+              roundOneProblem: problem,
+              finalProblem: problem,
+              round1Assigned: true,
+              round1AssignmentType: 'BID_WINNER' as const,
+              round1AssignmentCost: amount,
+            }
+            dashboardRef.current = next
+            return next
+          })
+        }
+        return
+      }
+      queueRefresh()
     }, (status) => {
       setSocketStatus(status)
+      socketStatusRef.current = status
       if (status === 'reconnected') queueRefresh()
     })
     return () => {
@@ -145,8 +217,8 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
   }, [navigate, refresh])
 
   const value = useMemo(
-    () => ({ dashboard, loading, error, socketStatus, apiStatus, lastSyncAt, documentHidden, refreshPending, service: participantService, refresh }),
-    [apiStatus, dashboard, documentHidden, error, lastSyncAt, loading, refresh, refreshPending, socketStatus],
+    () => ({ dashboard, loading, error, socketStatus, apiStatus, lastSyncAt, documentHidden, refreshPending, realtimeEvent, service: participantService, refresh }),
+    [apiStatus, dashboard, documentHidden, error, lastSyncAt, loading, realtimeEvent, refresh, refreshPending, socketStatus],
   )
   return <ParticipantContext.Provider value={value}>{children}</ParticipantContext.Provider>
 }

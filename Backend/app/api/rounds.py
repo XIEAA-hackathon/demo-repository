@@ -252,12 +252,17 @@ async def select_problem(round_slug: str, problem_id: int, db: Session = Depends
             status_code=409,
             detail="The final Round 1 problem must be confirmed through Last Problem Auto Allotment.",
         )
+    # A completed auction leaves the global event in ROUND1_RESULT. Reset that
+    # transient state when the next independent auction is selected so clients
+    # do not mistake the new READY problem for the previous result.
+    transition_event_state(db, "WAITING", validate=False, commit=False)
     problem.status = "current"
     control.current_problem_id = problem.id
     control.status = "READY"
     record_event(db, "round1.problem_selected", actor=current_user, entity_type="problem", entity_id=problem.id)
     db.commit()
     await manager.broadcast_event("round_updated", {"round": meta["type"], "action": "problem_selected", "problem_id": problem.id})
+    await manager.broadcast_event("event_state_changed", event_snapshot(db))
     return _round_payload(db, meta)
 
 
@@ -371,6 +376,13 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
                 [winner["amount"] for winner in winners],
             )
         problem.status = "completed"
+        assigned_problem = {
+            "id": problem.id,
+            "number": int(_display_number(problem)) if _display_number(problem).isdigit() else problem.ps_number,
+            "title": problem.title,
+            "description": problem.description or "",
+            "starting_bid": get_or_create_event_config(db).round1_minimum_bid,
+        }
         control.current_problem_id = None
         control.status = "READY"
         record_event(db, "round1.winners_assigned", actor=current_user, entity_type="problem", entity_id=problem.id, metadata={"winner_team_ids": [winner["team_id"] for winner in winners]})
@@ -381,6 +393,7 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
         "round": meta["type"],
         "action": "winners_assigned",
         "winners": winners,
+        "problem": assigned_problem,
     })
     return response
 

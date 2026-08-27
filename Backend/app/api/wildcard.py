@@ -31,6 +31,7 @@ from app.services.wildcard_service import (
     current_selection,
     finalize_slot_bidding,
     reconcile_wildcard_selection,
+    ranked_wildcard_bids,
     selection_remaining_seconds,
     sync_application_window,
     wildcard_payload,
@@ -213,12 +214,20 @@ async def place_wildcard_bid(
     except (IntegrityError, OperationalError) as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="The wildcard bid changed concurrently. Refresh and retry.") from exc
-    await manager.broadcast_event("wildcard_bid_updated", {
+
+    leaderboard = [
+        {"rank": rank, "team_id": ranked_team.id, "team_name": ranked_team.team_name, "amount": ranked_bid.amount}
+        for rank, (ranked_bid, ranked_team, _application) in enumerate(ranked_wildcard_bids(db), start=1)
+    ]
+    payload = {
         "team_name": team.team_name,
         "team_id": team.id,
         "amount": next_amount,
         "round": "WILDCARD",
-    })
+        "leaderboard": leaderboard,
+    }
+    db.close()
+    await manager.broadcast_event("wildcard_bid_updated", payload)
     return {"message": "Wildcard slot bid placed. Coins are deducted only if the team qualifies.", "increment": request.increment, "amount": next_amount}
 
 

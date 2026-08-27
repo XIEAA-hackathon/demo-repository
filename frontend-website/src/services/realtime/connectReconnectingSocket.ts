@@ -53,7 +53,9 @@ export function connectReconnectingSocket<T>({
       })
       onStatus?.(stopped ? 'disconnected' : 'reconnecting')
       if (stopped || event.code === 4401) return
-      retryTimer = window.setTimeout(connect, Math.min(30_000, 1_000 * 2 ** attempt++))
+      const baseDelay = Math.min(30_000, 1_000 * 2 ** attempt++)
+      const jitteredDelay = Math.round(baseDelay * (0.85 + Math.random() * 0.3))
+      retryTimer = window.setTimeout(connect, jitteredDelay)
     }
   }
 

@@ -17,7 +17,7 @@ export default function BiddingPanel({
   round: Bid['round']
   qualificationSlots?: number
 }) {
-  const { dashboard, service, refresh } = useParticipant()
+  const { dashboard, service, refresh, realtimeEvent, socketStatus } = useParticipant()
   const [entries, setEntries] = useState<LeaderboardEntry[]>([])
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -43,7 +43,7 @@ export default function BiddingPanel({
       timer = window.setTimeout(async () => {
         if (stopped) return
         try { await loadLeaderboard() } catch { /* The next fallback poll retries. */ }
-        schedule(document.hidden ? 30_000 : 2_000)
+        schedule(document.hidden ? 60_000 : 30_000)
       }, delay)
     }
     const onVisibility = () => { if (!document.hidden) schedule(0) }
@@ -55,6 +55,21 @@ export default function BiddingPanel({
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [loadLeaderboard])
+  useEffect(() => {
+    if (!realtimeEvent || !['bid_updated', 'wildcard_bid_updated'].includes(realtimeEvent.type)) return
+    if (realtimeEvent.payload.round !== round) return
+    const rows = realtimeEvent.payload.leaderboard
+    if (!Array.isArray(rows)) return
+    setEntries(rows.map((row) => {
+      const entry = row as Record<string, unknown>
+      return {
+        rank: Number(entry.rank),
+        teamId: String(entry.team_id),
+        teamName: String(entry.team_name),
+        amount: Number(entry.amount),
+      }
+    }))
+  }, [realtimeEvent, round])
   useEffect(() => setHighSpendConfirmed(false), [problem.id])
 
   if (!dashboard) return null
@@ -80,7 +95,8 @@ export default function BiddingPanel({
       const accepted = isWildcard
         ? await service.placeWildcardBid(increment)
         : await service.placeBid(problem.id, increment)
-      await Promise.allSettled([refresh(), loadLeaderboard()])
+      if (!['connected', 'reconnected'].includes(socketStatus)) await loadLeaderboard()
+      await refresh()
       setMessage({ type: 'success', text: `Bid accepted at ${accepted} coins. Coins are not deducted until finalization.` })
     } catch (cause) {
       await Promise.allSettled([refresh(), loadLeaderboard()])

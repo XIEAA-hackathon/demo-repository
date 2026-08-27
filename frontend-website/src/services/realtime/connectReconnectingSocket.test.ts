@@ -57,7 +57,7 @@ try {
 
   FakeWebSocket.instances[0].forceClose()
   assert.equal(statuses.at(-1), 'reconnecting')
-  await new Promise((resolve) => setTimeout(resolve, 1_050))
+  await new Promise((resolve) => setTimeout(resolve, 1_250))
   assert.equal(FakeWebSocket.instances.length, 2)
 
   FakeWebSocket.instances[1].open()

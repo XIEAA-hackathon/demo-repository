@@ -40,7 +40,8 @@ def test_event_snapshot_contains_server_timing(client, admin_headers):
 
 
 def test_websocket_event_envelope_is_structured():
-    message = make_event("bid_updated", {"team_id": 4, "amount": 250})
+    message = make_event("bid_updated", {"team_id": 4, "amount": 250}, version=7)
     assert message["type"] == "bid_updated"
     assert message["timestamp"] == message["server_time"]
     assert message["payload"] == {"team_id": 4, "amount": 250}
+    assert message["version"] == 7
