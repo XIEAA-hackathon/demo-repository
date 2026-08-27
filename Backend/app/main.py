@@ -13,7 +13,7 @@ from app.models import models
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.services.demo_seed import provision_demo_accounts
-from app.services.event_service import get_or_create_event_config, get_or_create_game_config
+from app.services.event_service import get_or_create_event_config, get_or_create_game_config, upgrade_legacy_starting_coins
 from app.services.event_service import sync_expired_event_state
 from app.services.wildcard_service import reconcile_wildcard_selection
 from app.api.websockets import manager
@@ -80,6 +80,9 @@ async def lifespan(app: FastAPI):
         # Ensure singleton EventConfig + GameConfig rows exist
         get_or_create_event_config(db)
         get_or_create_game_config(db)
+        upgraded_teams = upgrade_legacy_starting_coins(db)
+        if upgraded_teams:
+            logger.info("Upgraded %s legacy team wallets to 5,000 starting coins.", upgraded_teams)
     finally:
         db.close()
 

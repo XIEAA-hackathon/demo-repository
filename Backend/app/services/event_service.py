@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from app.models.models import EventConfig, GameConfig, RoundControl, Team, User
+from app.models.models import EventConfig, GameConfig, RoundControl, Team, User, WalletTransaction
 from app.core.event_constants import ROUND1_WINNER_COUNT
 from app.schemas.schemas import EVENT_STATES
 from app.services.activity_log import record_event
@@ -14,6 +14,31 @@ STATE_TRANSITIONS = {
     for index, state in enumerate(EVENT_STATES)
 }
 
+LEGACY_STARTING_COINS = 1000
+STARTING_COINS = 5000
+
+
+def upgrade_legacy_starting_coins(db: Session) -> int:
+    """Upgrade wallets created with the former 1,000-coin allocation once."""
+    legacy_team_ids = db.query(WalletTransaction.team_id).filter(
+        WalletTransaction.transaction_type == "INITIAL_ALLOCATION",
+        WalletTransaction.amount == LEGACY_STARTING_COINS,
+    )
+    team_count = db.query(Team).filter(Team.id.in_(legacy_team_ids)).update(
+        {Team.coins: Team.coins + (STARTING_COINS - LEGACY_STARTING_COINS)},
+        synchronize_session=False,
+    )
+    db.query(WalletTransaction).filter(
+        WalletTransaction.transaction_type == "INITIAL_ALLOCATION",
+        WalletTransaction.amount == LEGACY_STARTING_COINS,
+    ).update({WalletTransaction.amount: STARTING_COINS}, synchronize_session=False)
+    db.query(EventConfig).filter(EventConfig.starting_coins == LEGACY_STARTING_COINS).update(
+        {EventConfig.starting_coins: STARTING_COINS},
+        synchronize_session=False,
+    )
+    db.commit()
+    return team_count
+
 def get_or_create_event_config(db: Session) -> EventConfig:
     config = db.query(EventConfig).first()
     if not config:
@@ -21,10 +46,10 @@ def get_or_create_event_config(db: Session) -> EventConfig:
         db.add(config)
         db.commit()
         db.refresh(config)
-    elif config.round1_winner_count != ROUND1_WINNER_COUNT or config.starting_coins == 1000:
+    elif config.round1_winner_count != ROUND1_WINNER_COUNT or config.starting_coins == LEGACY_STARTING_COINS:
         config.round1_winner_count = ROUND1_WINNER_COUNT
-        if config.starting_coins == 1000:
-            config.starting_coins = 5000
+        if config.starting_coins == LEGACY_STARTING_COINS:
+            config.starting_coins = STARTING_COINS
         db.commit()
         db.refresh(config)
     return config

@@ -1,5 +1,6 @@
 """Admin config API and event state transitions."""
-from app.models.models import EventConfig, GameConfig
+from app.models.models import EventConfig, GameConfig, Team, WalletTransaction
+from app.services.event_service import upgrade_legacy_starting_coins
 
 
 def test_admin_get_config(client, admin_headers, db):
@@ -8,6 +9,30 @@ def test_admin_get_config(client, admin_headers, db):
     data = response.json()
     assert data["starting_coins"] == 5000
     assert data["round1_winner_count"] == 5
+
+
+def test_legacy_starting_coins_upgrade_is_idempotent(db):
+    team = Team(team_name="Legacy Team", coins=800, is_approved=True)
+    db.add(team)
+    db.flush()
+    allocation = WalletTransaction(
+        team_id=team.id,
+        transaction_type="INITIAL_ALLOCATION",
+        amount=1000,
+        description="Initial AlumniCoins from EventConfig",
+    )
+    db.add(allocation)
+    db.commit()
+
+    assert upgrade_legacy_starting_coins(db) == 1
+    db.refresh(team)
+    db.refresh(allocation)
+    assert team.coins == 4800
+    assert allocation.amount == 5000
+
+    assert upgrade_legacy_starting_coins(db) == 0
+    db.refresh(team)
+    assert team.coins == 4800
 
 
 def test_admin_update_config_validates(client, admin_headers, db):
