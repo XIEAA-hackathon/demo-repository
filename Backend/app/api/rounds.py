@@ -318,8 +318,13 @@ async def close_bidding(round_slug: str, db: Session = Depends(get_db), current_
     control.status = "READY"
     record_event(db, "round1.bidding_closed", actor=current_user, entity_type="problem", entity_id=control.current_problem_id)
     db.commit()
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return _round_payload(db, meta)
+    # Materialize every DB-backed value while the session is available, then
+    # release its connection before potentially slow WebSocket fan-out.
+    snapshot = event_snapshot(db)
+    response = _round_payload(db, meta)
+    db.close()
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/admin/rounds/{round_slug}/assign-winners")
@@ -370,12 +375,14 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
         control.status = "READY"
         record_event(db, "round1.winners_assigned", actor=current_user, entity_type="problem", entity_id=problem.id, metadata={"winner_team_ids": [winner["team_id"] for winner in winners]})
         db.commit()
+        response = {"winners": winners, **_round_payload(db, meta)}
+        db.close()
     await manager.broadcast_event("round_updated", {
         "round": meta["type"],
         "action": "winners_assigned",
         "winners": winners,
     })
-    return {"winners": winners, **_round_payload(db, meta)}
+    return response
 
 
 @router.post("/admin/rounds/round-1/final-auto-assignment")

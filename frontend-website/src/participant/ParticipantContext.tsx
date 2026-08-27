@@ -129,6 +129,10 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       }, 300)
     }
     const disconnect = connectEventSocket((message) => {
+      // Live bid ranks are already refreshed by BiddingPanel's coalesced poll.
+      // A bid from another team must not make every participant fetch the much
+      // larger dashboard as well. The bidder still refreshes after its POST.
+      if (message.type === 'bid_updated' || message.type === 'wildcard_bid_updated') return
       queueRefresh(message.type === 'event_snapshot' || message.type === 'event_state_changed')
     }, (status) => {
       setSocketStatus(status)

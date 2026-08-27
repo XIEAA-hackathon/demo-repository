@@ -104,6 +104,7 @@ function AdminApplication({ onLogout }) {
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const loadInFlight = useRef(null);
+  const bidLoadInFlight = useRef(null);
   const lastSuccessfulLoadStartedAt = useRef(0);
 
   const load = useCallback(() => {
@@ -155,6 +156,17 @@ function AdminApplication({ onLogout }) {
     return request;
   }, []);
 
+  const loadBidData = useCallback(() => {
+    if (bidLoadInFlight.current) return bidLoadInFlight.current;
+    const request = Promise.allSettled([getBidHistory(), getLeaderboard()]).then(([bidResult, boardResult]) => {
+      if (bidResult.status === "fulfilled") setBids(bidResult.value);
+      if (boardResult.status === "fulfilled") setLeaderboard(boardResult.value.teams || boardResult.value);
+    });
+    bidLoadInFlight.current = request;
+    void request.finally(() => { if (bidLoadInFlight.current === request) bidLoadInFlight.current = null; });
+    return request;
+  }, []);
+
   useEffect(() => { const id = setTimeout(() => void load(), 0); return () => clearTimeout(id); }, [load]);
   useEffect(() => { const resync = () => { void load(); }; window.addEventListener("admin:resync", resync); return () => window.removeEventListener("admin:resync", resync); }, [load]);
   useEffect(() => {
@@ -185,22 +197,31 @@ function AdminApplication({ onLogout }) {
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
   }, [load]);
   useEffect(() => {
-    let timer;
+    let fullTimer;
+    let bidTimer;
     let latestEventAt = 0;
     const queueLoad = () => {
       if (document.hidden) return;
       latestEventAt = Date.now();
-      clearTimeout(timer);
-      timer = setTimeout(() => {
+      clearTimeout(fullTimer);
+      fullTimer = setTimeout(() => {
         if (lastSuccessfulLoadStartedAt.current < latestEventAt) void load();
       }, 300);
     };
+    const queueBidLoad = () => {
+      if (document.hidden) return;
+      clearTimeout(bidTimer);
+      bidTimer = setTimeout(() => void loadBidData(), 300);
+    };
     const disconnect = connectAuctionSocket({
       onStatus: (status) => { setSocketStatus(status); if (status === "reconnected") queueLoad(); },
-      onMessage: queueLoad,
+      onMessage: (message) => {
+        if (message.type === "bid_updated" || message.type === "wildcard_bid_updated") queueBidLoad();
+        else queueLoad();
+      },
     });
-    return () => { clearTimeout(timer); disconnect(); };
-  }, [load]);
+    return () => { clearTimeout(fullTimer); clearTimeout(bidTimer); disconnect(); };
+  }, [load, loadBidData]);
   useEffect(() => { const timer = setInterval(() => setClockNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   const remaining = useServerCountdown(state?.timing, state?.event_state);
   const staleSeconds = lastSyncAt ? Math.floor((clockNow - lastSyncAt) / 1000) : null;
