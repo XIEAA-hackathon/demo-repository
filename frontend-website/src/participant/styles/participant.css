@@ -361,6 +361,12 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 .participant-login__brand { display: inline-flex; margin-bottom: 2rem; }
 .participant-login__card h1 { margin: .35rem 0; }
 .participant-login__card .form { margin-top: 1.5rem; }
+.participant-password-field { position: relative; }
+.participant-password-field input { padding-inline-end: 3.25rem; }
+.participant-password-field button { position: absolute; inset-inline-end: .55rem; top: 50%; width: 2.25rem; height: 2.25rem; display: grid; place-items: center; padding: 0; transform: translateY(-50%); border: 0; border-radius: .5rem; background: transparent; color: var(--purple-bright); cursor: pointer; }
+.participant-password-field button:hover { background: rgba(180,25,255,.1); }
+.participant-password-field button:focus-visible { outline: 2px solid var(--purple-bright); outline-offset: 2px; }
+.participant-password-field svg { width: 1.1rem; height: 1.1rem; }
 .stage-nav__note { margin: 1rem; font-size: .75rem; }
 .topbar__team .button { padding: .45rem .75rem; }
 

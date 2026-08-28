@@ -55,6 +55,7 @@ class TeamResponse(BaseModel):
     ps_id: Optional[int]
     is_approved: bool
     members: List[MemberResponse]
+    logged_in: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

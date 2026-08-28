@@ -9,7 +9,7 @@ import pytest
 
 from app.core.config import settings
 from app.core.security import get_password_hash, verify_password
-from app.models.models import Bid, GameConfig, Member, ProblemStatement, RoundControl, Submission, Team, User, WalletTransaction, Wildcard, WildcardBid
+from app.models.models import Bid, GameConfig, Member, ProblemStatement, RegistrationImportRow, RoundControl, Submission, Team, User, WalletTransaction, Wildcard, WildcardBid
 from app.services.demo_seed import provision_demo_accounts
 
 
@@ -337,9 +337,9 @@ def test_registration_credential_reset_allows_fresh_passwords_and_preserves_syst
     ])
     db.commit()
     source = (
-        "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email\n"
-        "Team Alpha,Alpha Leader,alpha@example.com,Alpha Member,member.alpha@example.com\n"
-        "Team Beta,Beta Leader,beta@example.com,Beta Member,member.beta@example.com\n"
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password\n"
+        "Team Alpha,Alpha Leader,alpha@example.com,Alpha@123,Alpha Member,member.alpha@example.com,AlphaMember@123\n"
+        "Team Beta,Beta Leader,beta@example.com,Beta@123,Beta Member,member.beta@example.com,BetaMember@123\n"
     ).encode()
 
     def import_and_download():
@@ -370,7 +370,7 @@ def test_registration_credential_reset_allows_fresh_passwords_and_preserves_syst
     repeated, repeated_rows = import_and_download()
     assert repeated["leaders_created"] == 0
     assert repeated["existing_leaders"] == 2
-    assert all(row["Leader Password"] == "EXISTING ACCOUNT" for row in repeated_rows)
+    assert {row["Leader Login Email"] for row in repeated_rows} == {"alpha@example.com", "beta@example.com"}
     assert db.query(User).filter(User.email.in_(("alpha@example.com", "beta@example.com"))).count() == 2
 
     alpha_headers = {
@@ -400,14 +400,13 @@ def test_registration_credential_reset_allows_fresh_passwords_and_preserves_syst
         json={"confirmation": "RESET CREDENTIALS"},
     )
     assert reset.status_code == 200, reset.text
-    assert reset.json()["reset"]["participant_accounts"] == 2
-    assert reset.json()["deleted"]["participant_accounts"] == 0
-    assert reset.json()["deleted"]["teams"] == 0
+    assert reset.json()["reset"]["participant_accounts"] == 4
+    assert reset.json()["deleted"]["participant_accounts"] == 4
+    assert reset.json()["deleted"]["teams"] == 2
+    assert reset.json()["event_lifecycle_reset"] is False
     db.expire_all()
-    imported_accounts = db.query(User).filter(User.email.in_(("alpha@example.com", "beta@example.com"))).all()
-    assert len(imported_accounts) == 2
-    assert all(account.account_source == "IMPORTED" and not account.credentials_active for account in imported_accounts)
-    assert db.query(Team).filter(Team.team_name.in_(("Team Alpha", "Team Beta"))).count() == 2
+    assert db.query(User).filter(User.account_source == "IMPORTED").count() == 0
+    assert db.query(Team).filter(Team.team_name.in_(("Team Alpha", "Team Beta"))).count() == 0
     for email, password in first_passwords.items():
         assert client.post("/login", data={"username": email, "password": password}).status_code == 401
     assert client.get("/participant/dashboard", headers=alpha_headers).status_code == 401
@@ -425,14 +424,132 @@ def test_registration_credential_reset_allows_fresh_passwords_and_preserves_syst
     ).status_code == 200
 
     after_reset, after_reset_rows = import_and_download()
-    assert after_reset["teams_created"] == 0
-    assert after_reset["leaders_created"] == 0
-    assert after_reset["existing_leaders"] == 2
+    assert after_reset["teams_created"] == 2
+    assert after_reset["leaders_created"] == 2
+    assert after_reset["existing_leaders"] == 0
     new_passwords = {row["Leader Login Email"]: row["Leader Password"] for row in after_reset_rows}
     assert all(password and password != "EXISTING ACCOUNT" for password in new_passwords.values())
-    assert new_passwords != first_passwords
     for email, password in new_passwords.items():
         assert client.post("/login", data={"username": email, "password": password}).status_code == 200
+
+
+def test_registration_reset_preserves_manual_team_updated_by_import(client, admin_headers, db):
+    manual_leader = User(
+        name="Manual Leader",
+        email="manual.team@example.com",
+        password_hash=get_password_hash("ManualTeam@123"),
+        role="leader",
+    )
+    db.add(manual_leader)
+    db.flush()
+    manual_team = Team(team_name="Manual Existing Team", leader_id=manual_leader.id, is_approved=True)
+    db.add(manual_team)
+    db.flush()
+    manual_leader.team_id = manual_team.id
+    db.commit()
+
+    source = (
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password\n"
+        "Manual Existing Team,Manual Leader,manual.team@example.com,,Imported Member,imported.member@example.com,Member@123\n"
+    ).encode()
+    imported = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("registrations.csv", source, "text/csv")},
+    )
+    assert imported.status_code == 200, imported.text
+    assert imported.json()["teams_updated"] == 1
+
+    reset = client.post(
+        "/admin/registration/credentials/reset",
+        headers=admin_headers,
+        json={"confirmation": "RESET CREDENTIALS"},
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["deleted"]["teams"] == 0
+    db.expire_all()
+    assert db.query(Team).filter(Team.id == manual_team.id).count() == 1
+    assert db.query(User).filter(User.id == manual_leader.id, User.account_source == "MANUAL").count() == 1
+    assert db.query(User).filter(User.email == "imported.member@example.com").count() == 0
+    assert db.query(Member).filter(Member.team_id == manual_team.id).count() == 0
+    assert db.query(RegistrationImportRow).count() == 0
+    assert client.post(
+        "/login",
+        data={"username": "manual.team@example.com", "password": "ManualTeam@123"},
+    ).status_code == 200
+
+
+def test_five_team_import_presence_reset_and_clean_reimport(client, admin_headers, db):
+    rows = [
+        f"Team {index},Leader {index},leader{index}@example.com,Leader{index}@123"
+        for index in range(1, 6)
+    ]
+    source = ("Team Name,Leader Name,Leader Email,Leader Password\n" + "\n".join(rows) + "\n").encode()
+
+    def import_sheet():
+        response = client.post(
+            "/admin/registration/import",
+            headers=admin_headers,
+            files={"file": ("five-teams.csv", source, "text/csv")},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    first_import = import_sheet()
+    assert first_import["teams_created"] == 5
+    initial_teams = client.get("/teams", headers=admin_headers).json()
+    assert len(initial_teams) == 5
+    assert all(team["logged_in"] is False for team in initial_teams)
+
+    logins = [
+        client.post(
+            "/login",
+            data={"username": f"leader{index}@example.com", "password": f"Leader{index}@123"},
+        )
+        for index in (1, 2)
+    ]
+    assert all(login.status_code == 200 for login in logins)
+    first_token, second_token = (login.json()["access_token"] for login in logins)
+    first_headers = {"Authorization": f"Bearer {first_token}"}
+
+    with client.websocket_connect(f"/ws/auction?token={first_token}") as first_socket:
+        assert first_socket.receive_json()["type"] == "event_snapshot"
+        with client.websocket_connect(f"/ws/auction?token={second_token}") as second_socket:
+            assert second_socket.receive_json()["type"] == "event_snapshot"
+            active_teams = client.get("/teams", headers=admin_headers).json()
+            assert sum(team["logged_in"] for team in active_teams) == 2
+
+            reset = client.post(
+                "/admin/registration/credentials/reset",
+                headers=admin_headers,
+                json={"confirmation": "RESET CREDENTIALS"},
+            )
+            assert reset.status_code == 200, reset.text
+            assert reset.json()["deleted"]["teams"] == 5
+            assert reset.json()["deleted"]["participant_accounts"] == 5
+            assert reset.json()["event_lifecycle_reset"] is False
+
+    assert client.get("/teams", headers=admin_headers).json() == []
+    assert client.get("/participant/dashboard", headers=first_headers).status_code == 401
+    assert db.query(RegistrationImportRow).count() == 0
+
+    second_import = import_sheet()
+    assert second_import["teams_created"] == 5
+    assert second_import["teams_updated"] == 0
+    reimported_teams = client.get("/teams", headers=admin_headers).json()
+    assert len(reimported_teams) == 5
+    assert all(team["logged_in"] is False for team in reimported_teams)
+
+    post_reset_login = client.post(
+        "/login",
+        data={"username": "leader1@example.com", "password": "Leader1@123"},
+    )
+    assert post_reset_login.status_code == 200
+    post_reset_token = post_reset_login.json()["access_token"]
+    with client.websocket_connect(f"/ws/auction?token={post_reset_token}") as socket:
+        assert socket.receive_json()["type"] == "event_snapshot"
+        post_reset_teams = client.get("/teams", headers=admin_headers).json()
+        assert sum(team["logged_in"] for team in post_reset_teams) == 1
 
 
 def test_assignment_export_preserves_xlsx_format_and_original_columns(client, admin_headers):
@@ -537,8 +654,8 @@ def test_registration_credential_reset_preserves_active_event_data(client, admin
     provision_demo_accounts(db)
     db.commit()
     source = (
-        "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email\n"
-        "Team Alpha,Alpha Leader,alpha@example.com,Alpha Member,member.alpha@example.com\n"
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password\n"
+        "Team Alpha,Alpha Leader,alpha@example.com,Alpha@123,Alpha Member,member.alpha@example.com,Member@123\n"
     ).encode()
     imported = client.post(
         "/admin/registration/import",
@@ -547,8 +664,8 @@ def test_registration_credential_reset_preserves_active_event_data(client, admin
     )
     assert imported.status_code == 200, imported.text
     team = db.query(Team).filter(Team.team_name == "Team Alpha").one()
+    imported_team_id = team.id
     leader = db.query(User).filter(User.email == "alpha@example.com").one()
-    original_password_hash = leader.password_hash
     round_problem = ProblemStatement(ps_number="RESET-PS", title="Active", description="Active", round=1)
     wildcard_problem = ProblemStatement(ps_number="RESET-WC", title="Wildcard", description="Wildcard", round=2)
     db.add_all([round_problem, wildcard_problem])
@@ -594,21 +711,15 @@ def test_registration_credential_reset_preserves_active_event_data(client, admin
     )
     assert reset.status_code == 200, reset.text
     assert reset.json()["event_state"] == active_state
-    assert reset.json()["reset"]["participant_accounts"] == 1
-    assert reset.json()["deleted"]["teams"] == 0
+    assert reset.json()["reset"]["participant_accounts"] == 2
+    assert reset.json()["deleted"]["teams"] == 1
     db.expire_all()
-    reset_leader = db.query(User).filter(User.email == "alpha@example.com").one()
-    preserved_team = db.query(Team).filter(Team.team_name == "Team Alpha").one()
-    assert reset_leader.id == leader.id
-    assert reset_leader.password_hash != original_password_hash
-    assert not reset_leader.credentials_active
-    assert preserved_team.id == team.id
-    assert preserved_team.round1_problem_id == round_problem.id
-    assert preserved_team.ps_id == round_problem.id
-    assert db.query(Bid).filter(Bid.team_id == team.id, Bid.amount == 100).count() == 1
-    assert db.query(Wildcard).filter(Wildcard.team_id == team.id, Wildcard.status == "applied").count() == 1
-    assert db.query(WildcardBid).filter(WildcardBid.team_id == team.id, WildcardBid.amount == 175).count() == 1
-    assert db.query(Submission).filter(Submission.team_id == team.id).count() == 1
+    assert db.query(User).filter(User.email == "alpha@example.com").count() == 0
+    assert db.query(Team).filter(Team.team_name == "Team Alpha").count() == 0
+    assert db.query(Bid).filter(Bid.team_id == imported_team_id).count() == 0
+    assert db.query(Wildcard).filter(Wildcard.team_id == imported_team_id).count() == 0
+    assert db.query(WildcardBid).filter(WildcardBid.team_id == imported_team_id).count() == 0
+    assert db.query(Submission).filter(Submission.team_id == imported_team_id).count() == 0
     assert db.query(ProblemStatement).count() == 2
     preserved_game = db.query(GameConfig).first()
     assert preserved_game.state == active_state
@@ -633,9 +744,9 @@ def test_registration_credential_reset_preserves_active_event_data(client, admin
         files={"file": ("registrations.csv", source, "text/csv")},
     )
     assert imported_again.status_code == 200, imported_again.text
-    assert imported_again.json()["teams_created"] == 0
-    assert imported_again.json()["leaders_created"] == 0
-    assert imported_again.json()["existing_leaders"] == 1
+    assert imported_again.json()["teams_created"] == 1
+    assert imported_again.json()["leaders_created"] == 1
+    assert imported_again.json()["existing_leaders"] == 0
     credentials = client.get(
         f"/admin/registration/import/download/{imported_again.json()['download_token']}",
         headers=admin_headers,

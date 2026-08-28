@@ -241,7 +241,7 @@ button, input, select { font: inherit; }
 }
 
 .password-wrapper input {
-  padding-right: 65px;
+  padding-right: 48px;
 }
 
 .show-password {
@@ -257,7 +257,18 @@ button, input, select { font: inherit; }
   color: #be69ff;
 
   font-size: 11px;
+
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  cursor: pointer;
 }
+
+.show-password:hover { background: rgba(190, 105, 255, .1); }
+.show-password:focus-visible { outline: 2px solid #be69ff; outline-offset: 2px; }
+.show-password svg { width: 17px; height: 17px; }
 
 .login-button,
 .primary-button {

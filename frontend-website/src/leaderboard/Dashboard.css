@@ -947,6 +947,41 @@
   caret-color: #d8a8ff;
 }
 
+.leaderboard-password-field {
+  position: relative;
+}
+
+.leaderboard-password-field input {
+  padding-right: 52px;
+}
+
+.leaderboard-login-card .leaderboard-password-field button {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #d8a8ff;
+  cursor: pointer;
+}
+
+.leaderboard-login-card .leaderboard-password-field button:hover {
+  background: rgba(190, 100, 255, 0.12);
+}
+
+.leaderboard-login-card .leaderboard-password-field button svg {
+  width: 18px;
+  height: 18px;
+}
+
 .leaderboard-login-card input:focus-visible,
 .leaderboard-login-card button:focus-visible,
 .leaderboard-logout:focus-visible {
