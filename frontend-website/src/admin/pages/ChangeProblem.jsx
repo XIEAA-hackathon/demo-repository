@@ -245,7 +245,6 @@ export default function ChangeProblemPage({ revision = 0 }) {
       <section className="external-problems-panel">
         <header>
           <div>
-            <span>Manual assignment bank</span>
             <h3>External Problem Statements</h3>
             <p>Import the same Problem Number, Title, and Description format used by Round 1. These problems never enter bidding.</p>
           </div>
