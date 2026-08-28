@@ -211,6 +211,42 @@ def test_three_slot_ranked_selection_is_not_hardcoded(client, admin_headers, db)
     assert choice_counts == [3, 2, 1]
 
 
+def test_problem_display_snapshot_shrinks_with_wildcard_selection(
+    client, admin_headers, display_headers, db,
+):
+    _teams, participant_headers = _prepare_active_selection(
+        client, admin_headers, db, slots=4, problems=6,
+    )
+
+    previous_numbers = None
+    for rank, expected_count in enumerate([4, 3, 2, 1]):
+        snapshot = client.get("/public/leaderboard", headers=display_headers)
+        assert snapshot.status_code == 200, snapshot.text
+        payload = snapshot.json()
+        assert payload["event_state"] == "WILDCARD_SELECTION"
+        available = payload["available_wildcard_problems"]
+        assert len(available) == expected_count
+        assert all(set(problem) == {"problem_number", "number", "title", "description"} for problem in available)
+
+        current_numbers = [problem["problem_number"] for problem in available]
+        if previous_numbers is not None:
+            assert set(current_numbers) < set(previous_numbers)
+        previous_numbers = current_numbers
+
+        if expected_count > 1:
+            choices = client.get(
+                "/participant/problems?round=2", headers=participant_headers[rank],
+            ).json()
+            selected = client.post(
+                f"/wildcard/select/{choices[0]['id']}", headers=participant_headers[rank],
+            )
+            assert selected.status_code == 200, selected.text
+
+    # A fresh request is the reconnect recovery path used by the display client.
+    reconnected = client.get("/public/leaderboard", headers=display_headers).json()
+    assert len(reconnected["available_wildcard_problems"]) == 1
+
+
 def test_wildcard_selection_timer_configuration_range(client, admin_headers):
     configured = client.put("/admin/config", headers=admin_headers, json={"wildcard_selection_seconds": 10})
     assert configured.status_code == 200, configured.text

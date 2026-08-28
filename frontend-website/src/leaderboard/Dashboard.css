@@ -402,6 +402,67 @@
   line-height: 1.05;
 }
 
+.problem-display-card--wildcard {
+  margin-top: clamp(24px, 4vh, 50px);
+  padding: clamp(28px, 4vw, 56px);
+}
+
+.problem-display-card--wildcard h1 {
+  margin: 16px 0 clamp(28px, 4vh, 46px);
+  font-size: clamp(2rem, 4.2vw, 4.5rem);
+}
+
+.wildcard-problem-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid rgba(181, 108, 255, 0.24);
+  border-left: 1px solid rgba(181, 108, 255, 0.24);
+  text-align: left;
+}
+
+.wildcard-problem-list article {
+  min-width: 0;
+  padding: clamp(20px, 2.6vw, 34px);
+  border-right: 1px solid rgba(181, 108, 255, 0.24);
+  border-bottom: 1px solid rgba(181, 108, 255, 0.24);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.wildcard-problem-list article > span {
+  color: #c487ff;
+  font-size: clamp(0.68rem, .9vw, .82rem);
+  font-weight: 800;
+  letter-spacing: .15em;
+}
+
+.wildcard-problem-list h2 {
+  margin: 10px 0 8px;
+  color: #fff;
+  font-size: clamp(1.15rem, 2vw, 1.75rem);
+  line-height: 1.2;
+}
+
+.wildcard-problem-list p {
+  max-width: 70ch;
+  margin: 0;
+  color: #b9a9c6;
+  font-size: clamp(.82rem, 1.15vw, 1rem);
+  line-height: 1.55;
+}
+
+.wildcard-display-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: clamp(24px, 3vh, 36px);
+  color: #8b7b98;
+  font-size: clamp(.7rem, .9vw, .85rem);
+  letter-spacing: .1em;
+}
+
+.wildcard-display-status strong { color: #e8d8f2; }
+
 
 .problem-description {
   max-width: 900px;
@@ -474,6 +535,9 @@
 
     align-self: flex-start;
   }
+
+  .wildcard-problem-list { grid-template-columns: 1fr; }
+  .wildcard-display-status { align-items: flex-start; flex-direction: column; }
 
 }
 

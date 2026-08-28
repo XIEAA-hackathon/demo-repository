@@ -204,6 +204,10 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         }
         return
       }
+      if (message.type === 'round1_assignment_changed') {
+        if (String(message.payload.team_id) === dashboardRef.current?.team.id) queueRefresh()
+        return
+      }
       queueRefresh()
     }, (status) => {
       setSocketStatus(status)

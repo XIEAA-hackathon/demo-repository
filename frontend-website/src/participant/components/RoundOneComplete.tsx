@@ -8,13 +8,13 @@ export default function RoundOneComplete({ dashboard }: { dashboard: Participant
     <Card className="center-card">
       <span className="confirmation-mark">✓</span>
       <p className="eyebrow">Assigned problem</p>
-      {dashboard.round1AssignmentType === 'AUTO_FINAL_PROBLEM' &&
-        <p className="notice">Automatically assigned final Round 1 problem</p>}
+      {dashboard.round1AssignmentType === 'MANUAL_ASSIGNMENT' &&
+        <p className="notice">Assigned by the Round 1 administrator</p>}
       <small>Problem #{dashboard.currentProblem?.number}</small>
       <h2>{dashboard.currentProblem?.title}</h2>
       <p className="muted">{dashboard.currentProblem?.description}</p>
-      {dashboard.round1AssignmentType === 'AUTO_FINAL_PROBLEM' && <div className="stats-grid">
-        <Stat label="Automatic Assignment Cost" value={`${dashboard.round1AssignmentCost ?? 0} coins`} />
+      {dashboard.round1AssignmentType === 'MANUAL_ASSIGNMENT' && <div className="stats-grid">
+        <Stat label="Assignment Cost" value={`${dashboard.round1AssignmentCost ?? 0} coins`} />
         <Stat label="Remaining Balance" value={`${dashboard.wallet.balance} coins`} />
       </div>}
       <p className="notice">You cannot participate in additional Round 1 bidding.</p>

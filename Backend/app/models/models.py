@@ -59,7 +59,7 @@ class Team(Base):
     ps_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
     round1_problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
     wildcard_problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
-    round1_assignment_type = Column(String, nullable=True) # BID_WINNER, AUTO_FINAL_PROBLEM
+    round1_assignment_type = Column(String, nullable=True) # BID_WINNER, MANUAL_ASSIGNMENT
     round1_assignment_cost = Column(Integer, nullable=True)
     is_approved = Column(Boolean, default=True)
     is_system_team = Column(Boolean, nullable=False, default=False)

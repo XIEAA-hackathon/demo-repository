@@ -110,6 +110,19 @@ export const createTeamCredentials = (payload) => request("/admin/teams/credenti
 export const getTeamCredentials = (teamId) => request(`/admin/teams/${teamId}/credentials`);
 export const resetParticipantPassword = (userId) => request(`/admin/participant-accounts/${userId}/reset-password`, { method: "POST" });
 export const getRoundControl = (round) => request(`/admin/rounds/${round}`);
+export const getRoundOneAssignments = () => request("/admin/rounds/round-1/assignments");
+export const changeRoundOneAssignment = (teamId, targetProblemId, newBalance) => request(`/admin/rounds/round-1/assignments/${teamId}`, {
+  method: "PUT",
+  body: JSON.stringify({
+    target_problem_id: targetProblemId,
+    ...(newBalance == null ? {} : { new_balance: newBalance }),
+  }),
+});
+export const importExternalProblems = (file) => {
+  const body = new FormData(); body.append("file", file);
+  return request("/admin/rounds/round-1/assignments/external-problems/import", { method: "POST", body });
+};
+export const downloadExternalProblemSample = () => request("/admin/rounds/round-1/assignments/external-problems/sample.csv", { responseType: "blob" });
 export const importRoundProblems = (round, file) => {
   const body = new FormData(); body.append("file", file);
   return request(`/admin/rounds/${round}/problems/import`, { method: "POST", body });
@@ -120,7 +133,8 @@ export const startRoundPreview = (round) => request(`/admin/rounds/${round}/prev
 export const startRoundBidding = (round) => request(`/admin/rounds/${round}/bidding/start`, { method: "POST" });
 export const closeRoundBidding = (round) => request(`/admin/rounds/${round}/bidding/close`, { method: "POST" });
 export const assignRoundWinners = (round) => request(`/admin/rounds/${round}/assign-winners`, { method: "POST" });
-export const confirmRoundOneAutoAllotment = (deduction) => request("/admin/rounds/round-1/final-auto-assignment", { method: "POST", body: JSON.stringify({ deduction }) });
+export const assignRoundOneProblem = (problemId, teamIds, deduction) => request(`/admin/rounds/round-1/problems/${problemId}/assign`, { method: "POST", body: JSON.stringify({ team_ids: teamIds, deduction }) });
+export const rebidRoundOneProblem = (problemId) => request(`/admin/rounds/round-1/problems/${problemId}/rebid`, { method: "POST" });
 export const endRoundOne = () => request("/admin/rounds/round-1/end", { method: "POST" });
 export const endWildcard = () => request("/admin/rounds/wildcard/end", { method: "POST" });
 export const openWildcardApplications = () => request("/admin/rounds/wildcard/applications/open", { method: "POST" });

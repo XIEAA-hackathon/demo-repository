@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Login from "./pages/Login";
+import ChangeProblemPage from "./pages/ChangeProblem";
 import {
   addTime, approveTeam, clearToken, deleteTeam, downloadRegistrationAssignments, downloadRegistrationCredentials, downloadRegistrationDemo, downloadRegistrationSample, finalizeProblem,
   getAdminConfig, getAdminState, getBidHistory,
@@ -9,7 +10,7 @@ import {
   updateAdminConfig, createTeamCredentials, getRoundControl, importRoundProblems, downloadRoundProblemSample,
   downloadRoundOneAssignments, downloadWildcardAssignments,
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
-  confirmRoundOneAutoAllotment, endRoundOne, openWildcardApplications, closeWildcardApplications,
+  assignRoundOneProblem, rebidRoundOneProblem, endRoundOne, openWildcardApplications, closeWildcardApplications,
   confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding, endWildcardSelectionTurn, endWildcard,
   getAdminSubmissions, openSubmissions, closeSubmissions, ApiError,
   getJudging, saveJudgingWinners, publishJudgingResults,
@@ -102,6 +103,7 @@ function AdminApplication({ onLogout }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
+  const [assignmentRevision, setAssignmentRevision] = useState(0);
   const loadInFlight = useRef(null);
   const lastSuccessfulLoadStartedAt = useRef(0);
   const socketStatusRef = useRef("connecting");
@@ -213,6 +215,11 @@ function AdminApplication({ onLogout }) {
           setTeams((current) => current.map((team) => ({ ...team, logged_in: loggedInTeamIds.has(team.id) })));
           return;
         }
+        if (["round1_assignment_changed", "external_problems_imported"].includes(message.type)) {
+          setAssignmentRevision((current) => current + 1);
+          queueLoad();
+          return;
+        }
         if (["event_snapshot", "event_state_changed", "timer_sync"].includes(message.type) && message.payload?.event_state) {
           const syncedAt = Date.now();
           setState((current) => ({ ...current, ...message.payload, timing: { ...message.payload.timing, received_at: syncedAt } }));
@@ -247,7 +254,7 @@ function AdminApplication({ onLogout }) {
         <div className="sidebar-brand"><div className="sidebar-logo">♠</div><div><strong>Bid to Build</strong><span>Admin control</span></div></div>
         <nav className="sidebar-nav">
           <span className="sidebar-section-title">Event</span>
-          {[["dashboard", "Overview", "⌂"], ["round1", "Round 1", "1"], ["wildcard", "Wildcard", "W"], ["submission", "Submission", "S"], ["judging", "Judging", "J"], ["recovery", "Recovery", "R"]].map(([id, label, icon]) => (
+          {[["dashboard", "Overview", "⌂"], ["round1", "Round 1", "1"], ["change-problem", "Change Problem", "C"], ["wildcard", "Wildcard", "W"], ["submission", "Submission", "S"], ["judging", "Judging", "J"], ["recovery", "Recovery", "R"]].map(([id, label, icon]) => (
             <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
           ))}
           <span className="sidebar-section-title sidebar-section-title--management">Management</span>
@@ -258,13 +265,14 @@ function AdminApplication({ onLogout }) {
         <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">A</div><div><strong>Event Admin</strong><span>Backend verified</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page === "admin-users" ? "Admin Users" : page === "leaderboard-users" ? "Leaderboard Users" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health" aria-live="polite"><span><i className={`status-dot ${socketConnected ? "online" : socketStatus === "reconnecting" || socketStatus === "connecting" ? "degraded" : "offline"}`} />Live connection <strong>{socketLabel}</strong></span><span><i className={`status-dot ${apiStatus === "healthy" ? "online" : apiStatus === "degraded" || apiStatus === "checking" ? "degraded" : "offline"}`} />Backend/API <strong>{apiLabel}</strong></span><small>Database {databaseLabel} · Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {syncLabel}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
+        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "change-problem" ? "Change Problem" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page === "admin-users" ? "Admin Users" : page === "leaderboard-users" ? "Leaderboard Users" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health" aria-live="polite"><span><i className={`status-dot ${socketConnected ? "online" : socketStatus === "reconnecting" || socketStatus === "connecting" ? "degraded" : "offline"}`} />Live connection <strong>{socketLabel}</strong></span><span><i className={`status-dot ${apiStatus === "healthy" ? "online" : apiStatus === "degraded" || apiStatus === "checking" ? "degraded" : "offline"}`} />Backend/API <strong>{apiLabel}</strong></span><small>Database {databaseLabel} · Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {syncLabel}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
         <div className="page-content">
           {stale && <div className="stale-state-warning" role="alert"><strong>LIVE DATA MAY BE STALE</strong><span>Last successful API synchronization: {staleSeconds == null ? "not yet completed" : `${staleSeconds} seconds ago`}. The live connection is tracked separately.</span></div>}
           {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
           {notice && <div className="admin-notice">{notice}</div>}
-          {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} />}
+          {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} config={config} onConfig={setConfig} />}
           {page === "round1" && <RoundControlPage round="round-1" state={state} config={config} remaining={remaining} onConfig={setConfig} />}
+          {page === "change-problem" && <ChangeProblemPage revision={assignmentRevision} />}
           {page === "wildcard" && <WildcardControlPage state={state} config={config} remaining={remaining} onConfig={setConfig} />}
           {page === "submission" && <SubmissionAdminPage />}
           {page === "judging" && <JudgingAdminPage onGlobalSync={load} />}
@@ -281,12 +289,39 @@ function AdminApplication({ onLogout }) {
   );
 }
 
-function Dashboard({ teams, problems, bids, state, remaining }) {
+function Dashboard({ teams, problems, bids, state, remaining, config, onConfig }) {
   const [preflight, setPreflight] = useState(null);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState("");
+  const [startingCoins, setStartingCoins] = useState("");
+  const [coinSaving, setCoinSaving] = useState(false);
+  const [coinError, setCoinError] = useState("");
+  const [coinNotice, setCoinNotice] = useState("");
+  useEffect(() => {
+    if (config?.starting_coins !== undefined) setStartingCoins(String(config.starting_coins));
+  }, [config?.starting_coins]);
   const check = async () => { setChecking(true); setCheckError(""); try { setPreflight(await runPreflight()); } catch (cause) { setCheckError(cause.message || "Event check failed."); } finally { setChecking(false); } };
-  return <section className="dashboard"><div className="hero-panel"><div><span className="eyebrow">LIVE EVENT STATE</span><h2>{labels[state?.event_state] || "Waiting"}</h2><p>Every connected participant receives state changes from the backend.</p></div><div className="hero-status"><span className="live-pulse" />{state?.timing?.paused ? "TIMER PAUSED" : remaining ? formatTime(remaining) : "READY"}</div></div><div className="stats-grid"><Stat label="REGISTERED TEAMS" value={teams.length} /><Stat label="PROBLEM STATEMENTS" value={problems.length} /><Stat label="BIDS RECEIVED" value={bids.length} /><Stat label="CURRENT ROUND" value={state?.current_round ?? 1} /></div><section className="preflight-panel"><div><h3>Event readiness</h3><p>Validate every live-event prerequisite without changing event state.</p></div><button className="primary-button" disabled={checking} onClick={() => void check()}>{checking ? "Running checks…" : "Run event check"}</button>{checkError && <div className="global-error" role="alert">{checkError}</div>}{preflight && <><strong className={`readiness-status readiness-status--${preflight.status.toLowerCase()}`}>{preflight.status}</strong><div className="preflight-list">{preflight.checks.map((item) => <div key={item.name}><span className={`check-mark check-mark--${item.status.toLowerCase()}`}>{item.status === "READY" ? "✓" : item.status === "WARNING" ? "!" : "×"}</span><span><strong>{item.name}</strong><small>{item.detail}</small></span></div>)}</div></>}</section></section>;
+  const saveStartingCoins = async (event) => {
+    event.preventDefault();
+    const value = startingCoins.trim();
+    const amount = Number(value);
+    setCoinError(""); setCoinNotice("");
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(amount) || amount > 1_000_000) {
+      setCoinError("Enter a whole number from 0 to 1,000,000.");
+      return;
+    }
+    setCoinSaving(true);
+    try {
+      const saved = await updateAdminConfig({ starting_coins: amount });
+      onConfig(saved);
+      setCoinNotice(`Saved ${amount.toLocaleString()} starting coins.`);
+    } catch (cause) {
+      setCoinError(cause.message || "Starting coins could not be saved.");
+    } finally {
+      setCoinSaving(false);
+    }
+  };
+  return <section className="dashboard"><div className="hero-panel"><div><span className="eyebrow">LIVE EVENT STATE</span><h2>{labels[state?.event_state] || "Waiting"}</h2><p>Every connected participant receives state changes from the backend.</p></div><div className="hero-status"><span className="live-pulse" />{state?.timing?.paused ? "TIMER PAUSED" : remaining ? formatTime(remaining) : "READY"}</div></div><div className="stats-grid"><Stat label="REGISTERED TEAMS" value={teams.length} /><Stat label="PROBLEM STATEMENTS" value={problems.length} /><Stat label="BIDS RECEIVED" value={bids.length} /><Stat label="CURRENT ROUND" value={state?.current_round ?? 1} /></div><section className="starting-coins-panel"><div><h3>Participant starting coins</h3><p>Used for newly created or imported teams and the next explicit Event Reset. Saving here never changes any team’s current balance.</p></div><form onSubmit={saveStartingCoins}><label htmlFor="starting-coins">Starting balance</label><div className="starting-coins-control"><input id="starting-coins" type="number" min="0" max="1000000" step="1" inputMode="numeric" value={startingCoins} disabled={!config || coinSaving} onChange={(event) => { setStartingCoins(event.target.value); setCoinError(""); setCoinNotice(""); }} aria-describedby="starting-coins-help" /><button className="primary-button" type="submit" disabled={!config || coinSaving}>{coinSaving ? "Saving…" : "Save coins"}</button></div><small id="starting-coins-help">Whole number from 0 to 1,000,000.</small>{coinError && <span className="starting-coins-message starting-coins-message--error" role="alert">{coinError}</span>}{coinNotice && <span className="starting-coins-message starting-coins-message--success" role="status">{coinNotice}</span>}</form></section><section className="preflight-panel"><div><h3>Event readiness</h3><p>Validate every live-event prerequisite without changing event state.</p></div><button className="primary-button" disabled={checking} onClick={() => void check()}>{checking ? "Running checks…" : "Run event check"}</button>{checkError && <div className="global-error" role="alert">{checkError}</div>}{preflight && <><strong className={`readiness-status readiness-status--${preflight.status.toLowerCase()}`}>{preflight.status}</strong><div className="preflight-list">{preflight.checks.map((item) => <div key={item.name}><span className={`check-mark check-mark--${item.status.toLowerCase()}`}>{item.status === "READY" ? "✓" : item.status === "WARNING" ? "!" : "×"}</span><span><strong>{item.name}</strong><small>{item.detail}</small></span></div>)}</div></>}</section></section>;
 }
 
 function RoundControlPage({ round, state, config, remaining, onConfig }) {
@@ -296,15 +331,17 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [autoDeduction, setAutoDeduction] = useState("");
-  const [autoConfirming, setAutoConfirming] = useState(false);
+  const [assignmentProblemId, setAssignmentProblemId] = useState(null);
+  const [selectedTeamIds, setSelectedTeamIds] = useState([]);
+  const [assignmentDeduction, setAssignmentDeduction] = useState("");
+  const [assignmentStage, setAssignmentStage] = useState("select");
   const [endConfirming, setEndConfirming] = useState(false);
   const loadRound = useCallback(() => getRoundControl(round).then(setData).catch((cause) => setError(cause.message)), [round]);
   useEffect(() => { void loadRound(); }, [loadRound, state?.timing?.server_time]);
   const run = async (operation, success) => {
     setWorking(true); setError(""); setNotice("");
-    try { const result = await operation(); if (result?.round_type) setData(result); setNotice(success); await loadRound(); }
-    catch (cause) { setError(cause.message || "Action failed."); if (cause instanceof ApiError && [409, 503].includes(cause.status)) await loadRound(); }
+    try { const result = await operation(); if (result?.round_type) setData(result); setNotice(typeof success === "function" ? success(result) : success); await loadRound(); return result; }
+    catch (cause) { setError(cause.message || "Action failed."); if (cause instanceof ApiError && [409, 503].includes(cause.status)) await loadRound(); return null; }
     finally { setWorking(false); }
   };
   const downloadSample = async () => {
@@ -328,18 +365,48 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   };
   const saveSettings = () => run(() => updateAdminConfig(config), `${isWildcard ? "Wildcard" : "Round 1"} timer settings saved.`);
   const current = data?.current_problem;
-  const finalAuto = data?.final_auto_assignment;
+  const remainingProblems = data?.remaining_problems;
+  const assignmentProblem = remainingProblems?.problems.find((problem) => problem.id === assignmentProblemId) || null;
+  const selectedTeams = (remainingProblems?.eligible_teams || []).filter((team) => selectedTeamIds.includes(team.team_id));
+  const deductionValue = Number(assignmentDeduction);
+  const validDeduction = assignmentDeduction !== "" && Number.isInteger(deductionValue) && deductionValue >= 0;
+  const insufficientTeams = validDeduction ? selectedTeams.filter((team) => team.coins < deductionValue) : [];
   useEffect(() => {
-    if (finalAuto?.status === "PENDING") setAutoDeduction(String(finalAuto.suggested_deduction));
-  }, [finalAuto?.problem?.id, finalAuto?.status, finalAuto?.suggested_deduction]);
-  const confirmAutoAllotment = async () => {
-    const deduction = Number(autoDeduction);
-    if (!Number.isInteger(deduction) || deduction < 0) {
-      setError("Deduction per team must be a whole number of zero or greater.");
-      return;
-    }
-    setAutoConfirming(false);
-    await run(() => confirmRoundOneAutoAllotment(deduction), "Final Round 1 problem allotted to every remaining team.");
+    if (assignmentProblemId != null) setAssignmentDeduction(String(remainingProblems?.suggested_deduction ?? 0));
+  }, [assignmentProblemId, remainingProblems?.suggested_deduction]);
+  const openAssignment = (problem) => {
+    setAssignmentProblemId(problem.id);
+    setSelectedTeamIds([]);
+    setAssignmentStage("select");
+    setError("");
+  };
+  const closeAssignment = () => {
+    if (working) return;
+    setAssignmentProblemId(null);
+    setSelectedTeamIds([]);
+    setAssignmentStage("select");
+  };
+  const toggleAssignmentTeam = (teamId) => {
+    setSelectedTeamIds((currentIds) => currentIds.includes(teamId)
+      ? currentIds.filter((id) => id !== teamId)
+      : assignmentProblem && currentIds.length < assignmentProblem.capacity_remaining
+        ? [...currentIds, teamId]
+        : currentIds);
+  };
+  const reviewAssignment = () => {
+    if (!selectedTeamIds.length) return setError("Select at least one eligible team.");
+    if (!validDeduction) return setError("Coins to deduct must be a whole number of zero or greater.");
+    if (insufficientTeams.length) return setError(`Lower the deduction or remove: ${insufficientTeams.map((team) => team.team_name).join(", ")}.`);
+    setError("");
+    setAssignmentStage("confirm");
+  };
+  const confirmManualAssignment = async () => {
+    if (!assignmentProblem || !validDeduction) return;
+    const result = await run(
+      () => assignRoundOneProblem(assignmentProblem.id, selectedTeamIds, deductionValue),
+      (response) => response?.message || `Problem #${assignmentProblem.problem_number} assigned.`,
+    );
+    if (result) closeAssignment();
   };
   const eventState = data?.event?.event_state;
   const hasTimer = Boolean(state?.timing?.ends_at || state?.timing?.paused);
@@ -378,14 +445,14 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
           {current && data.status === "READY" && !afterBidding && <button className="primary-button" disabled={working} onClick={() => run(() => startRoundPreview(round), "Preview started.")}>Start preview</button>}
           {data.status === "PREVIEW" && <button className="primary-button" disabled={working} onClick={() => run(() => startRoundBidding(round), "Bidding started.")}>End preview / start bidding</button>}
           {data.status === "BIDDING" && <button className="danger-button" disabled={working} onClick={() => run(() => closeRoundBidding(round), "Bidding closed.")}>Close bidding</button>}
-          {afterBidding && <button className="primary-button" disabled={working} onClick={() => run(() => assignRoundWinners(round), "Winner assignment completed.")}>Assign winner(s)</button>}
+          {afterBidding && <button className="primary-button" disabled={working} onClick={() => run(() => assignRoundWinners(round), (result) => result?.message || "Winner assignment completed.")}>Assign winner(s)</button>}
         </div>
       </article>
     </div>
 
     <section className={`round-problem-bank ${!isWildcard ? "round-problem-bank--round1" : ""}`}>
       <div className="round-section-heading"><div><span className="eyebrow">{isWildcard ? "WILDCARD" : "ROUND 1"} PROBLEMS</span><h3>Problem bank</h3></div><div className="round-inline-actions"><label className="secondary-button round-upload">Upload XLSX / CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-button" onClick={() => void downloadSample()}>Download sample CSV</button>{file && <button className="primary-button" disabled={working} onClick={() => run(() => importRoundProblems(round, file), `${file.name} imported.`)}>Import {file.name}</button>}</div></div>
-      <div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><div className="round-problem-copy"><b>{problem.title}</b><p title={problem.description}>{problem.description}</p></div><span>{problem.status}</span>{problem.status === "AVAILABLE" && !data.ended && !current && !(finalAuto?.status === "PENDING" && finalAuto.problem.id === problem.id) && <button className="secondary-button" onClick={() => run(() => selectRoundProblem(round, problem.id), `Problem #${problem.problem_number} selected.`)}>Select</button>}</article>) : <div className="round-empty"><strong>No problems imported</strong><p>Upload the organizer&apos;s XLSX or CSV problem bank.</p></div>}</div>
+      <div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><div className="round-problem-copy"><b>{problem.title}</b><p title={problem.description}>{problem.description}</p></div><span>{problem.status.replaceAll("_", " ")}</span>{problem.status === "AVAILABLE" && !data.ended && !current && <button className="secondary-button" onClick={() => run(() => selectRoundProblem(round, problem.id), `Problem #${problem.problem_number} selected.`)}>Select</button>}</article>) : <div className="round-empty"><strong>No problems imported</strong><p>Upload the organizer&apos;s XLSX or CSV problem bank.</p></div>}</div>
     </section>
 
     <section className={`round-settings ${!isWildcard ? "round-settings--round1" : ""}`}>
@@ -401,25 +468,35 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
       </div>}
       {!isWildcard && <button className="danger-link round-end" disabled={data.ended || working} onClick={() => setEndConfirming(true)}>{data.ended ? "Round 1 ended" : "END ROUND 1"}</button>}
     </section>
-    {!isWildcard && <section className="round-auto-allotment">
-      {finalAuto ? <>
-        <div className="round-auto-allotment__heading"><span className="eyebrow">LAST PROBLEM AUTO ALLOTMENT</span><h3>{finalAuto.status === "COMPLETED" ? "Final allotment completed" : "Confirm final allotment"}</h3></div>
-        <dl className="round-auto-allotment__grid">
-          <div><dt>Final Problem</dt><dd>#{finalAuto.problem.problem_number} — {finalAuto.problem.title}</dd></div>
-          <div><dt>Remaining Teams</dt><dd>{finalAuto.team_count}<span className="round-auto-allotment__team-names">{finalAuto.teams.map((team) => team.team_name).join(", ")}</span></dd></div>
-          <div><dt>Suggested Deduction</dt><dd>{finalAuto.suggested_deduction} coins</dd></div>
-          <div><dt>Deduction Per Team</dt><dd>{finalAuto.status === "PENDING" ? <input aria-label="Deduction per team" type="number" min="0" step="1" value={autoDeduction} onChange={(event) => setAutoDeduction(event.target.value)} /> : `${finalAuto.deduction_per_team} coins`}</dd></div>
-          <div><dt>Completed Auctions</dt><dd>{finalAuto.completed_auctions}</dd></div>
-        </dl>
-        {finalAuto.status === "PENDING" ? <button className="primary-button" disabled={working || autoDeduction === ""} onClick={() => setAutoConfirming(true)}>CONFIRM AUTO ALLOTMENT</button> : <div className="round-auto-allotment__teams"><strong>Assigned teams</strong><span>{finalAuto.teams.map((team) => team.team_name).join(", ")}</span></div>}
-      </> : <>
-        <div className="round-auto-allotment__heading"><span className="eyebrow">LAST PROBLEM AUTO ALLOTMENT</span><h3>Available at the final Round 1 problem</h3></div>
-        <div className="round-empty"><strong>Waiting for the final allotment state</strong><p>The confirmation grid becomes available when exactly one unused Round 1 problem and at least one eligible unassigned team remain.</p></div>
-      </>}
+    {!isWildcard && <section className="round-remaining-problems">
+      <header className="round-remaining-header"><div><h3>Remaining / Unassigned Problems</h3><p>Inspect assignment capacity, then choose whether to run another auction or assign specific eligible teams.</p></div><dl><div><dt>Unassigned teams</dt><dd>{remainingProblems?.unassigned_team_count ?? 0}</dd></div><div><dt>Suggested deduction</dt><dd>{remainingProblems?.suggested_deduction ?? 0} coins</dd></div><div><dt>Winning bid aggregate</dt><dd>{remainingProblems?.round1_winning_bid_sum ?? 0} / {remainingProblems?.round1_winning_bid_count ?? 0}<small>sum / actual winners</small></dd></div></dl></header>
+      <div className="round-remaining-table" role="table" aria-label="Round 1 problem assignment controls">
+        <div className="round-remaining-table__head" role="row"><span role="columnheader">Problem</span><span role="columnheader">Assigned</span><span role="columnheader">Capacity</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>
+        {(remainingProblems?.problems || []).map((problem) => <article className="round-remaining-row" role="row" key={problem.id}>
+          <div className="round-remaining-problem" role="cell"><strong>#{problem.problem_number} — {problem.title}</strong>{problem.assigned_teams.length ? <small title={problem.assigned_teams.map((team) => team.team_name).join(", ")}>{problem.assigned_teams.map((team) => team.team_name).join(", ")}</small> : <small>No teams assigned</small>}</div>
+          <strong className="round-remaining-count" role="cell">{problem.assigned_team_count} / 5</strong>
+          <span role="cell">{problem.capacity_remaining} open</span>
+          <span role="cell" className={`round-assignment-status round-assignment-status--${problem.assignment_status.toLowerCase()}`}>{problem.assignment_status === "PARTIAL" ? "Partially Assigned" : problem.assignment_status.charAt(0) + problem.assignment_status.slice(1).toLowerCase()}</span>
+          <div className="round-remaining-actions" role="cell">{problem.capacity_remaining > 0 ? <><button className="secondary-button" disabled={!problem.can_rebid || working} onClick={() => run(() => rebidRoundOneProblem(problem.id), `Problem #${problem.problem_number} selected for re-bid. Start its preview when ready.`)}>Re-bid</button><button className="primary-button" disabled={!problem.can_assign || working} onClick={() => openAssignment(problem)}>Assign</button></> : <span>Capacity filled</span>}</div>
+        </article>)}
+        {!remainingProblems?.problems.length && <div className="round-empty"><strong>No Round 1 problems</strong><p>Import the problem bank to begin.</p></div>}
+      </div>
     </section>}
     {!isWildcard && <div className="round-export-action"><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>DOWNLOAD ROUND 1 ASSIGNMENTS</button></div>}
-    {autoConfirming && finalAuto?.status === "PENDING" && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="auto-allotment-title"><h3 id="auto-allotment-title">Confirm final problem auto allotment?</h3><p>Assign Problem #{finalAuto.problem.problem_number} — {finalAuto.problem.title} to all {finalAuto.team_count} remaining teams and deduct up to {autoDeduction} coins from each team?</p><div><button className="secondary-button" disabled={working} onClick={() => setAutoConfirming(false)}>Cancel</button><button className="primary-button" disabled={working} onClick={() => void confirmAutoAllotment()}>{working ? "Assigning…" : "Confirm Auto Allotment"}</button></div></section></div>}
-    {endConfirming && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="end-round1-title"><h3 id="end-round1-title">END ROUND 1?</h3><p>This immediately stops Round 1. Existing assignments and balances remain unchanged; unassigned teams will stay unassigned.</p><dl><div><dt>Current problem</dt><dd>{current ? `#${current.problem_number} — ${current.title}` : finalAuto?.problem ? `#${finalAuto.problem.problem_number} — ${finalAuto.problem.title}` : "None"}</dd></div><div><dt>Assigned teams</dt><dd>{data.assigned_team_count ?? 0}</dd></div><div><dt>Unassigned teams</dt><dd>{data.unassigned_team_count ?? 0}</dd></div></dl><div><button className="secondary-button" disabled={working} onClick={() => setEndConfirming(false)}>Cancel</button><button className="danger-button" disabled={working} onClick={() => { setEndConfirming(false); void run(endRoundOne, "Round 1 ended. Wildcard can now be opened."); }}>{working ? "Ending…" : "END ROUND 1"}</button></div></section></div>}
+    {assignmentProblem && <div className="judging-confirmation-backdrop"><section className="judging-confirmation round-assignment-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-assignment-title">
+      <header><h3 id="manual-assignment-title">Assign Problem #{assignmentProblem.problem_number}</h3><p>{assignmentProblem.title}</p></header>
+      {assignmentStage === "select" ? <>
+        <dl className="round-assignment-summary"><div><dt>Currently assigned</dt><dd>{assignmentProblem.assigned_team_count} / 5</dd></div><div><dt>Remaining capacity</dt><dd>{assignmentProblem.capacity_remaining}</dd></div><div><dt>Calculated average</dt><dd>{remainingProblems.suggested_deduction} coins</dd></div></dl>
+        <label className="round-assignment-deduction" htmlFor="manual-assignment-deduction"><span>Coins to deduct per assigned team</span><input id="manual-assignment-deduction" type="number" min="0" step="1" inputMode="numeric" value={assignmentDeduction} onChange={(event) => { setAssignmentDeduction(event.target.value); setError(""); }} /><small>Editable. Manual assignments do not change the winning-bid average.</small></label>
+        <fieldset className="round-team-selector"><legend>Eligible teams <span>{selectedTeamIds.length} / {assignmentProblem.capacity_remaining} selected</span></legend>{remainingProblems.eligible_teams.length ? <div>{remainingProblems.eligible_teams.map((team) => { const selected = selectedTeamIds.includes(team.team_id); const atLimit = !selected && selectedTeamIds.length >= assignmentProblem.capacity_remaining; return <label key={team.team_id} className={selected ? "selected" : ""}><input type="checkbox" checked={selected} disabled={atLimit || working} onChange={() => toggleAssignmentTeam(team.team_id)} /><span><strong>{team.team_name}</strong><small>{team.coins} coins available</small></span></label>; })}</div> : <p>No eligible unassigned teams remain.</p>}</fieldset>
+        {insufficientTeams.length > 0 && <p className="round-assignment-warning" role="alert">The current deduction exceeds the balance of {insufficientTeams.map((team) => team.team_name).join(", ")}.</p>}
+        <div><button className="secondary-button" disabled={working} onClick={closeAssignment}>Cancel</button><button className="primary-button" disabled={working || !selectedTeamIds.length || !validDeduction || insufficientTeams.length > 0} onClick={reviewAssignment}>Review Assignment</button></div>
+      </> : <>
+        <div className="round-assignment-preview"><strong>Confirm this assignment</strong><p>Only these teams will receive Problem #{assignmentProblem.problem_number}. Existing winners remain unchanged.</p><ul>{selectedTeams.map((team) => <li key={team.team_id}><span>{team.team_name}</span><strong>{deductionValue} coins</strong></li>)}</ul></div>
+        <div><button className="secondary-button" disabled={working} onClick={() => setAssignmentStage("select")}>Back</button><button className="primary-button" disabled={working} onClick={() => void confirmManualAssignment()}>{working ? "Assigning…" : "Confirm Assignment"}</button></div>
+      </>}
+    </section></div>}
+    {endConfirming && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="end-round1-title"><h3 id="end-round1-title">END ROUND 1?</h3><p>This immediately stops Round 1. Existing assignments and balances remain unchanged; unassigned teams will stay unassigned.</p><dl><div><dt>Current problem</dt><dd>{current ? `#${current.problem_number} — ${current.title}` : "None"}</dd></div><div><dt>Assigned teams</dt><dd>{data.assigned_team_count ?? 0}</dd></div><div><dt>Unassigned teams</dt><dd>{data.unassigned_team_count ?? 0}</dd></div></dl><div><button className="secondary-button" disabled={working} onClick={() => setEndConfirming(false)}>Cancel</button><button className="danger-button" disabled={working} onClick={() => { setEndConfirming(false); void run(endRoundOne, "Round 1 ended. Wildcard can now be opened."); }}>{working ? "Ending…" : "END ROUND 1"}</button></div></section></div>}
   </section>;
 }
 

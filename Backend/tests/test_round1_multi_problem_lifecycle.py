@@ -12,7 +12,7 @@ def _participant_headers(email: str, session_id: str) -> dict[str, str]:
 def test_each_round_one_problem_restarts_the_normal_auction_lifecycle(client, admin_headers, db):
     shared_hash = get_password_hash("round-one-test")
     participants = []
-    for index in range(20):
+    for index in range(40):
         session_id = uuid.uuid4().hex
         email = f"round1-team-{index}@test.local"
         leader = User(
@@ -38,7 +38,7 @@ def test_each_round_one_problem_restarts_the_normal_auction_lifecycle(client, ad
             round=1,
             status="available",
         )
-        for index in range(1, 5)
+        for index in range(1, 9)
     ]
     db.add_all(problems)
     db.flush()
@@ -51,7 +51,7 @@ def test_each_round_one_problem_restarts_the_normal_auction_lifecycle(client, ad
     db.commit()
 
     aggregate_count = 0
-    for auction_index, problem in enumerate(problems[:3]):
+    for auction_index, problem in enumerate(problems[:7]):
         selected = client.post(
             f"/admin/rounds/round-1/problems/{problem.id}/select",
             headers=admin_headers,
@@ -60,7 +60,7 @@ def test_each_round_one_problem_restarts_the_normal_auction_lifecycle(client, ad
         assert selected.json()["event"]["event_state"] == "WAITING"
         assert selected.json()["current_problem"]["id"] == problem.id
         assert selected.json()["highest_bid"] is None
-        assert selected.json()["final_auto_assignment"] is None
+        assert selected.json()["remaining_problems"]["unassigned_team_count"] == 40 - aggregate_count
 
         preview = client.post("/admin/rounds/round-1/preview/start", headers=admin_headers)
         assert preview.status_code == 200, preview.text
@@ -103,7 +103,27 @@ def test_each_round_one_problem_restarts_the_normal_auction_lifecycle(client, ad
 
     status = client.get("/admin/rounds/round-1", headers=admin_headers)
     assert status.status_code == 200
-    final_auto = status.json()["final_auto_assignment"]
-    assert final_auto["status"] == "PENDING"
-    assert final_auto["problem"]["id"] == problems[3].id
-    assert final_auto["team_count"] == 5
+    remaining = status.json()["remaining_problems"]
+    final_row = next(row for row in remaining["problems"] if row["id"] == problems[7].id)
+    assert final_row["assignment_status"] == "UNASSIGNED"
+    assert final_row["can_rebid"] is True and final_row["can_assign"] is True
+
+    # The last problem is a normal, selectable auction. A zero-bid result does
+    # not auto-assign the final five teams and returns both manual choices.
+    assert client.post(
+        f"/admin/rounds/round-1/problems/{problems[7].id}/select",
+        headers=admin_headers,
+    ).status_code == 200
+    assert client.post("/admin/rounds/round-1/preview/start", headers=admin_headers).status_code == 200
+    assert client.post("/admin/rounds/round-1/bidding/start", headers=admin_headers).status_code == 200
+    assert client.post("/admin/rounds/round-1/bidding/close", headers=admin_headers).status_code == 200
+    last_result = client.post("/admin/rounds/round-1/assign-winners", headers=admin_headers)
+    assert last_result.status_code == 200, last_result.text
+    final_row = next(
+        row for row in last_result.json()["remaining_problems"]["problems"]
+        if row["id"] == problems[7].id
+    )
+    assert final_row["assignment_status"] == "UNASSIGNED"
+    assert final_row["can_rebid"] is True and final_row["can_assign"] is True
+    assert last_result.json()["unassigned_team_count"] == 5
+    assert last_result.json()["ended"] is False

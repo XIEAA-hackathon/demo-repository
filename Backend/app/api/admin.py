@@ -133,8 +133,8 @@ async def update_event_config_admin(
     data = updates.model_dump(exclude_unset=True)
 
     # Validation
-    if "starting_coins" in data and data["starting_coins"] < 0:
-        raise HTTPException(status_code=400, detail="starting_coins must be >= 0")
+    if "starting_coins" in data and not 0 <= data["starting_coins"] <= 1_000_000:
+        raise HTTPException(status_code=400, detail="starting_coins must be between 0 and 1000000")
     for field in ["round1_preview_seconds", "round1_bid_seconds", "wildcard_application_seconds", "wildcard_preview_seconds", "wildcard_bid_seconds"]:
         if field in data and data[field] <= 0:
             raise HTTPException(status_code=400, detail=f"{field} must be > 0")

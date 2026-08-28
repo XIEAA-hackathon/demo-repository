@@ -21,10 +21,9 @@ from app.services.event_service import (
 )
 from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_rejection, bid_cooldown_remaining
-from app.core.event_constants import ROUND1_WINNER_COUNT
-from app.services.round1_auto_assignment import (
+from app.services.round1_assignment import (
     ROUND1_FINALIZATION_LOCK,
-    is_final_auto_allotment_problem,
+    ROUND1_PROBLEM_CAPACITY,
     update_round1_winning_bid_aggregate,
 )
 
@@ -76,9 +75,6 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
     control = get_or_create_round_control(db, "ROUND1")
     if not ps or ps.id != control.current_problem_id or ps.status != "current":
         raise HTTPException(status_code=400, detail="Invalid or unavailable Problem Statement")
-    if is_final_auto_allotment_problem(db, ps.id):
-        raise HTTPException(status_code=409, detail="Final Round 1 problem must use auto allotment.")
-
     auction_bids = db.query(Bid).filter(
         Bid.ps_id == ps.id,
         Bid.round == config.current_round,
@@ -160,17 +156,14 @@ async def finalize_round_one(
     with ROUND1_FINALIZATION_LOCK:
         config = get_or_create_game_config(db)
         get_or_create_event_config(db)
-        winner_count = ROUND1_WINNER_COUNT
         control = get_or_create_round_control(db, "ROUND1")
 
         ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
         if not ps:
             raise HTTPException(status_code=404, detail="Problem Statement not found")
-        if ps.status != "allocated" and is_final_auto_allotment_problem(db, ps.id):
-            raise HTTPException(status_code=409, detail="Final Round 1 problem must use auto allotment.")
-        if ps.status == "allocated":
+        if ps.status in {"allocated", "completed", "no_bids"}:
             # Idempotent: the assignment and aggregate were already committed.
-            existing_winners = db.query(Team).filter(Team.ps_id == ps.id).all()
+            existing_winners = db.query(Team).filter(Team.round1_problem_id == ps.id).all()
             return {
                 "message": "Problem Statement already finalized.",
                 "ps": ps.ps_number,
@@ -180,8 +173,10 @@ async def finalize_round_one(
         ranked_bids = db.query(Bid).filter(
             Bid.ps_id == ps.id,
             Bid.round == config.current_round,
-        ).order_by(Bid.amount.desc(), Bid.timestamp.asc()).all()
+        ).order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).all()
 
+        existing_assignment_count = db.query(Team).filter(Team.round1_problem_id == ps.id).count()
+        winner_count = max(0, ROUND1_PROBLEM_CAPACITY - existing_assignment_count)
         winners = []
         for bid in ranked_bids:
             if len(winners) >= winner_count:
@@ -213,6 +208,17 @@ async def finalize_round_one(
                 [winner["amount"] for winner in winners],
             )
             ps.status = "allocated"
+        else:
+            ps.status = "no_bids"
+        if control.current_problem_id == ps.id:
+            control.current_problem_id = None
+        unassigned_count = db.query(Team).filter(
+            Team.is_approved.is_(True),
+            Team.is_system_team.is_(False),
+            Team.round1_problem_id.is_(None),
+        ).count()
+        control.status = "COMPLETE" if unassigned_count == 0 else "READY"
+        control.ended = unassigned_count == 0
         record_event(db, "round1.auction_finalized", actor=current_user, entity_type="problem", entity_id=ps.id, metadata={"winner_count": len(winners)})
         db.commit()
 
@@ -223,7 +229,12 @@ async def finalize_round_one(
         "winners": winners,
     })
     await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return {"message": "Round 1 finalized. Winners charged once.", "winners": winners}
+    message = (
+        "Round 1 finalized. Actual winners charged once."
+        if winners
+        else "No bids received. Problem moved to remaining allocation pool."
+    )
+    return {"message": message, "winners": winners}
 
 @router.get("/leaderboard")
 def get_leaderboard(db: Session = Depends(get_db), current_user = Depends(get_current_user)):

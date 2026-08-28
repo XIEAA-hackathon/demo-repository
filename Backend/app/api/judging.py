@@ -20,12 +20,23 @@ from app.services.event_service import (
     sync_expired_event_state,
     transition_event_state,
 )
+from app.services.wildcard_service import available_wildcard_problems
 
 router = APIRouter()
 
 
 def _team_payload(team: Team | None) -> dict | None:
     return {"team_id": team.id, "team_name": team.team_name} if team else None
+
+
+def _public_problem_payload(problem: ProblemStatement) -> dict:
+    number = problem.ps_number.split("-", 1)[-1]
+    return {
+        "problem_number": number,
+        "number": number,
+        "title": problem.title,
+        "description": problem.description,
+    }
 
 
 def _result_payload(db: Session, result: FinalResult | None, *, include_waiting_winners: bool) -> dict:
@@ -205,7 +216,7 @@ def public_event_display(
         control = get_or_create_round_control(db, "WILDCARD")
         if control.current_problem_id:
             problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
-    return {
+    payload = {
         "mode": "JUDGING_WAITING" if game.state == "JUDGING_WAIT" else "RESULTS_WAITING" if game.state == "RESULTS" else "WAITING",
         "event_state": game.state,
         "status_label": labels.get(game.state, "Waiting for next round"),
@@ -220,3 +231,9 @@ def public_event_display(
         "results": None,
         "timing": timing,
     }
+    if game.state == "WILDCARD_SELECTION":
+        payload["available_wildcard_problems"] = [
+            _public_problem_payload(available_problem)
+            for available_problem in available_wildcard_problems(db)
+        ]
+    return payload
