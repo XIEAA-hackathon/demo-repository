@@ -27,7 +27,7 @@ if [[ ! -f $ENV_FILE ]]; then
   admin_password=$(openssl rand -hex 18)
   umask 077
   printf '%s\n' \
-    'DATABASE_URL=sqlite:////opt/casino_hackathon/data/casino_hackathon.db' \
+    'DATABASE_URL=' \
     "SECRET_KEY=$secret_key" \
     'ALGORITHM=HS256' \
     'ACCESS_TOKEN_EXPIRE_MINUTES=1440' \
@@ -36,7 +36,7 @@ if [[ ! -f $ENV_FILE ]]; then
     "ADMIN_PASSWORD=$admin_password" \
     'ADMIN_NAME=Event Admin' > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
-  echo "Created the production environment with generated secrets; values were not printed."
+  echo "Created the production environment with generated secrets; set its PostgreSQL DATABASE_URL before deployment."
 else
   echo "Preserved existing $ENV_FILE."
 fi

@@ -7,7 +7,7 @@ import StageNavigation from './StageNavigation'
 import { isSyncStale } from '../../services/realtime/timerReconciliation'
 
 export default function ParticipantLayout() {
-  const { dashboard, socketStatus, apiStatus, lastSyncAt, documentHidden, refreshPending } = useParticipant()
+  const { dashboard, loading, error, socketStatus, apiStatus, lastSyncAt, documentHidden, refreshPending, refresh } = useParticipant()
   const { logout } = useAuth()
   const stage = getStageRoute(dashboard?.eventState ?? 'WAITING')
   const [now, setNow] = useState(Date.now())
@@ -48,7 +48,13 @@ export default function ParticipantLayout() {
       {stale && <div className="participant-stale-warning" role="alert"><strong>Live state may be stale.</strong> Last successful API synchronization: {staleSeconds === null ? 'not yet completed' : `${staleSeconds} seconds ago`}. Dashboard polling is recovering; the live connection is tracked separately.</div>}
       <div className="workspace">
         <StageNavigation />
-        <main className="workspace__main"><Outlet /></main>
+        <main className="workspace__main">
+          {loading && !dashboard
+            ? <p className="muted">Loading participant panel…</p>
+            : !dashboard
+              ? <div role="alert"><p className="error">{error ?? 'Unable to load event data. Retrying automatically…'}</p><button className="button button--secondary" disabled={refreshPending} onClick={() => void refresh()}>{refreshPending ? 'Retrying…' : 'Retry now'}</button></div>
+              : <Outlet />}
+        </main>
       </div>
     </div>
   )

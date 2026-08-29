@@ -95,7 +95,7 @@ jobs:
           stage="$RUNNER_TEMP/casino-release"
           archive="$RUNNER_TEMP/casino-hackathon-$DEPLOY_SHA.tar.gz"
           mkdir -p "$stage/Backend" "$stage/static" "$stage/deploy/aws"
-          cp -a Backend/app Backend/scripts Backend/requirements.txt Backend/run.py "$stage/Backend/"
+          cp -a Backend/app Backend/scripts Backend/migrations Backend/alembic.ini Backend/requirements.txt Backend/run.py "$stage/Backend/"
           cp -a frontend-website/dist/. "$stage/static/"
           cp -a deploy/aws/deploy-release.sh deploy/aws/nginx.conf deploy/aws/casino-hackathon-backend.service "$stage/deploy/aws/"
           printf 'DEPLOYED_COMMIT=%s\n' "$DEPLOY_SHA" > "$stage/deploy.env"

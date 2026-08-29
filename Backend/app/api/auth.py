@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from starlette.concurrency import run_in_threadpool
 from app.core.database import get_db
 from app.models.models import User, Team, Member
 from app.schemas.schemas import UserCreate, UserResponse, Token, TeamCreate
@@ -107,8 +108,25 @@ def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends
 @router.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     login_id = form_data.username.strip().lower()
-    user = db.query(User).filter(func.lower(User.email) == login_id).first()
-    if not user or not user.credentials_active or not verify_password(form_data.password, user.password_hash):
+    candidate = db.query(User).filter(func.lower(User.email) == login_id).first()
+    candidate_id = candidate.id if candidate and candidate.credentials_active else None
+    password_hash = candidate.password_hash if candidate_id else ""
+    # A password check is intentionally CPU-expensive. Release the SQLite
+    # connection before running bcrypt away from the single asyncio event loop.
+    db.close()
+    password_valid = bool(candidate_id) and await run_in_threadpool(
+        verify_password,
+        form_data.password,
+        password_hash,
+    )
+    if not password_valid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user = db.query(User).filter(User.id == candidate_id, User.credentials_active.is_(True)).first()
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -126,11 +144,16 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
             raise HTTPException(status_code=403, detail="Team is not approved by admin yet.")
             
     if user.role in ("leader", "member"):
-        await manager.disconnect_users({user.id}, reason="Signed in from another session")
+        participant_user_id = user.id
+    else:
+        participant_user_id = None
     token = _issue_session(user, db)
-    if user.role in ("leader", "member"):
-        presence = participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
-        await manager.broadcast_event("participant_presence_changed", presence)
+    # No request-scoped connection is held while an older socket is closed.
+    # The replacement socket publishes the authoritative presence update when
+    # it actually connects; login alone must not fan out a false online state.
+    db.close()
+    if participant_user_id is not None:
+        await manager.disconnect_users({participant_user_id}, reason="Signed in from another session")
     return token
 
 
@@ -155,5 +178,6 @@ async def logout(db: Session = Depends(get_db), current_user: User = Depends(get
     if participant_logout:
         await manager.disconnect_users({current_user.id})
         presence = participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
-        await manager.broadcast_event("participant_presence_changed", presence)
+        db.close()
+        await manager.broadcast_event("participant_presence_changed", presence, roles={"admin"})
     return {"message": "Successfully logged out"}

@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     ENABLE_EVENT_RESET: bool = False
 
-    # SQLite is the zero-configuration local default. The EC2 deployment sets
-    # an absolute path on its persistent application volume.
+    # SQLite is the zero-configuration local default. Production uses a
+    # postgresql+psycopg URL supplied through the service environment.
     DATABASE_URL: str = "sqlite:///./casino_hackathon.db"
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175"
 

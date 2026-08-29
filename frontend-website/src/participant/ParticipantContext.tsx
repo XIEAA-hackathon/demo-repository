@@ -75,7 +75,24 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     return request
   }, [])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    let stopped = false
+    let timer: number | undefined
+    let retryDelay = 1_000
+    const loadInitialSnapshot = async () => {
+      const next = await refresh()
+      if (next || stopped) return
+      timer = window.setTimeout(() => {
+        retryDelay = Math.min(8_000, retryDelay * 2)
+        void loadInitialSnapshot()
+      }, retryDelay)
+    }
+    void loadInitialSnapshot()
+    return () => {
+      stopped = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [refresh])
   useEffect(() => {
     const resync = () => { void refresh() }
     window.addEventListener('participant:resync', resync)
@@ -178,6 +195,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       }
 
       if (message.type === 'bid_updated' || message.type === 'wildcard_bid_updated') return
+      if (message.type === 'participant_presence_changed') return
       if (message.type === 'round_updated' && message.payload.action === 'winners_assigned') {
         realtimeRevision.current += 1
         const winners = Array.isArray(message.payload.winners) ? message.payload.winners : []

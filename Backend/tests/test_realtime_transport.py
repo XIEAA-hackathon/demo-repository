@@ -18,6 +18,11 @@ class FakeSocket:
         self.closed = (code, reason)
 
 
+class ClosedSocket(FakeSocket):
+    async def send_json(self, _message):
+        raise RuntimeError('Cannot call "send" once a close message has been sent.')
+
+
 def test_event_envelope_has_monotonic_version_and_compact_payload():
     first = make_event("bid_updated", {"team_id": 4, "amount": 250}, version=12)
     assert first["version"] == 12
@@ -60,5 +65,52 @@ def test_participant_connections_are_deduplicated_by_team_and_revocable_by_user(
         assert manager.participant_team_ids() == {7}
         assert first_tab.closed[0] == 4401 and second_tab.closed[0] == 4401
         assert admin in manager.active_connections
+
+    asyncio.run(scenario())
+
+
+def test_presence_broadcast_is_delivered_only_to_admin_connections():
+    async def scenario():
+        manager = ConnectionManager()
+        participant = FakeSocket()
+        admin = FakeSocket()
+        display = FakeSocket()
+        manager.active_connections = {
+            participant: {"user_id": 10, "role": "leader", "team_id": 4},
+            admin: {"user_id": 1, "role": "admin", "team_id": None},
+            display: {"user_id": 2, "role": "display", "team_id": None},
+        }
+
+        await manager.broadcast_event(
+            "participant_presence_changed",
+            {"logged_in_team_ids": [4]},
+            roles={"admin"},
+        )
+
+        assert participant.messages == []
+        assert display.messages == []
+        assert [message["type"] for message in admin.messages] == ["participant_presence_changed"]
+        assert admin.messages[0]["version"] == 0
+
+    asyncio.run(scenario())
+
+
+def test_closed_socket_is_removed_without_interrupting_healthy_recipients():
+    async def scenario():
+        manager = ConnectionManager()
+        first = FakeSocket()
+        closed = ClosedSocket()
+        third = FakeSocket()
+        manager.active_connections = {
+            first: {"role": "leader"},
+            closed: {"role": "leader"},
+            third: {"role": "admin"},
+        }
+
+        await manager.broadcast_event("event_state_changed", {"event_state": "WAITING"})
+
+        assert [message["type"] for message in first.messages] == ["event_state_changed"]
+        assert [message["type"] for message in third.messages] == ["event_state_changed"]
+        assert closed not in manager.active_connections
 
     asyncio.run(scenario())

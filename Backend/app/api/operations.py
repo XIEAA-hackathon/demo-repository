@@ -142,8 +142,11 @@ async def recovery_resume_timer(db: Session = Depends(get_db), current_user: Use
     resume_event_timer(db)
     record_event(db, "recovery.timer_resumed", actor=current_user)
     db.commit()
-    await manager.broadcast_event("timer_sync", event_snapshot(db))
-    return recovery_snapshot(db, current_user)
+    snapshot = event_snapshot(db)
+    response = recovery_snapshot(db, current_user)
+    db.close()
+    await manager.broadcast_event("timer_sync", snapshot)
+    return response
 
 
 @router.post("/admin/recovery/reload-state")
@@ -158,8 +161,10 @@ async def recovery_resync_clients(db: Session = Depends(get_db), current_user: U
     record_event(db, "recovery.clients_resynced", actor=current_user)
     db.commit()
     snapshot = event_snapshot(db)
+    response = recovery_snapshot(db, current_user)
+    db.close()
     await manager.broadcast_event("event_state_changed", snapshot)
-    return recovery_snapshot(db, current_user)
+    return response
 
 
 @router.post("/admin/recovery/retry-transition")
@@ -203,6 +208,14 @@ async def reset_event_data(
         raise
 
     snapshot = event_snapshot(db)
+    preserved = {
+        "system_accounts": db.query(User).filter(User.is_system_account.is_(True)).count(),
+        "system_teams": db.query(Team).filter(Team.is_system_team.is_(True)).count(),
+        "admin_accounts": db.query(User).filter(User.role == "admin").count(),
+        "participant_accounts": db.query(User).filter(User.role.in_(("leader", "member"))).count(),
+        "teams": db.query(Team).count(),
+    }
+    db.close()
     await manager.broadcast_event("event_state_changed", snapshot)
     await manager.broadcast_event("round_updated", {"action": "event_reset", "event": snapshot})
     await manager.broadcast_event("wildcard_updated", {"action": "event_reset", "event": snapshot})
@@ -210,13 +223,7 @@ async def reset_event_data(
     return {
         "status": "reset_complete",
         "deleted": deleted,
-        "preserved": {
-            "system_accounts": db.query(User).filter(User.is_system_account.is_(True)).count(),
-            "system_teams": db.query(Team).filter(Team.is_system_team.is_(True)).count(),
-            "admin_accounts": db.query(User).filter(User.role == "admin").count(),
-            "participant_accounts": db.query(User).filter(User.role.in_(("leader", "member"))).count(),
-            "teams": db.query(Team).count(),
-        },
+        "preserved": preserved,
         "event_state": "WAITING",
         "next_action": "round1_setup",
     }
@@ -268,5 +275,7 @@ async def development_reset(
     ])
     record_event(db, "development.event_reset", actor=current_user, metadata={"mode": "development_only"})
     db.commit()
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return {"message": "Development rehearsal state reset.", "event": event_snapshot(db)}
+    snapshot = event_snapshot(db)
+    db.close()
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return {"message": "Development rehearsal state reset.", "event": snapshot}

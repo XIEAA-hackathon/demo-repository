@@ -230,8 +230,10 @@ async def import_problems(round_slug: str, file: UploadFile = File(...), db: Ses
         control.status = "READY"
     record_event(db, f"{meta['type'].lower()}.problems_imported", actor=current_user, metadata={"count": len(rows), "filename": file.filename or ""})
     db.commit()
+    response = {"imported": len(rows), "created": created, "updated": updated, **_round_payload(db, meta)}
+    db.close()
     await manager.broadcast_event("round_updated", {"round": meta["type"], "action": "problems_imported"})
-    return {"imported": len(rows), "created": created, "updated": updated, **_round_payload(db, meta)}
+    return response
 
 
 @router.get("/admin/rounds/{round_slug}/problems/sample.csv")
@@ -272,9 +274,13 @@ async def select_problem(round_slug: str, problem_id: int, db: Session = Depends
     control.status = "READY"
     record_event(db, "round1.problem_selected", actor=current_user, entity_type="problem", entity_id=problem.id)
     db.commit()
-    await manager.broadcast_event("round_updated", {"round": meta["type"], "action": "problem_selected", "problem_id": problem.id})
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return _round_payload(db, meta)
+    problem_id_value = problem.id
+    snapshot = event_snapshot(db)
+    response = _round_payload(db, meta)
+    db.close()
+    await manager.broadcast_event("round_updated", {"round": meta["type"], "action": "problem_selected", "problem_id": problem_id_value})
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/admin/rounds/{round_slug}/preview/start")
@@ -292,8 +298,11 @@ async def start_preview(round_slug: str, db: Session = Depends(get_db), current_
     control.status = "PREVIEW"
     record_event(db, "round1.preview_started", actor=current_user, entity_type="problem", entity_id=control.current_problem_id)
     db.commit()
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return _round_payload(db, meta)
+    snapshot = event_snapshot(db)
+    response = _round_payload(db, meta)
+    db.close()
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/admin/rounds/{round_slug}/bidding/start")
@@ -313,8 +322,11 @@ async def start_bidding(round_slug: str, db: Session = Depends(get_db), current_
     control.status = "BIDDING"
     record_event(db, "round1.bidding_started", actor=current_user, entity_type="problem", entity_id=control.current_problem_id)
     db.commit()
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return _round_payload(db, meta)
+    snapshot = event_snapshot(db)
+    response = _round_payload(db, meta)
+    db.close()
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/admin/rounds/{round_slug}/bidding/close")
@@ -517,6 +529,7 @@ async def import_external_assignment_problems(
             ) from exc
 
     snapshot = round1_assignment_management_payload(db)
+    db.close()
     await manager.broadcast_event("external_problems_imported", {
         "created": len(created),
         "skipped_duplicates": len(skipped_duplicates),
@@ -574,6 +587,7 @@ async def change_round_one_assignment(
 
     if not result["idempotent"]:
         change = result["change"]
+        db.close()
         await manager.broadcast_event("round1_assignment_changed", {
             "team_id": change["team_id"],
             "previous_problem_id": change["previous_problem_id"],
@@ -620,18 +634,22 @@ async def assign_problem_manually(
             detail="The assignment changed concurrently. Refresh the Round 1 controls and retry.",
         ) from exc
     if not result["idempotent"]:
+        snapshot = event_snapshot(db)
+        response = {
+            "message": "Manual Round 1 assignment completed.",
+            "idempotent": False,
+            **_round_payload(db, ROUND_META["round-1"]),
+        }
+        db.close()
         await manager.broadcast_event("round_updated", {
             "round": "ROUND1",
             "action": "problem_manually_assigned",
             "problem_id": problem_id,
             "assignments": result["assignments"],
         })
-        await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return {
-        "message": "Manual Round 1 assignment completed." if not result["idempotent"] else "Assignment already applied.",
-        "idempotent": result["idempotent"],
-        **_round_payload(db, ROUND_META["round-1"]),
-    }
+        await manager.broadcast_event("event_state_changed", snapshot)
+        return response
+    return {"message": "Assignment already applied.", "idempotent": True, **_round_payload(db, ROUND_META["round-1"])}
 
 
 @router.post("/admin/rounds/round-1/problems/{problem_id}/rebid")
@@ -747,8 +765,11 @@ async def open_applications(db: Session = Depends(get_db), current_user=Depends(
     transition_event_state(db, "WILDCARD_APPLICATION", validate=False, restart=True, commit=False)
     record_event(db, "wildcard.applications_opened", actor=current_user)
     db.commit()
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return _round_payload(db, ROUND_META["wildcard"])
+    snapshot = event_snapshot(db)
+    response = _round_payload(db, ROUND_META["wildcard"])
+    db.close()
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/admin/rounds/wildcard/applications/close")
@@ -768,8 +789,10 @@ async def close_applications(db: Session = Depends(get_db), current_user=Depends
     game.timer_paused_remaining_seconds = None
     record_event(db, "wildcard.applications_closed", actor=current_user)
     db.commit()
+    response = _round_payload(db, ROUND_META["wildcard"])
+    db.close()
     await manager.broadcast_event("wildcard_updated", {"action": "applications_closed"})
-    return _round_payload(db, ROUND_META["wildcard"])
+    return response
 
 
 @router.get("/leaderboard/{round_slug}")

@@ -152,11 +152,15 @@ The backend exposes a comprehensive set of RESTful endpoints. Authentication is 
 
 ## 🚀 Deployment Instructions
 
+Production schema changes are managed by Alembic. For the one-time SQLite to
+PostgreSQL cutover, follow [POSTGRESQL_MIGRATION.md](POSTGRESQL_MIGRATION.md).
+
 1. Instantiate a virtual environment and resolve dependencies:
    ```bash
    python -m venv venv
    source venv/bin/activate  # Or `venv\Scripts\activate` on Windows
    pip install -r requirements.txt
+   alembic upgrade head
    ```
 2. Initialize the ASGI application worker:
    ```bash

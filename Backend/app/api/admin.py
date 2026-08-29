@@ -245,6 +245,7 @@ async def _apply_event_state(payload: EventStateUpdate, db: Session, current_use
     record_event(db, "event.state_changed", actor=current_user, metadata={"state": config.state})
     db.commit()
     snapshot = event_snapshot(db)
+    db.close()
     await manager.broadcast_event("event_state_changed", snapshot)
     return snapshot
 
@@ -299,6 +300,7 @@ async def pause_event_timer_admin(
     record_event(db, "event.timer_paused", actor=current_user)
     db.commit()
     snapshot = event_snapshot(db)
+    db.close()
     await manager.broadcast_event("timer_sync", snapshot)
     return snapshot
 
@@ -312,6 +314,7 @@ async def resume_event_timer_admin(
     record_event(db, "event.timer_resumed", actor=current_user)
     db.commit()
     snapshot = event_snapshot(db)
+    db.close()
     await manager.broadcast_event("timer_sync", snapshot)
     return snapshot
 
@@ -326,6 +329,7 @@ async def adjust_event_timer_admin(
     record_event(db, "event.timer_adjusted", actor=current_user, metadata={"seconds": payload.seconds})
     db.commit()
     snapshot = event_snapshot(db)
+    db.close()
     await manager.broadcast_event("timer_sync", {**snapshot, "delta": payload.seconds})
     return snapshot
 

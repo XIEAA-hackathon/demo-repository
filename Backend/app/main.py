@@ -40,6 +40,11 @@ async def expiry_worker() -> None:
             wildcard_assignment = reconcile_wildcard_selection(db)
             if wildcard_assignment:
                 actions.append("wildcard_selection_timeout")
+            # Both services above finish their DB work before any network I/O.
+            # Closing here returns the connection to the pool while broadcasts
+            # wait on participant sockets.
+            db.close()
+            if wildcard_assignment:
                 await manager.broadcast_event("wildcard_updated", {
                     "action": "selection_timeout",
                     "team_name": wildcard_assignment["team_name"],
@@ -56,7 +61,7 @@ async def expiry_worker() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_startup_configuration()
-    # Create database tables automatically if they don't exist
+    # Verify the Alembic-managed schema (fresh local SQLite may bootstrap).
     initialize_database()
 
     db = SessionLocal()

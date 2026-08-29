@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -8,6 +9,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
+from starlette.concurrency import run_in_threadpool
+from starlette.websockets import WebSocketState
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -16,6 +20,7 @@ from app.services.event_service import event_snapshot, get_team_for_user
 from app.services.participant_presence import participant_presence_payload
 
 router = APIRouter()
+logger = logging.getLogger("uvicorn.error")
 
 
 def make_event(event_type: str, payload: dict[str, Any] | None = None, *, version: int = 0) -> dict[str, Any]:
@@ -62,12 +67,25 @@ class ConnectionManager:
         for connection in matches:
             try:
                 await connection.close(code=code, reason=reason)
-            except Exception:
+            except (WebSocketDisconnect, RuntimeError, OSError):
                 pass
         return len(matches)
 
-    async def send_event(self, websocket: WebSocket, event_type: str, payload: dict[str, Any] | None = None):
-        await websocket.send_json(make_event(event_type, payload, version=self._version))
+    async def send_event(self, websocket: WebSocket, event_type: str, payload: dict[str, Any] | None = None) -> bool:
+        if websocket not in self.active_connections:
+            return False
+        if getattr(websocket, "application_state", WebSocketState.CONNECTED) != WebSocketState.CONNECTED:
+            self.disconnect(websocket)
+            return False
+        try:
+            await asyncio.wait_for(
+                websocket.send_json(make_event(event_type, payload, version=self._version)),
+                timeout=2.0,
+            )
+            return True
+        except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError):
+            self.disconnect(websocket)
+            return False
 
     async def broadcast_event(
         self,
@@ -75,21 +93,27 @@ class ConnectionManager:
         payload: dict[str, Any] | None = None,
         *,
         exclude: set[WebSocket] | None = None,
+        roles: set[str] | None = None,
     ):
         async with self._broadcast_lock:
-            self._version += 1
+            # The shared version tracks events every client is eligible to
+            # receive. Admin-only presence messages must not create apparent
+            # gaps that force all participant clients to reconcile.
+            if roles is None:
+                self._version += 1
             message = make_event(event_type, payload, version=self._version)
             connections = [
                 connection
-                for connection in self.active_connections
-                if not exclude or connection not in exclude
+                for connection, identity in self.active_connections.items()
+                if (not exclude or connection not in exclude)
+                and (roles is None or identity.get("role") in roles)
             ]
 
             async def send(connection: WebSocket) -> WebSocket | None:
                 try:
                     await asyncio.wait_for(connection.send_json(message), timeout=2.0)
                     return None
-                except Exception:
+                except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError):
                     return connection
 
             dead = [connection for connection in await asyncio.gather(*(send(connection) for connection in connections)) if connection]
@@ -145,27 +169,63 @@ async def _broadcast_presence_snapshot(
     *,
     exclude: set[WebSocket] | None = None,
 ) -> None:
-    with session_factory() as db:
-        presence = participant_presence_payload(
-            db,
-            connected_team_ids=manager.participant_team_ids(),
-        )
-    await manager.broadcast_event("participant_presence_changed", presence, exclude=exclude)
+    connected_team_ids = manager.participant_team_ids()
+
+    def build_presence() -> dict[str, Any]:
+        with session_factory() as db:
+            return participant_presence_payload(
+                db,
+                connected_team_ids=connected_team_ids,
+            )
+
+    presence = await run_in_threadpool(build_presence)
+    await manager.broadcast_event(
+        "participant_presence_changed",
+        presence,
+        exclude=exclude,
+        roles={"admin"},
+    )
+
+
+async def _safe_close(websocket: WebSocket, *, code: int, reason: str) -> None:
+    try:
+        await websocket.close(code=code, reason=reason)
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        pass
 
 
 @router.websocket("/ws/auction")
 async def websocket_auction(websocket: WebSocket):
     session_factory = getattr(websocket.app.state, "session_factory", SessionLocal)
-    identity, snapshot = _authenticate_socket(websocket.query_params.get("token"), session_factory)
+    try:
+        identity, snapshot = await run_in_threadpool(
+            _authenticate_socket,
+            websocket.query_params.get("token"),
+            session_factory,
+        )
+    except SQLAlchemyError:
+        logger.exception("WebSocket authentication snapshot failed before handshake.")
+        await _safe_close(websocket, code=1011, reason="Initial state temporarily unavailable")
+        return
     if not identity or not snapshot:
-        await websocket.close(code=4401, reason="Valid access token required")
+        await _safe_close(websocket, code=4401, reason="Valid access token required")
         return
 
-    await manager.connect(websocket, identity)
-    if identity["role"] in ("leader", "member"):
-        await _broadcast_presence_snapshot(session_factory, exclude={websocket})
-    await manager.send_event(websocket, "event_snapshot", snapshot)
+    connected = False
     try:
+        await manager.connect(websocket, identity)
+        connected = True
+        if identity["role"] in ("leader", "member"):
+            try:
+                await _broadcast_presence_snapshot(session_factory, exclude={websocket})
+            except SQLAlchemyError:
+                logger.warning("Participant presence snapshot was skipped after WebSocket connect.")
+        # The first client-visible frame is sent only after all initial DB work
+        # has closed its short-lived session, so an idle socket never overlaps
+        # with a checked-out connection.
+        if not await manager.send_event(websocket, "event_snapshot", snapshot):
+            return
+
         while True:
             # Mutations are deliberately REST-only. Incoming frames are only
             # accepted as keep-alives and never rebroadcast.
@@ -184,9 +244,15 @@ async def websocket_auction(websocket: WebSocket):
                 break
     except WebSocketDisconnect:
         pass
-    except Exception:
+    except (RuntimeError, OSError):
         pass
+    except Exception:
+        logger.exception("Unexpected error in established WebSocket connection.")
+        await _safe_close(websocket, code=1011, reason="WebSocket connection error")
     finally:
-        disconnected_identity = manager.disconnect(websocket)
+        disconnected_identity = manager.disconnect(websocket) if connected else None
         if disconnected_identity and disconnected_identity.get("role") in ("leader", "member"):
-            await _broadcast_presence_snapshot(session_factory)
+            try:
+                await _broadcast_presence_snapshot(session_factory)
+            except SQLAlchemyError:
+                logger.warning("Participant presence snapshot was skipped after WebSocket disconnect.")

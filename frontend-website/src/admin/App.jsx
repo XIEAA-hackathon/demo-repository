@@ -346,8 +346,26 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   const [assignmentDeduction, setAssignmentDeduction] = useState("");
   const [assignmentStage, setAssignmentStage] = useState("select");
   const [endConfirming, setEndConfirming] = useState(false);
-  const loadRound = useCallback(() => getRoundControl(round).then(setData).catch((cause) => setError(cause.message)), [round]);
-  useEffect(() => { void loadRound(); }, [loadRound, state?.timing?.server_time]);
+  const loadRoundInFlight = useRef(null);
+  const loadRound = useCallback(() => {
+    if (loadRoundInFlight.current) return loadRoundInFlight.current;
+    const request = getRoundControl(round)
+      .then((result) => { setData(result); setError(""); return true; })
+      .catch((cause) => { setError(cause.message || "Round controls could not be loaded."); return false; });
+    loadRoundInFlight.current = request;
+    void request.finally(() => { if (loadRoundInFlight.current === request) loadRoundInFlight.current = null; });
+    return request;
+  }, [round]);
+  useEffect(() => {
+    let stopped = false; let timer; let retryDelay = 1000;
+    const attempt = async () => {
+      const ok = await loadRound();
+      if (ok || stopped) return;
+      timer = setTimeout(() => { retryDelay = Math.min(8000, retryDelay * 2); void attempt(); }, retryDelay);
+    };
+    void attempt();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [loadRound, state?.timing?.server_time]);
   const run = async (operation, success) => {
     setWorking(true); setError(""); setNotice("");
     try { const result = await operation(); if (result?.round_type) setData(result); setNotice(typeof success === "function" ? success(result) : success); await loadRound(); return result; }
@@ -421,7 +439,7 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   const eventState = data?.event?.event_state;
   const hasTimer = Boolean(state?.timing?.ends_at || state?.timing?.paused);
   const afterBidding = current && data?.status === "READY" && eventState === (isWildcard ? "WILDCARD_SELECTION" : "ROUND1_RESULT");
-  if (!data) return <div className="loading-screen"><div className="loader" />Loading round controls…</div>;
+  if (!data) return <div className="loading-screen"><div className="loader" />{error ? <><span>{error} Retrying automatically…</span><button className="secondary-button" onClick={() => void loadRound()}>Retry now</button></> : "Loading round controls…"}</div>;
 
   return <section className="round-console">
     <header className="round-console__header">

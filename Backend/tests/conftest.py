@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -6,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -46,12 +47,18 @@ def _create_problem(db, ps_number="PS-01", round_no=1):
 
 @pytest.fixture(scope="session")
 def engine():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(bind=engine)
+    test_database_url = os.getenv("TEST_DATABASE_URL", "sqlite://")
+    if test_database_url.startswith("sqlite"):
+        engine = create_engine(
+            test_database_url,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=engine)
+    else:
+        # The caller must point this at a disposable PostgreSQL database and
+        # run `DATABASE_URL=$TEST_DATABASE_URL alembic upgrade head` first.
+        engine = create_engine(test_database_url, pool_pre_ping=True)
     return engine
 
 @pytest.fixture(scope="session")
@@ -63,8 +70,13 @@ def _clean_db(engine, session_factory):
     """Truncate all tables before each test so state never leaks between tests."""
     db = session_factory()
     try:
-        for table in reversed(Base.metadata.sorted_tables):
-            db.execute(table.delete())
+        if engine.dialect.name == "postgresql":
+            quote = engine.dialect.identifier_preparer.quote
+            tables = ", ".join(quote(name) for name in Base.metadata.tables)
+            db.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
+        else:
+            for table in reversed(list(Base.metadata.tables.values())):
+                db.execute(table.delete())
         db.commit()
     finally:
         db.close()

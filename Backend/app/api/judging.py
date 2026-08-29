@@ -133,8 +133,10 @@ async def publish_winners(
         record_event(db, "judging.results_published", actor=current_user)
         db.commit()
     public_result = _result_payload(db, result, include_waiting_winners=False)
+    snapshot = event_snapshot(db)
+    db.close()
     await manager.broadcast_event("results_published", {"result_status": "PUBLISHED"})
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
+    await manager.broadcast_event("event_state_changed", snapshot)
     return public_result
 
 

@@ -70,7 +70,9 @@ async def apply_wildcard(db: Session = Depends(get_db), current_user=Depends(get
     db.add(record)
     record_event(db, "wildcard.application_confirmed", actor=current_user, entity_type="team", entity_id=team.id)
     db.commit()
-    await manager.broadcast_event("wildcard_updated", {"team_name": team.team_name, "action": "applied"})
+    team_name = team.team_name
+    db.close()
+    await manager.broadcast_event("wildcard_updated", {"team_name": team_name, "action": "applied"})
     return {"message": "Wildcard application confirmed."}
 
 
@@ -89,7 +91,9 @@ async def decline_wildcard(db: Session = Depends(get_db), current_user=Depends(g
     db.add(record)
     record_event(db, "wildcard.application_declined", actor=current_user, entity_type="team", entity_id=team.id)
     db.commit()
-    await manager.broadcast_event("wildcard_updated", {"team_name": team.team_name, "action": "declined"})
+    team_name = team.team_name
+    db.close()
+    await manager.broadcast_event("wildcard_updated", {"team_name": team_name, "action": "declined"})
     return {"message": "Wildcard participation declined."}
 
 
@@ -147,8 +151,10 @@ async def confirm_wildcard_slots(
     get_or_create_event_config(db).wildcard_slots = request.slots
     record_event(db, "wildcard.slots_confirmed", actor=current_user, metadata={"slot_count": request.slots})
     db.commit()
+    response = wildcard_payload(db)
+    db.close()
     await manager.broadcast_event("wildcard_updated", {"action": "slots_confirmed", "slots": request.slots})
-    return wildcard_payload(db)
+    return response
 
 
 @router.post("/admin/rounds/wildcard/bidding/start")
@@ -163,8 +169,11 @@ async def start_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
     transition_event_state(db, "WILDCARD_BIDDING", validate=False, restart=True)
     record_event(db, "wildcard.bidding_started", actor=current_user, metadata={"slot_count": control.slot_count})
     db.commit()
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return wildcard_payload(db)
+    snapshot = event_snapshot(db)
+    response = wildcard_payload(db)
+    db.close()
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/wildcard/bid")
@@ -253,9 +262,12 @@ async def close_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    snapshot = event_snapshot(db)
+    response = {"winners": winners, **wildcard_payload(db)}
+    db.close()
     await manager.broadcast_event("wildcard_updated", {"action": "bidding_finalized", "winners": winners})
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return {"winners": winners, **wildcard_payload(db)}
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/admin/wildcard/finalize")
@@ -317,20 +329,25 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
         db.rollback()
         raise HTTPException(status_code=409, detail="That Wildcard problem was selected concurrently.") from exc
 
-    await manager.broadcast_event("wildcard_updated", {
-        "team_name": team.team_name,
-        "problem_id": result["problem"]["id"],
-        "action": "problem_selected" if result["method"] == "manual" else "selection_timeout",
-    })
     control = get_or_create_round_control(db, "WILDCARD")
-    if control.status == "COMPLETE":
-        await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return {
+    control_status = control.status
+    snapshot = event_snapshot(db) if control_status == "COMPLETE" else None
+    response = {
         "message": f"Wildcard Problem {result['problem']['problem_number']} selected.",
         "problem": result["problem"],
         "selection_method": result["method"],
-        "wildcard_status": control.status,
+        "wildcard_status": control_status,
     }
+    team_name = team.team_name
+    db.close()
+    await manager.broadcast_event("wildcard_updated", {
+        "team_name": team_name,
+        "problem_id": result["problem"]["id"],
+        "action": "problem_selected" if result["method"] == "manual" else "selection_timeout",
+    })
+    if snapshot is not None:
+        await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/admin/rounds/wildcard/selection/end-turn")
@@ -354,12 +371,15 @@ async def end_wildcard_selection_turn(
         db.rollback()
         raise HTTPException(status_code=409, detail="The Wildcard turn changed concurrently.") from exc
 
+    control = get_or_create_round_control(db, "WILDCARD")
+    snapshot = event_snapshot(db) if control.status == "COMPLETE" else None
+    response = {"assignment": result, **wildcard_payload(db)}
+    db.close()
     await manager.broadcast_event("wildcard_updated", {
         "team_name": result["team_name"],
         "problem_id": result["problem"]["id"],
         "action": result["method"],
     })
-    control = get_or_create_round_control(db, "WILDCARD")
-    if control.status == "COMPLETE":
-        await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return {"assignment": result, **wildcard_payload(db)}
+    if snapshot is not None:
+        await manager.broadcast_event("event_state_changed", snapshot)
+    return response

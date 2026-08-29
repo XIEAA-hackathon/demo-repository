@@ -334,17 +334,19 @@ async def create_submission(
     record_event(db, "submission.created", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": team.ps_id})
     db.commit()
     db.refresh(new_submission)
-
-    await manager.broadcast_json({
-        "type": "submission_updated",
-        "team_name": team.team_name,
-    })
-    return DashboardSubmission(
+    response = DashboardSubmission(
         id=new_submission.id, problem_id=new_submission.problem_id,
         repository_url=new_submission.repository_url,
         submitted_at=new_submission.submitted_at, updated_at=new_submission.updated_at,
         submitted_by_user_id=current_user.id, submitted_by_name=current_user.name,
     )
+    team_name = team.team_name
+    db.close()
+    await manager.broadcast_json({
+        "type": "submission_updated",
+        "team_name": team_name,
+    })
+    return response
 
 @router.put("/submissions/me")
 async def update_submission(
@@ -462,8 +464,11 @@ async def open_submissions(db: Session = Depends(get_db), current_user: User = D
     transition_event_state(db, "SUBMISSION", validate=False, commit=False)
     record_event(db, "submissions.opened", actor=current_user)
     db.commit()
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return get_admin_submissions(db, None)
+    snapshot = event_snapshot(db)
+    response = get_admin_submissions(db, None)
+    db.close()
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/admin/submissions/close")
@@ -477,9 +482,12 @@ async def close_submissions(db: Session = Depends(get_db), current_user: User = 
         transition_event_state(db, "JUDGING_WAIT", commit=False)
         record_event(db, "judging.started", actor=current_user)
     db.commit()
+    snapshot = event_snapshot(db)
+    response = get_admin_submissions(db, None)
+    db.close()
     await manager.broadcast_event("submission_updated", {"action": "submissions_closed"})
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
-    return get_admin_submissions(db, None)
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 def member_utcnow():
     from datetime import datetime, timezone

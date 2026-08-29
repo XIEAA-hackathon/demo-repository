@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from typing import List
 
 from app.core.database import get_db
-from app.models.models import Bid, Team, ProblemStatement, GameConfig, WalletTransaction, EventConfig
+from app.models.models import Bid, Team, ProblemStatement, GameConfig, WalletTransaction, EventConfig, RoundControl
 from app.schemas.schemas import BidCreate, EVENT_STATES
 from app.api.auth import get_current_user, get_current_active_admin
 from app.api.websockets import manager
@@ -70,8 +70,8 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
             detail="Your team already has a Round 1 problem and cannot participate in another Round 1 auction.",
         )
 
-    team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
     ps = db.query(ProblemStatement).filter(ProblemStatement.id == bid.ps_id).with_for_update().first()
+    team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
     control = get_or_create_round_control(db, "ROUND1")
     if not ps or ps.id != control.current_problem_id or ps.status != "current":
         raise HTTPException(status_code=400, detail="Invalid or unavailable Problem Statement")
@@ -158,7 +158,11 @@ async def finalize_round_one(
         get_or_create_event_config(db)
         control = get_or_create_round_control(db, "ROUND1")
 
-        ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
+        # The in-process lock protects one worker; these row locks also protect
+        # against a second Uvicorn worker/admin request finalizing concurrently.
+        control = db.query(RoundControl).filter(RoundControl.id == control.id).with_for_update().one()
+
+        ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).with_for_update().first()
         if not ps:
             raise HTTPException(status_code=404, detail="Problem Statement not found")
         if ps.status in {"allocated", "completed", "no_bids"}:
@@ -173,7 +177,7 @@ async def finalize_round_one(
         ranked_bids = db.query(Bid).filter(
             Bid.ps_id == ps.id,
             Bid.round == config.current_round,
-        ).order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).all()
+        ).order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).with_for_update().all()
 
         existing_assignment_count = db.query(Team).filter(Team.round1_problem_id == ps.id).count()
         winner_count = max(0, ROUND1_PROBLEM_CAPACITY - existing_assignment_count)
@@ -181,7 +185,7 @@ async def finalize_round_one(
         for bid in ranked_bids:
             if len(winners) >= winner_count:
                 break
-            winner_team = db.query(Team).filter(Team.id == bid.team_id).first()
+            winner_team = db.query(Team).filter(Team.id == bid.team_id).with_for_update().first()
             if not winner_team or winner_team.round1_problem_id is not None or winner_team.ps_id is not None:
                 continue  # team already has a problem; skip
             if winner_team.coins < bid.amount:
@@ -223,12 +227,15 @@ async def finalize_round_one(
         db.commit()
 
     transition_event_state(db, "ROUND1_RESULT")
+    snapshot = event_snapshot(db)
+    ps_number = ps.ps_number
+    db.close()
 
     await manager.broadcast_event("auction_finalized", {
-        "ps_number": ps.ps_number,
+        "ps_number": ps_number,
         "winners": winners,
     })
-    await manager.broadcast_event("event_state_changed", event_snapshot(db))
+    await manager.broadcast_event("event_state_changed", snapshot)
     message = (
         "Round 1 finalized. Actual winners charged once."
         if winners
@@ -259,55 +266,76 @@ def get_leaderboard(db: Session = Depends(get_db), current_user = Depends(get_cu
 async def start_preview(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     config = transition_event_state(db, "ROUND1_PREVIEW")
     snapshot = event_snapshot(db)
+    state = config.state
+    db.close()
     await manager.broadcast_event("event_state_changed", snapshot)
-    return {"state": config.state, **snapshot}
+    return {"state": state, **snapshot}
 
 @router.post("/admin/round/start-bidding")
 async def start_bidding(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     config = transition_event_state(db, "ROUND1_BIDDING")
     snapshot = event_snapshot(db)
+    response = {"state": config.state, "ends_at": config.auction_timer_end, **snapshot}
+    db.close()
     await manager.broadcast_event("event_state_changed", snapshot)
-    return {"state": config.state, "ends_at": config.auction_timer_end, **snapshot}
+    return response
 
 @router.post("/admin/round/pause")
 async def pause_timer(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     config = pause_event_timer(db)
-    await manager.broadcast_event("timer_sync", event_snapshot(db))
-    return {"paused": True, "remaining_seconds": config.timer_paused_remaining_seconds}
+    snapshot = event_snapshot(db)
+    remaining_seconds = config.timer_paused_remaining_seconds
+    db.close()
+    await manager.broadcast_event("timer_sync", snapshot)
+    return {"paused": True, "remaining_seconds": remaining_seconds}
 
 @router.post("/admin/round/resume")
 async def resume_timer(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     config = resume_event_timer(db)
-    await manager.broadcast_event("timer_sync", event_snapshot(db))
-    return {"paused": False, "ends_at": config.auction_timer_end}
+    snapshot = event_snapshot(db)
+    ends_at = config.auction_timer_end
+    db.close()
+    await manager.broadcast_event("timer_sync", snapshot)
+    return {"paused": False, "ends_at": ends_at}
 
 @router.post("/admin/round/add-time")
 async def add_time(seconds: int, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     if seconds <= 0:
         raise HTTPException(status_code=400, detail="seconds must be greater than zero")
     config = adjust_event_timer(db, seconds)
-    await manager.broadcast_event("timer_sync", {**event_snapshot(db), "delta": seconds})
-    return {"ends_at": config.auction_timer_end, "delta": seconds}
+    snapshot = {**event_snapshot(db), "delta": seconds}
+    ends_at = config.auction_timer_end
+    db.close()
+    await manager.broadcast_event("timer_sync", snapshot)
+    return {"ends_at": ends_at, "delta": seconds}
 
 @router.post("/admin/round/remove-time")
 async def remove_time(seconds: int, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     if seconds <= 0:
         raise HTTPException(status_code=400, detail="seconds must be greater than zero")
     config = adjust_event_timer(db, -seconds)
-    await manager.broadcast_event("timer_sync", {**event_snapshot(db), "delta": -seconds})
-    return {"ends_at": config.auction_timer_end, "delta": -seconds}
+    snapshot = {**event_snapshot(db), "delta": -seconds}
+    ends_at = config.auction_timer_end
+    db.close()
+    await manager.broadcast_event("timer_sync", snapshot)
+    return {"ends_at": ends_at, "delta": -seconds}
 
 @router.post("/admin/round/end-bidding")
 async def end_bidding(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     config = transition_event_state(db, "ROUND1_RESULT")
     snapshot = event_snapshot(db)
+    state = config.state
+    db.close()
     await manager.broadcast_event("auction_closed", snapshot)
     await manager.broadcast_event("event_state_changed", snapshot)
-    return {"state": config.state, **snapshot}
+    return {"state": state, **snapshot}
 
 @router.post("/admin/round/next-problem")
 async def next_problem(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     """Close Round 1 for teams that already won a problem; move on."""
     config = transition_event_state(db, "ROUND1_RESULT")
-    await manager.broadcast_event("problem_revealed", event_snapshot(db))
-    return {"state": config.state}
+    snapshot = event_snapshot(db)
+    state = config.state
+    db.close()
+    await manager.broadcast_event("problem_revealed", snapshot)
+    return {"state": state}
