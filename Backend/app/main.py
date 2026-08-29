@@ -34,12 +34,18 @@ def validate_startup_configuration() -> None:
 async def expiry_worker() -> None:
     while True:
         await asyncio.sleep(1)
+
+        actions = []
+        wildcard_assignment = None
+
         db = SessionLocal()
         try:
             actions = sync_expired_event_state(db)
             wildcard_assignment = reconcile_wildcard_selection(db)
+
             if wildcard_assignment:
                 actions.append("wildcard_selection_timeout")
+<<<<<<< HEAD
             # Both services above finish their DB work before any network I/O.
             # Closing here returns the connection to the pool while broadcasts
             # wait on participant sockets.
@@ -52,11 +58,39 @@ async def expiry_worker() -> None:
                 })
             if actions:
                 await manager.broadcast_event("event_state_changed", {"expiry_actions": actions})
+=======
+
+>>>>>>> 8a80e4a318ca75704239df16ee1b4c0dc4e39928
         except Exception:
             db.rollback()
             logger.exception("Timer expiry worker failed; it will retry.")
+            continue
+
         finally:
             db.close()
+
+        # IMPORTANT:
+        # All database work is finished and the session is closed
+        # before doing any WebSocket/network I/O.
+        try:
+            if wildcard_assignment:
+                await manager.broadcast_event(
+                    "wildcard_updated",
+                    {
+                        "action": "selection_timeout",
+                        "team_name": wildcard_assignment["team_name"],
+                        "problem_id": wildcard_assignment["problem"]["id"],
+                    },
+                )
+
+            if actions:
+                await manager.broadcast_event(
+                    "event_state_changed",
+                    {"expiry_actions": actions},
+                )
+
+        except Exception:
+            logger.exception("Timer expiry broadcast failed; it will retry on the next state change.")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

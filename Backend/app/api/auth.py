@@ -2,8 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+<<<<<<< HEAD
 from starlette.concurrency import run_in_threadpool
 from app.core.database import get_db
+=======
+from app.core.database import get_db, SessionLocal
+>>>>>>> 8a80e4a318ca75704239df16ee1b4c0dc4e39928
 from app.models.models import User, Team, Member
 from app.schemas.schemas import UserCreate, UserResponse, Token, TeamCreate
 from app.core.security import get_password_hash, verify_password, create_access_token
@@ -65,12 +69,31 @@ def get_current_active_display(current_user: User = Depends(get_current_user)):
 
 def _issue_session(user: User, db: Session) -> dict:
     import uuid
+
     new_session_id = uuid.uuid4().hex
+
+    # Capture primitive values BEFORE commit. SQLAlchemy normally expires ORM
+    # objects on commit, and reading them afterwards can trigger another query
+    # and checkout another DB connection.
+    user_email = user.email
+    user_role = user.role
+
     user.session_id = new_session_id
     record_event(db, "auth.login", actor=user)
     db.commit()
-    access_token = create_access_token(data={"sub": user.email, "role": user.role, "session_id": new_session_id})
-    return {"access_token": access_token, "token_type": "bearer"}
+
+    access_token = create_access_token(
+        data={
+            "sub": user_email,
+            "role": user_role,
+            "session_id": new_session_id,
+        }
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+    }
 
 @router.post("/register")
 def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends(get_db)):
@@ -106,8 +129,12 @@ def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends
     return {"message": "Registration successful, pending admin approval."}
 
 @router.post("/login", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
     login_id = form_data.username.strip().lower()
+<<<<<<< HEAD
     candidate = db.query(User).filter(func.lower(User.email) == login_id).first()
     candidate_id = candidate.id if candidate and candidate.credentials_active else None
     password_hash = candidate.password_hash if candidate_id else ""
@@ -127,20 +154,38 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
         )
     user = db.query(User).filter(User.id == candidate_id, User.credentials_active.is_(True)).first()
     if not user:
+=======
+
+    user = db.query(User).filter(func.lower(User.email) == login_id).first()
+
+    if (
+        not user
+        or not user.credentials_active
+        or not verify_password(form_data.password, user.password_hash)
+    ):
+>>>>>>> 8a80e4a318ca75704239df16ee1b4c0dc4e39928
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
     if user.role == "display":
-        raise HTTPException(status_code=403, detail="Use the dedicated leaderboard display login.")
-    
-    if user.role in ("leader", "member"):
+        raise HTTPException(
+            status_code=403,
+            detail="Use the dedicated leaderboard display login.",
+        )
+
+    participant = user.role in ("leader", "member")
+
+    if participant:
         if user.team_id:
             team = db.query(Team).filter(Team.id == user.team_id).first()
         else:
             team = db.query(Team).filter(Team.leader_id == user.id).first()
+
         if not team or not team.is_approved:
+<<<<<<< HEAD
             raise HTTPException(status_code=403, detail="Team is not approved by admin yet.")
             
     if user.role in ("leader", "member"):
@@ -154,6 +199,44 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     db.close()
     if participant_user_id is not None:
         await manager.disconnect_users({participant_user_id}, reason="Signed in from another session")
+=======
+            raise HTTPException(
+                status_code=403,
+                detail="Team is not approved by admin yet.",
+            )
+
+    # Capture everything needed after the database session closes.
+    user_id = user.id
+
+    # Issue the new session/token entirely inside DB work.
+    token = _issue_session(user, db)
+
+    # CRITICAL:
+    # Return this request's SQLAlchemy connection to the pool BEFORE any
+    # WebSocket/network await.
+    db.close()
+
+    if participant:
+        # No DB session is held while waiting for old sockets to close.
+        await manager.disconnect_users(
+            {user_id},
+            reason="Signed in from another session",
+        )
+
+        # Open a fresh, very short-lived DB session only to build presence.
+        with SessionLocal() as presence_db:
+            presence = participant_presence_payload(
+                presence_db,
+                connected_team_ids=manager.participant_team_ids(),
+            )
+
+        # presence_db is CLOSED before network I/O.
+        await manager.broadcast_event(
+            "participant_presence_changed",
+            presence,
+        )
+
+>>>>>>> 8a80e4a318ca75704239df16ee1b4c0dc4e39928
     return token
 
 
@@ -170,14 +253,39 @@ def leaderboard_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Sess
     return _issue_session(user, db)
 
 @router.post("/logout")
-async def logout(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def logout(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     participant_logout = current_user.role in ("leader", "member")
+    user_id = current_user.id
+
     record_event(db, "auth.logout", actor=current_user)
     current_user.session_id = None
     db.commit()
+
+    # Release request DB connection before WebSocket/network I/O.
+    db.close()
+
     if participant_logout:
+<<<<<<< HEAD
         await manager.disconnect_users({current_user.id})
         presence = participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
         db.close()
         await manager.broadcast_event("participant_presence_changed", presence, roles={"admin"})
+=======
+        await manager.disconnect_users({user_id})
+
+        with SessionLocal() as presence_db:
+            presence = participant_presence_payload(
+                presence_db,
+                connected_team_ids=manager.participant_team_ids(),
+            )
+
+        await manager.broadcast_event(
+            "participant_presence_changed",
+            presence,
+        )
+
+>>>>>>> 8a80e4a318ca75704239df16ee1b4c0dc4e39928
     return {"message": "Successfully logged out"}
