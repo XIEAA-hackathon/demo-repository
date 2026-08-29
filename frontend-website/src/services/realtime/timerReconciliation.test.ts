@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 import {
   deriveServerRemaining,
   isSyncStale,
+  shouldApplyHttpSnapshot,
   shouldApplyTimerSnapshot,
   type TimerTiming,
 } from './timerReconciliation.ts'
@@ -47,6 +48,10 @@ assert.equal(shouldApplyTimerSnapshot({
 
 assert.equal(isSyncStale({ documentHidden: true, refreshPending: false, staleSeconds: 45 }), false)
 assert.equal(isSyncStale({ documentHidden: false, refreshPending: true, staleSeconds: 45 }), false)
-assert.equal(isSyncStale({ documentHidden: false, refreshPending: false, staleSeconds: 16 }), true)
+assert.equal(isSyncStale({ documentHidden: false, refreshPending: false, staleSeconds: 30 }), false)
+assert.equal(isSyncStale({ documentHidden: false, refreshPending: false, staleSeconds: 46 }), true)
+
+assert.equal(shouldApplyHttpSnapshot(4, 4), true)
+assert.equal(shouldApplyHttpSnapshot(4, 5), false)
 
 console.log('realtime timer reconciliation: all assertions passed')

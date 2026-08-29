@@ -83,6 +83,9 @@ function ProblemStatementDisplay({ token, onUnauthorized, onLogout }) {
   const apiLive = apiStatus === "healthy";
 
   const problem = display?.problem;
+  const wildcardProblems = display?.event_state === "WILDCARD_SELECTION" && Array.isArray(display?.available_wildcard_problems)
+    ? display.available_wildcard_problems
+    : null;
 
   return (
     <main className="problem-statement-page">
@@ -93,8 +96,22 @@ function ProblemStatementDisplay({ token, onUnauthorized, onLogout }) {
         BID TO BUILD
       </div>
 
-      <section className="problem-display-card" aria-live="polite">
-        {problem ? <>
+      <section className={`problem-display-card ${wildcardProblems ? "problem-display-card--wildcard" : ""}`} aria-live="polite">
+        {wildcardProblems ? <>
+          <div className="problem-number">{wildcardProblems.length} WILDCARD {wildcardProblems.length === 1 ? "PROBLEM" : "PROBLEMS"} AVAILABLE</div>
+          <h1>Available wildcard problems</h1>
+          {wildcardProblems.length ? <div className="wildcard-problem-list">
+            {wildcardProblems.map((availableProblem) => <article key={availableProblem.problem_number}>
+              <span>PROBLEM #{availableProblem.problem_number ?? availableProblem.number}</span>
+              <h2>{availableProblem.title}</h2>
+              <p>{availableProblem.description || "Problem details will be shared by the event team."}</p>
+            </article>)}
+          </div> : <p className="problem-description">The final selection is being confirmed.</p>}
+          <div className="wildcard-display-status">
+            <span>LIVE SELECTION</span>
+            <strong>{apiLive ? display.status_label : apiStatus === "degraded" ? "SYNC DEGRADED" : "DISPLAY OFFLINE"}</strong>
+          </div>
+        </> : problem ? <>
 
         <div className="problem-number">
           PROBLEM #{problem.problem_number ?? problem.number}

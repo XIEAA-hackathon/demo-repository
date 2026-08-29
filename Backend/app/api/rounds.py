@@ -8,7 +8,8 @@ from typing import Iterable
 from fastapi import APIRouter, Depends, File, HTTPException, Response as FastAPIResponse, UploadFile
 from fastapi.responses import Response
 from openpyxl import load_workbook
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_active_admin, get_current_active_display, get_current_user
@@ -26,12 +27,16 @@ from app.services.event_service import (
 )
 from app.services.activity_log import record_event
 from app.core.event_constants import ROUND1_WINNER_COUNT
-from app.services.round1_auto_assignment import (
+from app.services.round1_assignment import (
+    EXTERNAL_PROBLEM_ROUND,
     ROUND1_BID_WINNER,
     ROUND1_FINALIZATION_LOCK,
-    auto_assign_final_problem,
-    final_auto_assignment_summary,
-    is_final_auto_allotment_problem,
+    ROUND1_PROBLEM_CAPACITY,
+    Round1AssignmentError,
+    change_round1_problem_assignment,
+    manually_assign_problem,
+    round1_assignment_management_payload,
+    remaining_problems_payload,
     update_round1_winning_bid_aggregate,
 )
 from app.services.wildcard_service import ranking_payload, wildcard_payload
@@ -47,8 +52,14 @@ TITLE_HEADERS = {"title", "problemtitle", "name", "problemname"}
 DESCRIPTION_HEADERS = {"description", "problemdescription", "problemstatement", "statement", "problem"}
 
 
-class FinalAutoAssignmentRequest(BaseModel):
-    deduction: int | None = None
+class ManualProblemAssignmentRequest(BaseModel):
+    team_ids: list[int] = Field(min_length=1)
+    deduction: int = Field(ge=0, strict=True)
+
+
+class ChangeProblemAssignmentRequest(BaseModel):
+    target_problem_id: int = Field(gt=0, strict=True)
+    new_balance: int | None = Field(default=None, ge=0, le=1_000_000, strict=True)
 
 
 def _meta(round_slug: str) -> dict:
@@ -134,6 +145,8 @@ def _problem_payload(problem: ProblemStatement, control: RoundControl) -> dict:
         status = "CURRENT"
     elif problem.status in {"completed", "allocated"}:
         status = "COMPLETED"
+    elif problem.status == "no_bids":
+        status = "NO_BIDS"
     else:
         status = "AVAILABLE"
     return {
@@ -164,6 +177,7 @@ def _round_payload(db: Session, meta: dict) -> dict:
         current_bids = db.query(Bid).filter(Bid.ps_id == current.id, Bid.round == meta["number"]).order_by(Bid.amount.desc(), Bid.timestamp.asc()).all()
     highest = current_bids[0] if current_bids else None
     highest_team = db.query(Team).filter(Team.id == highest.team_id).first() if highest else None
+    remaining_problems = remaining_problems_payload(db, control)
     payload = {
         "round_type": meta["type"],
         "status": control.status,
@@ -178,7 +192,7 @@ def _round_payload(db: Session, meta: dict) -> dict:
             "base_price": config.round1_minimum_bid,
             "winner_count": ROUND1_WINNER_COUNT,
         },
-        "final_auto_assignment": final_auto_assignment_summary(db, control),
+        "remaining_problems": remaining_problems,
         "assigned_team_count": db.query(Team).filter(Team.round1_problem_id.is_not(None)).count(),
         "unassigned_team_count": db.query(Team).filter(
             Team.is_approved.is_(True), Team.is_system_team.is_(False), Team.round1_problem_id.is_(None)
@@ -186,11 +200,6 @@ def _round_payload(db: Session, meta: dict) -> dict:
         "event": event_snapshot(db),
     }
     return payload
-
-
-def _reject_final_problem_auction(db: Session, control: RoundControl) -> None:
-    if is_final_auto_allotment_problem(db, control.current_problem_id):
-        raise HTTPException(status_code=409, detail="Final Round 1 problem must use auto allotment.")
 
 
 @router.get("/admin/rounds/{round_slug}")
@@ -252,16 +261,8 @@ async def select_problem(round_slug: str, problem_id: int, db: Session = Depends
     problem = db.query(ProblemStatement).filter(ProblemStatement.id == problem_id, ProblemStatement.round == meta["number"]).first()
     if not problem:
         raise HTTPException(status_code=404, detail="Problem not found in this round.")
-    if control.final_auto_assignment_problem_id == problem_id:
-        return _round_payload(db, meta)
-    if problem.status in {"completed", "allocated"}:
+    if problem.status not in {"available", "visible"}:
         raise HTTPException(status_code=409, detail="A completed problem cannot be selected again.")
-    final_auto = final_auto_assignment_summary(db, control)
-    if final_auto and final_auto["status"] == "PENDING" and final_auto["problem"]["id"] == problem.id:
-        raise HTTPException(
-            status_code=409,
-            detail="The final Round 1 problem must be confirmed through Last Problem Auto Allotment.",
-        )
     # A completed auction leaves the global event in ROUND1_RESULT. Reset that
     # transient state when the next independent auction is selected so clients
     # do not mistake the new READY problem for the previous result.
@@ -286,7 +287,6 @@ async def start_preview(round_slug: str, db: Session = Depends(get_db), current_
         return _round_payload(db, meta)
     if control.ended or not control.current_problem_id:
         raise HTTPException(status_code=409, detail="Select an available problem before starting preview.")
-    _reject_final_problem_auction(db, control)
     state = "ROUND1_PREVIEW" if meta["number"] == 1 else "WILDCARD_PREVIEW"
     transition_event_state(db, state, validate=False, commit=False)
     control.status = "PREVIEW"
@@ -308,7 +308,6 @@ async def start_bidding(round_slug: str, db: Session = Depends(get_db), current_
         return _round_payload(db, meta)
     if control.ended or not control.current_problem_id or control.status not in {"PREVIEW", "PREVIEW_EXPIRED", "READY"}:
         raise HTTPException(status_code=409, detail="Preview a selected problem before starting bidding.")
-    _reject_final_problem_auction(db, control)
     state = "ROUND1_BIDDING" if meta["number"] == 1 else "WILDCARD_BIDDING"
     transition_event_state(db, state, validate=False, commit=False)
     control.status = "BIDDING"
@@ -327,7 +326,6 @@ async def close_bidding(round_slug: str, db: Session = Depends(get_db), current_
     sync_expired_event_state(db)
     db.refresh(control)
     game = get_or_create_game_config(db)
-    _reject_final_problem_auction(db, control)
     if control.status == "READY" and game.state == "ROUND1_RESULT":
         return _round_payload(db, meta)
     if control.status != "BIDDING":
@@ -351,16 +349,27 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
     if meta["type"] == "WILDCARD":
         raise HTTPException(status_code=409, detail="Wildcard slot winners are finalized when slot bidding closes.")
     with ROUND1_FINALIZATION_LOCK:
-        control = get_or_create_round_control(db, meta["type"])
-        if control.current_problem_id is None and control.status == "READY":
+        unlocked_control = get_or_create_round_control(db, meta["type"])
+        control = (
+            db.query(RoundControl)
+            .filter(RoundControl.id == unlocked_control.id)
+            .with_for_update()
+            .populate_existing()
+            .one()
+        )
+        if control.current_problem_id is None and control.status in {"READY", "COMPLETE"}:
             return {"message": "Winner assignment already completed.", "winners": [], **_round_payload(db, meta)}
-        _reject_final_problem_auction(db, control)
         problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id, ProblemStatement.round == meta["number"]).first()
         if not problem or control.status != "READY":
             raise HTTPException(status_code=409, detail="Close bidding before assigning winners.")
         event_config = get_or_create_event_config(db)
-        winner_limit = ROUND1_WINNER_COUNT if meta["number"] == 1 else event_config.wildcard_slots
-        bids = db.query(Bid).filter(Bid.ps_id == problem.id, Bid.round == meta["number"]).order_by(Bid.amount.desc(), Bid.timestamp.asc()).all()
+        existing_assignments = db.query(Team).filter(Team.round1_problem_id == problem.id).count()
+        winner_limit = (
+            max(0, ROUND1_PROBLEM_CAPACITY - existing_assignments)
+            if meta["number"] == 1
+            else event_config.wildcard_slots
+        )
+        bids = db.query(Bid).filter(Bid.ps_id == problem.id, Bid.round == meta["number"]).order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).all()
         winners = []
         for bid in bids:
             if len(winners) >= winner_limit:
@@ -389,7 +398,7 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
                 problem,
                 [winner["amount"] for winner in winners],
             )
-        problem.status = "completed"
+        problem.status = "completed" if winners else "no_bids"
         assigned_problem = {
             "id": problem.id,
             "number": int(_display_number(problem)) if _display_number(problem).isdigit() else problem.ps_number,
@@ -398,45 +407,295 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
             "starting_bid": get_or_create_event_config(db).round1_minimum_bid,
         }
         control.current_problem_id = None
-        control.status = "READY"
-        record_event(db, "round1.winners_assigned", actor=current_user, entity_type="problem", entity_id=problem.id, metadata={"winner_team_ids": [winner["team_id"] for winner in winners]})
+        unassigned_count = db.query(Team).filter(
+            Team.is_approved.is_(True),
+            Team.is_system_team.is_(False),
+            Team.round1_problem_id.is_(None),
+        ).count()
+        control.status = "COMPLETE" if unassigned_count == 0 else "READY"
+        control.ended = unassigned_count == 0
+        event_name = "round1.winners_assigned" if winners else "round1.problem_received_no_bids"
+        record_event(db, event_name, actor=current_user, entity_type="problem", entity_id=problem.id, metadata={"winner_team_ids": [winner["team_id"] for winner in winners]})
         db.commit()
-        response = {"winners": winners, **_round_payload(db, meta)}
+        message = (
+            f"{len(winners)} actual bidder{'s' if len(winners) != 1 else ''} assigned."
+            if winners
+            else "No bids received. Problem moved to remaining allocation pool."
+        )
+        response = {"message": message, "winners": winners, **_round_payload(db, meta)}
         db.close()
     await manager.broadcast_event("round_updated", {
         "round": meta["type"],
-        "action": "winners_assigned",
+        "action": "winners_assigned" if winners else "problem_no_bids",
         "winners": winners,
         "problem": assigned_problem,
     })
     return response
 
 
-@router.post("/admin/rounds/round-1/final-auto-assignment")
-async def confirm_final_auto_assignment(
-    payload: FinalAutoAssignmentRequest,
+@router.get("/admin/rounds/round-1/assignments")
+def get_round_one_assignments(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_active_admin),
 ):
-    if payload.deduction is not None and payload.deduction < 0:
-        raise HTTPException(status_code=422, detail="Deduction per team must be zero or greater.")
-    control = get_or_create_round_control(db, "ROUND1")
-    automatic = auto_assign_final_problem(
-        db,
-        control,
-        actor=current_user,
-        price_override=payload.deduction,
+    del current_user
+    return round1_assignment_management_payload(db)
+
+
+@router.post("/admin/rounds/round-1/assignments/external-problems/import")
+async def import_external_assignment_problems(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_admin),
+):
+    """Import manual-assignment-only problems using the established Round 1 parser."""
+    rows = _read_problem_rows(file.filename or "", await file.read())
+    with ROUND1_FINALIZATION_LOCK:
+        existing = db.query(ProblemStatement).with_for_update().all()
+        existing_by_number: dict[int, list[ProblemStatement]] = {}
+        for problem in existing:
+            try:
+                existing_by_number.setdefault(int(_display_number(problem)), []).append(problem)
+            except (TypeError, ValueError):
+                continue
+
+        conflicts: list[str] = []
+        skipped_duplicates: list[dict] = []
+        pending: list[tuple[int, str, str]] = []
+        for number, title, description in rows:
+            matches = existing_by_number.get(number, [])
+            if not matches:
+                pending.append((number, title, description))
+                continue
+            auction_problem = next((problem for problem in matches if problem.round != EXTERNAL_PROBLEM_ROUND), None)
+            if auction_problem:
+                source = "Round 1" if auction_problem.round == 1 else "Wildcard"
+                conflicts.append(
+                    f"Problem #{number} already exists in {source}; choose a distinct external problem number."
+                )
+                continue
+            found = matches[0]
+            if found.round == EXTERNAL_PROBLEM_ROUND:
+                skipped_duplicates.append({
+                    "problem_number": str(number),
+                    "title": found.title,
+                    "reason": f"External problem #{number} already exists; the stored record was not overwritten.",
+                })
+
+        if conflicts:
+            raise HTTPException(status_code=409, detail=conflicts)
+
+        created: list[ProblemStatement] = []
+        try:
+            for number, title, description in pending:
+                problem = ProblemStatement(
+                    ps_number=f"EX-{number}",
+                    title=title,
+                    description=description,
+                    round=EXTERNAL_PROBLEM_ROUND,
+                    status="available",
+                )
+                db.add(problem)
+                created.append(problem)
+            db.flush()
+            record_event(
+                db,
+                "round1.external_problems_imported",
+                actor=current_user,
+                metadata={
+                    "created": len(created),
+                    "skipped_duplicates": len(skipped_duplicates),
+                    "filename": file.filename or "",
+                },
+            )
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="An external problem with the same number was imported concurrently. Refresh and retry.",
+            ) from exc
+
+    snapshot = round1_assignment_management_payload(db)
+    await manager.broadcast_event("external_problems_imported", {
+        "created": len(created),
+        "skipped_duplicates": len(skipped_duplicates),
+    })
+    return {
+        "message": (
+            f"Imported {len(created)} external problem{'s' if len(created) != 1 else ''}. "
+            f"Skipped {len(skipped_duplicates)} duplicate{'s' if len(skipped_duplicates) != 1 else ''}."
+        ),
+        "imported": len(created),
+        "skipped_duplicate_count": len(skipped_duplicates),
+        "skipped_duplicates": skipped_duplicates,
+        **snapshot,
+    }
+
+
+@router.get("/admin/rounds/round-1/assignments/external-problems/sample.csv")
+def external_problem_sample(current_user=Depends(get_current_active_admin)):
+    del current_user
+    sample = (
+        "Problem Number,Title,Description\r\n"
+        "21,\"Smart Parking Optimization\",\"Design a system that optimizes parking availability and routing.\"\r\n"
+        "22,\"Disaster Communication System\",\"Build a resilient communication platform for disaster response.\"\r\n"
     )
-    if not automatic:
-        raise HTTPException(status_code=409, detail="Last Problem Auto Allotment is not currently available.")
-    db.commit()
+    return Response(
+        sample,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=external-problems-sample.csv"},
+    )
+
+
+@router.put("/admin/rounds/round-1/assignments/{team_id}")
+async def change_round_one_assignment(
+    team_id: int,
+    payload: ChangeProblemAssignmentRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_admin),
+):
+    try:
+        result = change_round1_problem_assignment(
+            db,
+            team_id,
+            payload.target_problem_id,
+            new_balance=payload.new_balance,
+            actor=current_user,
+        )
+    except Round1AssignmentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (IntegrityError, OperationalError) as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Another Admin changed Round 1 assignments at the same time. Refresh and retry.",
+        ) from exc
+
+    if not result["idempotent"]:
+        change = result["change"]
+        await manager.broadcast_event("round1_assignment_changed", {
+            "team_id": change["team_id"],
+            "previous_problem_id": change["previous_problem_id"],
+            "problem": change["problem"],
+            "coins": change["coins"],
+        })
+    return {
+        "message": "Problem assignment already matches the requested problem."
+        if result["idempotent"]
+        else (
+            f"Problem assigned and balance set to {result['change']['coins']:,} coins."
+            if result["change"]["balance_changed"]
+            else "Round 1 problem assignment changed. No balance change."
+        ),
+        **result,
+    }
+
+
+@router.post("/admin/rounds/round-1/problems/{problem_id}/assign")
+async def assign_problem_manually(
+    problem_id: int,
+    payload: ManualProblemAssignmentRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_admin),
+):
+    control = get_or_create_round_control(db, "ROUND1")
+    try:
+        result = manually_assign_problem(
+            db,
+            control,
+            problem_id,
+            payload.team_ids,
+            payload.deduction,
+            actor=current_user,
+        )
+        db.commit()
+    except Round1AssignmentError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (IntegrityError, OperationalError) as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="The assignment changed concurrently. Refresh the Round 1 controls and retry.",
+        ) from exc
+    if not result["idempotent"]:
+        await manager.broadcast_event("round_updated", {
+            "round": "ROUND1",
+            "action": "problem_manually_assigned",
+            "problem_id": problem_id,
+            "assignments": result["assignments"],
+        })
+        await manager.broadcast_event("event_state_changed", event_snapshot(db))
+    return {
+        "message": "Manual Round 1 assignment completed." if not result["idempotent"] else "Assignment already applied.",
+        "idempotent": result["idempotent"],
+        **_round_payload(db, ROUND_META["round-1"]),
+    }
+
+
+@router.post("/admin/rounds/round-1/problems/{problem_id}/rebid")
+async def rebid_problem(
+    problem_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_admin),
+):
+    with ROUND1_FINALIZATION_LOCK:
+        unlocked = get_or_create_round_control(db, "ROUND1")
+        control = (
+            db.query(RoundControl)
+            .filter(RoundControl.id == unlocked.id)
+            .with_for_update()
+            .populate_existing()
+            .one()
+        )
+        problem = (
+            db.query(ProblemStatement)
+            .filter(ProblemStatement.id == problem_id, ProblemStatement.round == 1)
+            .with_for_update()
+            .first()
+        )
+        if not problem:
+            raise HTTPException(status_code=404, detail="Round 1 problem not found.")
+        if control.current_problem_id == problem.id:
+            return _round_payload(db, ROUND_META["round-1"])
+        if control.ended:
+            raise HTTPException(status_code=409, detail="Round 1 is closed.")
+        if control.current_problem_id is not None or control.status in {"PREVIEW", "BIDDING"}:
+            raise HTTPException(status_code=409, detail="Complete the current auction before starting a re-bid.")
+        capacity = ROUND1_PROBLEM_CAPACITY - db.query(Team).filter(
+            Team.round1_problem_id == problem.id
+        ).count()
+        if capacity <= 0:
+            raise HTTPException(status_code=409, detail="This problem already has five assigned teams.")
+
+        # Bid rows have one unique slot per team/problem/round and no attempt id.
+        # Reset only this problem's live slate so a prior losing bid cannot win a re-bid.
+        db.query(Bid).filter(Bid.ps_id == problem.id, Bid.round == 1).delete(synchronize_session=False)
+        transition_event_state(db, "WAITING", validate=False, commit=False)
+        problem.status = "current"
+        control.current_problem_id = problem.id
+        control.status = "READY"
+        record_event(
+            db,
+            "round1.problem_rebid_selected",
+            actor=current_user,
+            entity_type="problem",
+            entity_id=problem.id,
+            metadata={"remaining_capacity": capacity},
+        )
+        db.commit()
+        snapshot = event_snapshot(db)
+        response = _round_payload(db, ROUND_META["round-1"])
+        db.close()
     await manager.broadcast_event("round_updated", {
         "round": "ROUND1",
-        "action": "final_problem_auto_assigned",
-        "problem_id": automatic["problem"]["id"],
-        "team_count": automatic["team_count"],
+        "action": "problem_rebid_selected",
+        "problem_id": problem_id,
+        "remaining_capacity": capacity,
     })
-    return _round_payload(db, ROUND_META["round-1"])
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
 
 
 @router.post("/admin/rounds/round-1/end")

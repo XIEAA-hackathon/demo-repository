@@ -145,7 +145,7 @@ export interface ParticipantDashboard {
   bidCooldownRemainingSeconds: number
   isLeader: boolean
   round1Assigned: boolean
-  round1AssignmentType: 'BID_WINNER' | 'AUTO_FINAL_PROBLEM' | null
+  round1AssignmentType: 'BID_WINNER' | 'MANUAL_ASSIGNMENT' | null
   round1AssignmentCost: number | null
   wildcardEligible: boolean
   wildcardApplicationsOpen: boolean

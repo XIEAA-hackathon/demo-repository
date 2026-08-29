@@ -23,6 +23,9 @@ def get_dashboard(db: Session = Depends(get_db), current_user: User = Depends(ge
 @router.get("/teams", response_model=List[TeamResponse])
 def get_all_teams(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     teams = db.query(Team).all()
+    active_team_ids = manager.participant_team_ids()
+    for team in teams:
+        team.logged_in = team.id in active_team_ids
     return teams
 
 @router.put("/team/{team_id}/approve")

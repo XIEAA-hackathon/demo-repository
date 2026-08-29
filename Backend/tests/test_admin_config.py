@@ -60,6 +60,25 @@ def test_admin_update_config_validates(client, admin_headers, db):
     assert data["wildcard_bid_increment"] == 10
     assert data["wildcard_enabled"] is False
 
+    assert client.put("/admin/config", headers=admin_headers, json={"starting_coins": -1}).status_code == 400
+    assert client.put("/admin/config", headers=admin_headers, json={"starting_coins": 1_000_001}).status_code == 400
+
+
+def test_starting_coins_persist_without_changing_existing_balances(client, admin_headers, db):
+    existing_team = Team(team_name="Existing Balance", coins=3210, is_approved=True)
+    db.add(existing_team)
+    db.commit()
+
+    updated = client.put("/admin/config", headers=admin_headers, json={"starting_coins": 7500})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["starting_coins"] == 7500
+
+    db.refresh(existing_team)
+    assert existing_team.coins == 3210
+    persisted = client.get("/admin/config", headers=admin_headers)
+    assert persisted.status_code == 200
+    assert persisted.json()["starting_coins"] == 7500
+
 
 def test_import_uses_event_config_starting_coins(client, admin_headers, csv_bytes, db):
     client.put("/admin/config", headers=admin_headers, json={"starting_coins": 777})

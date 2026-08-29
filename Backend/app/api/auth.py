@@ -30,7 +30,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise credentials_exception
     user = db.query(User).filter(User.email == email).first()
-    if user is None:
+    if user is None or not user.credentials_active:
         raise credentials_exception
     
     # A token is valid only while both sides carry the same active session.
@@ -125,10 +125,11 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
         if not team or not team.is_approved:
             raise HTTPException(status_code=403, detail="Team is not approved by admin yet.")
             
+    if user.role in ("leader", "member"):
+        await manager.disconnect_users({user.id}, reason="Signed in from another session")
     token = _issue_session(user, db)
     if user.role in ("leader", "member"):
-        presence = participant_presence_payload(db)
-        db.close()
+        presence = participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
         await manager.broadcast_event("participant_presence_changed", presence)
     return token
 
@@ -152,7 +153,7 @@ async def logout(db: Session = Depends(get_db), current_user: User = Depends(get
     current_user.session_id = None
     db.commit()
     if participant_logout:
-        presence = participant_presence_payload(db)
-        db.close()
+        await manager.disconnect_users({current_user.id})
+        presence = participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
         await manager.broadcast_event("participant_presence_changed", presence)
     return {"message": "Successfully logged out"}

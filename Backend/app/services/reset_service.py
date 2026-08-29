@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import secrets
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.models import (
@@ -25,31 +25,133 @@ from app.models.models import (
 )
 from app.services.activity_log import record_event
 from app.services.event_service import get_or_create_event_config, get_or_create_game_config
-from app.core.security import get_password_hash
 from app.core.event_constants import ROUND1_BASE_BID_DEFAULT, ROUND1_WINNER_COUNT, WILDCARD_BASE_BID_DEFAULT
 
 
 def reset_imported_participant_credentials(db: Session, *, actor: User) -> dict:
-    """Invalidate imported participant authentication without touching event data."""
+    """Remove import-created participant registration without resetting the event."""
     accounts = db.query(User).filter(
         User.account_source == "IMPORTED",
         User.role.in_(("leader", "member")),
         User.is_system_account.is_(False),
     ).all()
-    for account in accounts:
-        account.password_hash = get_password_hash(secrets.token_urlsafe(48))
-        account.session_id = secrets.token_hex(32)
-        account.credentials_active = False
+    account_ids = {account.id for account in accounts}
+    account_emails = {account.email for account in accounts}
+
+    registration_team_ids = {
+        team_id
+        for (team_id,) in db.query(RegistrationImportRow.team_id)
+        .filter(RegistrationImportRow.team_id.is_not(None))
+        .distinct()
+        .all()
+    }
+    imported_teams = []
+    if registration_team_ids and account_ids:
+        # Registration rows identify teams touched by an import. Requiring the
+        # team's leader to carry the import source marker avoids deleting a
+        # pre-existing manually managed team that was merely updated by a sheet.
+        imported_teams = db.query(Team).filter(
+            Team.id.in_(registration_team_ids),
+            Team.leader_id.in_(account_ids),
+            Team.is_system_team.is_(False),
+        ).all()
+    imported_team_ids = {team.id for team in imported_teams}
+
+    deleted = {
+        "participant_accounts": len(accounts),
+        "teams": len(imported_team_ids),
+        "member_records": 0,
+        "registration_rows": db.query(RegistrationImportRow).count(),
+        "registration_imports": db.query(RegistrationImport).count(),
+        "team_event_records": 0,
+    }
+
+    if account_ids:
+        # Preserve submissions owned by retained manual teams while removing a
+        # deleted imported participant as their historical submitting identity.
+        db.query(Submission).filter(Submission.submitted_by_user_id.in_(account_ids)).update(
+            {Submission.submitted_by_user_id: None},
+            synchronize_session=False,
+        )
+
+    if imported_team_ids:
+        for result_column in (
+            FinalResult.first_place_team_id,
+            FinalResult.second_place_team_id,
+            FinalResult.third_place_team_id,
+        ):
+            db.query(FinalResult).filter(result_column.in_(imported_team_ids)).update(
+                {result_column: None},
+                synchronize_session=False,
+            )
+        db.query(WildcardSelectionPool).filter(
+            WildcardSelectionPool.selected_by_team_id.in_(imported_team_ids)
+        ).update(
+            {WildcardSelectionPool.selected_by_team_id: None},
+            synchronize_session=False,
+        )
+
+        dependent_queries = (
+            db.query(Submission).filter(Submission.team_id.in_(imported_team_ids)),
+            db.query(WildcardBid).filter(WildcardBid.team_id.in_(imported_team_ids)),
+            db.query(Wildcard).filter(Wildcard.team_id.in_(imported_team_ids)),
+            db.query(Bid).filter(Bid.team_id.in_(imported_team_ids)),
+            db.query(ExchangeRequest).filter(or_(
+                ExchangeRequest.requester_team_id.in_(imported_team_ids),
+                ExchangeRequest.receiver_team_id.in_(imported_team_ids),
+            )),
+            db.query(WalletTransaction).filter(WalletTransaction.team_id.in_(imported_team_ids)),
+        )
+        for query in dependent_queries:
+            deleted["team_event_records"] += query.delete(synchronize_session=False)
+
+        team_member_query = db.query(Member).filter(Member.team_id.in_(imported_team_ids))
+        deleted["member_records"] += team_member_query.delete(synchronize_session=False)
+
+        # User.team_id uses SET NULL at the database layer, but clearing it
+        # explicitly keeps SQLite and PostgreSQL behavior identical.
+        db.query(User).filter(User.team_id.in_(imported_team_ids)).update(
+            {User.team_id: None},
+            synchronize_session=False,
+        )
+        db.query(Team).filter(Team.id.in_(imported_team_ids)).delete(synchronize_session=False)
+
+    if account_emails:
+        # Imported members can have been added to a retained manual team. Their
+        # Member row is registration-owned even when the team itself is not.
+        retained_member_query = db.query(Member).filter(Member.email.in_(account_emails))
+        if imported_team_ids:
+            retained_member_query = retained_member_query.filter(Member.team_id.notin_(imported_team_ids))
+        deleted["member_records"] += retained_member_query.delete(synchronize_session=False)
+
+    if account_ids:
+        # Avoid an ON DELETE CASCADE removing a retained team in inconsistent
+        # legacy data where an imported account is still its leader.
+        db.query(Team).filter(Team.leader_id.in_(account_ids)).update(
+            {Team.leader_id: None},
+            synchronize_session=False,
+        )
+        db.query(User).filter(User.id.in_(account_ids)).delete(synchronize_session=False)
+
+    db.query(RegistrationImportRow).delete(synchronize_session=False)
+    db.query(RegistrationImport).delete(synchronize_session=False)
 
     record_event(
         db,
         "registration.credentials_reset",
         actor=actor,
-        metadata={"reset_participant_accounts": len(accounts)},
+        metadata={
+            "deleted_participant_accounts": deleted["participant_accounts"],
+            "deleted_imported_teams": deleted["teams"],
+            "deleted_registration_rows": deleted["registration_rows"],
+            "event_lifecycle_reset": False,
+        },
     )
     return {
-        "participant_accounts": len(accounts),
+        "participant_accounts": deleted["participant_accounts"],
         "sessions_invalidated": len(accounts),
+        "deleted": deleted,
+        "user_ids": sorted(account_ids),
     }
 
 

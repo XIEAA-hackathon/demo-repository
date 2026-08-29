@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Login from "./pages/Login";
+import ChangeProblemPage from "./pages/ChangeProblem";
 import {
   addTime, approveTeam, clearToken, deleteTeam, downloadRegistrationAssignments, downloadRegistrationCredentials, downloadRegistrationDemo, downloadRegistrationSample, finalizeProblem,
   getAdminConfig, getAdminState, getBidHistory,
@@ -9,9 +10,9 @@ import {
   updateAdminConfig, createTeamCredentials, getRoundControl, importRoundProblems, downloadRoundProblemSample,
   downloadRoundOneAssignments, downloadWildcardAssignments,
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
-  confirmRoundOneAutoAllotment, endRoundOne, openWildcardApplications, closeWildcardApplications,
+  assignRoundOneProblem, rebidRoundOneProblem, endRoundOne, openWildcardApplications, closeWildcardApplications,
   confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding, endWildcardSelectionTurn, endWildcard,
-  getAdminSubmissions, openSubmissions, closeSubmissions, ApiError,
+  getAdminSubmissions, openSubmissions, closeSubmissions, downloadFinalEventResults, ApiError,
   getJudging, saveJudgingWinners, publishJudgingResults,
   getAdminHealth, runPreflight, getRecoveryState, resumeRecoveryTimer, reloadRecoveryState,
   resyncClients, retryCurrentTransition, getActivityLog, developmentReset, resetEventData,
@@ -19,7 +20,7 @@ import {
   createManagedLeaderboardUser, resetManagedUserPassword, resetManagedUsers,
 } from "./services/api";
 import { connectAuctionSocket } from "./services/auctionSocket";
-import { classifyApiStatus, deriveServerRemaining, isSyncStale, projectCountdown, shouldApplyTimerSnapshot } from "../services/realtime/timerReconciliation";
+import { classifyApiStatus, deriveServerRemaining, isSyncStale, projectCountdown, shouldApplyHttpSnapshot, shouldApplyTimerSnapshot } from "../services/realtime/timerReconciliation";
 
 const labels = {
   WAITING: "Waiting", ROUND1_PREVIEW: "Round 1 preview", ROUND1_BIDDING: "Round 1 bidding",
@@ -102,13 +103,17 @@ function AdminApplication({ onLogout }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
+  const [assignmentRevision, setAssignmentRevision] = useState(0);
   const loadInFlight = useRef(null);
   const lastSuccessfulLoadStartedAt = useRef(0);
   const socketStatusRef = useRef("connecting");
+  const realtimeRevision = useRef({ state: 0, bids: 0, teams: 0 });
+  const lastEventVersion = useRef(0);
 
   const load = useCallback(() => {
     if (loadInFlight.current) return loadInFlight.current;
     const startedAt = Date.now();
+    const requestRevision = { ...realtimeRevision.current };
     const request = (async () => {
       try {
         const results = await Promise.allSettled([
@@ -118,9 +123,9 @@ function AdminApplication({ onLogout }) {
         const fulfilled = (result) => result.status === "fulfilled";
         const eventStateFresh = fulfilled(eventStateResult);
 
-        if (fulfilled(teamResult)) setTeams(teamResult.value);
+        if (fulfilled(teamResult) && shouldApplyHttpSnapshot(requestRevision.teams, realtimeRevision.current.teams)) setTeams(teamResult.value);
         if (fulfilled(problemResult)) setProblems(problemResult.value);
-        if (fulfilled(bidResult)) setBids(bidResult.value);
+        if (fulfilled(bidResult) && shouldApplyHttpSnapshot(requestRevision.bids, realtimeRevision.current.bids)) setBids(bidResult.value);
         if (fulfilled(configResult)) setConfig(configResult.value);
 
         let healthFailed = false;
@@ -130,7 +135,7 @@ function AdminApplication({ onLogout }) {
           healthFailed = true;
         }
 
-        if (eventStateFresh) {
+        if (eventStateFresh && shouldApplyHttpSnapshot(requestRevision.state, realtimeRevision.current.state)) {
           const syncedAt = Date.now();
           const eventState = eventStateResult.value;
           setState({ ...eventState, timing: { ...eventState.timing, received_at: syncedAt } });
@@ -196,11 +201,16 @@ function AdminApplication({ onLogout }) {
       }, 300);
     };
     const disconnect = connectAuctionSocket({
-      onStatus: (status) => { setSocketStatus(status); socketStatusRef.current = status; if (status === "reconnected") queueLoad(); },
+      onStatus: (status) => { setSocketStatus(status); socketStatusRef.current = status; if (status === "reconnected") { lastEventVersion.current = 0; queueLoad(); } },
       onMessage: (message) => {
+        const previousVersion = lastEventVersion.current;
+        if (message.version > 0 && previousVersion > 0 && message.version < previousVersion) return;
+        if (message.version > 0) lastEventVersion.current = message.version;
+        if (previousVersion > 0 && message.version > previousVersion + 1) queueLoad();
         if (message.type === "bid_updated") {
           const nextBid = message.payload?.bid;
           if (!nextBid) return;
+          realtimeRevision.current.bids += 1;
           setBids((current) => [
             nextBid,
             ...current.filter((bid) => !(bid.team_id === nextBid.team_id && bid.ps_id === nextBid.ps_id && bid.round === nextBid.round)),
@@ -208,10 +218,19 @@ function AdminApplication({ onLogout }) {
           return;
         }
         if (message.type === "participant_presence_changed") {
+          realtimeRevision.current.teams += 1;
           setState((current) => ({ ...current, ...message.payload }));
+          const loggedInTeamIds = new Set(message.payload?.logged_in_team_ids || []);
+          setTeams((current) => current.map((team) => ({ ...team, logged_in: loggedInTeamIds.has(team.id) })));
+          return;
+        }
+        if (["round1_assignment_changed", "external_problems_imported"].includes(message.type)) {
+          setAssignmentRevision((current) => current + 1);
+          queueLoad();
           return;
         }
         if (["event_snapshot", "event_state_changed", "timer_sync"].includes(message.type) && message.payload?.event_state) {
+          realtimeRevision.current.state += 1;
           const syncedAt = Date.now();
           setState((current) => ({ ...current, ...message.payload, timing: { ...message.payload.timing, received_at: syncedAt } }));
           setLastSyncAt(syncedAt);
@@ -245,7 +264,7 @@ function AdminApplication({ onLogout }) {
         <div className="sidebar-brand"><div className="sidebar-logo">♠</div><div><strong>Bid to Build</strong><span>Admin control</span></div></div>
         <nav className="sidebar-nav">
           <span className="sidebar-section-title">Event</span>
-          {[["dashboard", "Overview", "⌂"], ["round1", "Round 1", "1"], ["wildcard", "Wildcard", "W"], ["submission", "Submission", "S"], ["judging", "Judging", "J"], ["recovery", "Recovery", "R"]].map(([id, label, icon]) => (
+          {[["dashboard", "Overview", "⌂"], ["round1", "Round 1", "1"], ["change-problem", "Change Problem", "C"], ["wildcard", "Wildcard", "W"], ["submission", "Submission", "S"], ["judging", "Judging", "J"], ["recovery", "Recovery", "R"]].map(([id, label, icon]) => (
             <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
           ))}
           <span className="sidebar-section-title sidebar-section-title--management">Management</span>
@@ -253,17 +272,17 @@ function AdminApplication({ onLogout }) {
             <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
           ))}
         </nav>
-        <div className="admin-profile" aria-live="polite"><div className="admin-avatar">P</div><div><strong>Participants Logged In</strong><span>{state?.participant_logged_in_count ?? 0} / {state?.registered_participant_count ?? teams.length}</span></div></div>
         <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">A</div><div><strong>Event Admin</strong><span>Backend verified</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page === "admin-users" ? "Admin Users" : page === "leaderboard-users" ? "Leaderboard Users" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health" aria-live="polite"><span><i className={`status-dot ${socketConnected ? "online" : socketStatus === "reconnecting" || socketStatus === "connecting" ? "degraded" : "offline"}`} />Live connection <strong>{socketLabel}</strong></span><span><i className={`status-dot ${apiStatus === "healthy" ? "online" : apiStatus === "degraded" || apiStatus === "checking" ? "degraded" : "offline"}`} />Backend/API <strong>{apiLabel}</strong></span><small>Database {databaseLabel} · Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {syncLabel}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
+        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "change-problem" ? "Change Problem" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page === "admin-users" ? "Admin Users" : page === "leaderboard-users" ? "Leaderboard Users" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health" aria-live="polite"><span><i className={`status-dot ${socketConnected ? "online" : socketStatus === "reconnecting" || socketStatus === "connecting" ? "degraded" : "offline"}`} />Live connection <strong>{socketLabel}</strong></span><span><i className={`status-dot ${apiStatus === "healthy" ? "online" : apiStatus === "degraded" || apiStatus === "checking" ? "degraded" : "offline"}`} />Backend/API <strong>{apiLabel}</strong></span><small>Database {databaseLabel} · Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {syncLabel}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
         <div className="page-content">
           {stale && <div className="stale-state-warning" role="alert"><strong>LIVE DATA MAY BE STALE</strong><span>Last successful API synchronization: {staleSeconds == null ? "not yet completed" : `${staleSeconds} seconds ago`}. The live connection is tracked separately.</span></div>}
           {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
           {notice && <div className="admin-notice">{notice}</div>}
-          {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} />}
+          {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} config={config} onConfig={setConfig} />}
           {page === "round1" && <RoundControlPage round="round-1" state={state} config={config} remaining={remaining} onConfig={setConfig} />}
+          {page === "change-problem" && <ChangeProblemPage revision={assignmentRevision} />}
           {page === "wildcard" && <WildcardControlPage state={state} config={config} remaining={remaining} onConfig={setConfig} />}
           {page === "submission" && <SubmissionAdminPage />}
           {page === "judging" && <JudgingAdminPage onGlobalSync={load} />}
@@ -280,12 +299,39 @@ function AdminApplication({ onLogout }) {
   );
 }
 
-function Dashboard({ teams, problems, bids, state, remaining }) {
+function Dashboard({ teams, problems, bids, state, remaining, config, onConfig }) {
   const [preflight, setPreflight] = useState(null);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState("");
+  const [startingCoins, setStartingCoins] = useState("");
+  const [coinSaving, setCoinSaving] = useState(false);
+  const [coinError, setCoinError] = useState("");
+  const [coinNotice, setCoinNotice] = useState("");
+  useEffect(() => {
+    if (config?.starting_coins !== undefined) setStartingCoins(String(config.starting_coins));
+  }, [config?.starting_coins]);
   const check = async () => { setChecking(true); setCheckError(""); try { setPreflight(await runPreflight()); } catch (cause) { setCheckError(cause.message || "Event check failed."); } finally { setChecking(false); } };
-  return <section className="dashboard"><div className="hero-panel"><div><span className="eyebrow">LIVE EVENT STATE</span><h2>{labels[state?.event_state] || "Waiting"}</h2><p>Every connected participant receives state changes from the backend.</p></div><div className="hero-status"><span className="live-pulse" />{state?.timing?.paused ? "TIMER PAUSED" : remaining ? formatTime(remaining) : "READY"}</div></div><div className="stats-grid"><Stat label="REGISTERED TEAMS" value={teams.length} /><Stat label="PROBLEM STATEMENTS" value={problems.length} /><Stat label="BIDS RECEIVED" value={bids.length} /><Stat label="CURRENT ROUND" value={state?.current_round ?? 1} /></div><section className="preflight-panel"><div><h3>Event readiness</h3><p>Validate every live-event prerequisite without changing event state.</p></div><button className="primary-button" disabled={checking} onClick={() => void check()}>{checking ? "Running checks…" : "Run event check"}</button>{checkError && <div className="global-error" role="alert">{checkError}</div>}{preflight && <><strong className={`readiness-status readiness-status--${preflight.status.toLowerCase()}`}>{preflight.status}</strong><div className="preflight-list">{preflight.checks.map((item) => <div key={item.name}><span className={`check-mark check-mark--${item.status.toLowerCase()}`}>{item.status === "READY" ? "✓" : item.status === "WARNING" ? "!" : "×"}</span><span><strong>{item.name}</strong><small>{item.detail}</small></span></div>)}</div></>}</section></section>;
+  const saveStartingCoins = async (event) => {
+    event.preventDefault();
+    const value = startingCoins.trim();
+    const amount = Number(value);
+    setCoinError(""); setCoinNotice("");
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(amount) || amount > 1_000_000) {
+      setCoinError("Enter a whole number from 0 to 1,000,000.");
+      return;
+    }
+    setCoinSaving(true);
+    try {
+      const saved = await updateAdminConfig({ starting_coins: amount });
+      onConfig(saved);
+      setCoinNotice(`Saved ${amount.toLocaleString()} starting coins.`);
+    } catch (cause) {
+      setCoinError(cause.message || "Starting coins could not be saved.");
+    } finally {
+      setCoinSaving(false);
+    }
+  };
+  return <section className="dashboard"><div className="hero-panel"><div><span className="eyebrow">LIVE EVENT STATE</span><h2>{labels[state?.event_state] || "Waiting"}</h2><p>Every connected participant receives state changes from the backend.</p></div><div className="hero-status"><span className="live-pulse" />{state?.timing?.paused ? "TIMER PAUSED" : remaining ? formatTime(remaining) : "READY"}</div></div><div className="stats-grid"><Stat label="REGISTERED TEAMS" value={teams.length} /><Stat label="PROBLEM STATEMENTS" value={problems.length} /><Stat label="BIDS RECEIVED" value={bids.length} /><Stat label="CURRENT ROUND" value={state?.current_round ?? 1} /></div><section className="starting-coins-panel"><div><h3>Participant starting coins</h3><p>Used for newly created or imported teams and the next explicit Event Reset. Saving here never changes any team’s current balance.</p></div><form onSubmit={saveStartingCoins}><label htmlFor="starting-coins">Starting balance</label><div className="starting-coins-control"><input id="starting-coins" type="number" min="0" max="1000000" step="1" inputMode="numeric" value={startingCoins} disabled={!config || coinSaving} onChange={(event) => { setStartingCoins(event.target.value); setCoinError(""); setCoinNotice(""); }} aria-describedby="starting-coins-help" /><button className="primary-button" type="submit" disabled={!config || coinSaving}>{coinSaving ? "Saving…" : "Save coins"}</button></div><small id="starting-coins-help">Whole number from 0 to 1,000,000.</small>{coinError && <span className="starting-coins-message starting-coins-message--error" role="alert">{coinError}</span>}{coinNotice && <span className="starting-coins-message starting-coins-message--success" role="status">{coinNotice}</span>}</form></section><section className="preflight-panel"><div><h3>Event readiness</h3><p>Validate every live-event prerequisite without changing event state.</p></div><button className="primary-button" disabled={checking} onClick={() => void check()}>{checking ? "Running checks…" : "Run event check"}</button>{checkError && <div className="global-error" role="alert">{checkError}</div>}{preflight && <><strong className={`readiness-status readiness-status--${preflight.status.toLowerCase()}`}>{preflight.status}</strong><div className="preflight-list">{preflight.checks.map((item) => <div key={item.name}><span className={`check-mark check-mark--${item.status.toLowerCase()}`}>{item.status === "READY" ? "✓" : item.status === "WARNING" ? "!" : "×"}</span><span><strong>{item.name}</strong><small>{item.detail}</small></span></div>)}</div></>}</section></section>;
 }
 
 function RoundControlPage({ round, state, config, remaining, onConfig }) {
@@ -295,15 +341,17 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [autoDeduction, setAutoDeduction] = useState("");
-  const [autoConfirming, setAutoConfirming] = useState(false);
+  const [assignmentProblemId, setAssignmentProblemId] = useState(null);
+  const [selectedTeamIds, setSelectedTeamIds] = useState([]);
+  const [assignmentDeduction, setAssignmentDeduction] = useState("");
+  const [assignmentStage, setAssignmentStage] = useState("select");
   const [endConfirming, setEndConfirming] = useState(false);
   const loadRound = useCallback(() => getRoundControl(round).then(setData).catch((cause) => setError(cause.message)), [round]);
   useEffect(() => { void loadRound(); }, [loadRound, state?.timing?.server_time]);
   const run = async (operation, success) => {
     setWorking(true); setError(""); setNotice("");
-    try { const result = await operation(); if (result?.round_type) setData(result); setNotice(success); await loadRound(); }
-    catch (cause) { setError(cause.message || "Action failed."); if (cause instanceof ApiError && [409, 503].includes(cause.status)) await loadRound(); }
+    try { const result = await operation(); if (result?.round_type) setData(result); setNotice(typeof success === "function" ? success(result) : success); await loadRound(); return result; }
+    catch (cause) { setError(cause.message || "Action failed."); if (cause instanceof ApiError && [409, 503].includes(cause.status)) await loadRound(); return null; }
     finally { setWorking(false); }
   };
   const downloadSample = async () => {
@@ -327,18 +375,48 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   };
   const saveSettings = () => run(() => updateAdminConfig(config), `${isWildcard ? "Wildcard" : "Round 1"} timer settings saved.`);
   const current = data?.current_problem;
-  const finalAuto = data?.final_auto_assignment;
+  const remainingProblems = data?.remaining_problems;
+  const assignmentProblem = remainingProblems?.problems.find((problem) => problem.id === assignmentProblemId) || null;
+  const selectedTeams = (remainingProblems?.eligible_teams || []).filter((team) => selectedTeamIds.includes(team.team_id));
+  const deductionValue = Number(assignmentDeduction);
+  const validDeduction = assignmentDeduction !== "" && Number.isInteger(deductionValue) && deductionValue >= 0;
+  const insufficientTeams = validDeduction ? selectedTeams.filter((team) => team.coins < deductionValue) : [];
   useEffect(() => {
-    if (finalAuto?.status === "PENDING") setAutoDeduction(String(finalAuto.suggested_deduction));
-  }, [finalAuto?.problem?.id, finalAuto?.status, finalAuto?.suggested_deduction]);
-  const confirmAutoAllotment = async () => {
-    const deduction = Number(autoDeduction);
-    if (!Number.isInteger(deduction) || deduction < 0) {
-      setError("Deduction per team must be a whole number of zero or greater.");
-      return;
-    }
-    setAutoConfirming(false);
-    await run(() => confirmRoundOneAutoAllotment(deduction), "Final Round 1 problem allotted to every remaining team.");
+    if (assignmentProblemId != null) setAssignmentDeduction(String(remainingProblems?.suggested_deduction ?? 0));
+  }, [assignmentProblemId, remainingProblems?.suggested_deduction]);
+  const openAssignment = (problem) => {
+    setAssignmentProblemId(problem.id);
+    setSelectedTeamIds([]);
+    setAssignmentStage("select");
+    setError("");
+  };
+  const closeAssignment = () => {
+    if (working) return;
+    setAssignmentProblemId(null);
+    setSelectedTeamIds([]);
+    setAssignmentStage("select");
+  };
+  const toggleAssignmentTeam = (teamId) => {
+    setSelectedTeamIds((currentIds) => currentIds.includes(teamId)
+      ? currentIds.filter((id) => id !== teamId)
+      : assignmentProblem && currentIds.length < assignmentProblem.capacity_remaining
+        ? [...currentIds, teamId]
+        : currentIds);
+  };
+  const reviewAssignment = () => {
+    if (!selectedTeamIds.length) return setError("Select at least one eligible team.");
+    if (!validDeduction) return setError("Coins to deduct must be a whole number of zero or greater.");
+    if (insufficientTeams.length) return setError(`Lower the deduction or remove: ${insufficientTeams.map((team) => team.team_name).join(", ")}.`);
+    setError("");
+    setAssignmentStage("confirm");
+  };
+  const confirmManualAssignment = async () => {
+    if (!assignmentProblem || !validDeduction) return;
+    const result = await run(
+      () => assignRoundOneProblem(assignmentProblem.id, selectedTeamIds, deductionValue),
+      (response) => response?.message || `Problem #${assignmentProblem.problem_number} assigned.`,
+    );
+    if (result) closeAssignment();
   };
   const eventState = data?.event?.event_state;
   const hasTimer = Boolean(state?.timing?.ends_at || state?.timing?.paused);
@@ -377,14 +455,14 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
           {current && data.status === "READY" && !afterBidding && <button className="primary-button" disabled={working} onClick={() => run(() => startRoundPreview(round), "Preview started.")}>Start preview</button>}
           {data.status === "PREVIEW" && <button className="primary-button" disabled={working} onClick={() => run(() => startRoundBidding(round), "Bidding started.")}>End preview / start bidding</button>}
           {data.status === "BIDDING" && <button className="danger-button" disabled={working} onClick={() => run(() => closeRoundBidding(round), "Bidding closed.")}>Close bidding</button>}
-          {afterBidding && <button className="primary-button" disabled={working} onClick={() => run(() => assignRoundWinners(round), "Winner assignment completed.")}>Assign winner(s)</button>}
+          {afterBidding && <button className="primary-button" disabled={working} onClick={() => run(() => assignRoundWinners(round), (result) => result?.message || "Winner assignment completed.")}>Assign winner(s)</button>}
         </div>
       </article>
     </div>
 
     <section className={`round-problem-bank ${!isWildcard ? "round-problem-bank--round1" : ""}`}>
       <div className="round-section-heading"><div><span className="eyebrow">{isWildcard ? "WILDCARD" : "ROUND 1"} PROBLEMS</span><h3>Problem bank</h3></div><div className="round-inline-actions"><label className="secondary-button round-upload">Upload XLSX / CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-button" onClick={() => void downloadSample()}>Download sample CSV</button>{file && <button className="primary-button" disabled={working} onClick={() => run(() => importRoundProblems(round, file), `${file.name} imported.`)}>Import {file.name}</button>}</div></div>
-      <div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><div className="round-problem-copy"><b>{problem.title}</b><p title={problem.description}>{problem.description}</p></div><span>{problem.status}</span>{problem.status === "AVAILABLE" && !data.ended && !current && !(finalAuto?.status === "PENDING" && finalAuto.problem.id === problem.id) && <button className="secondary-button" onClick={() => run(() => selectRoundProblem(round, problem.id), `Problem #${problem.problem_number} selected.`)}>Select</button>}</article>) : <div className="round-empty"><strong>No problems imported</strong><p>Upload the organizer&apos;s XLSX or CSV problem bank.</p></div>}</div>
+      <div className="round-problem-list">{data.problems.length ? data.problems.map((problem) => <article key={problem.id} className={`round-problem-row round-problem-row--${problem.status.toLowerCase()}`}><strong>#{problem.problem_number}</strong><div className="round-problem-copy"><b>{problem.title}</b><p title={problem.description}>{problem.description}</p></div><span>{problem.status.replaceAll("_", " ")}</span>{problem.status === "AVAILABLE" && !data.ended && !current && <button className="secondary-button" onClick={() => run(() => selectRoundProblem(round, problem.id), `Problem #${problem.problem_number} selected.`)}>Select</button>}</article>) : <div className="round-empty"><strong>No problems imported</strong><p>Upload the organizer&apos;s XLSX or CSV problem bank.</p></div>}</div>
     </section>
 
     <section className={`round-settings ${!isWildcard ? "round-settings--round1" : ""}`}>
@@ -400,25 +478,35 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
       </div>}
       {!isWildcard && <button className="danger-link round-end" disabled={data.ended || working} onClick={() => setEndConfirming(true)}>{data.ended ? "Round 1 ended" : "END ROUND 1"}</button>}
     </section>
-    {!isWildcard && <section className="round-auto-allotment">
-      {finalAuto ? <>
-        <div className="round-auto-allotment__heading"><span className="eyebrow">LAST PROBLEM AUTO ALLOTMENT</span><h3>{finalAuto.status === "COMPLETED" ? "Final allotment completed" : "Confirm final allotment"}</h3></div>
-        <dl className="round-auto-allotment__grid">
-          <div><dt>Final Problem</dt><dd>#{finalAuto.problem.problem_number} — {finalAuto.problem.title}</dd></div>
-          <div><dt>Remaining Teams</dt><dd>{finalAuto.team_count}<span className="round-auto-allotment__team-names">{finalAuto.teams.map((team) => team.team_name).join(", ")}</span></dd></div>
-          <div><dt>Suggested Deduction</dt><dd>{finalAuto.suggested_deduction} coins</dd></div>
-          <div><dt>Deduction Per Team</dt><dd>{finalAuto.status === "PENDING" ? <input aria-label="Deduction per team" type="number" min="0" step="1" value={autoDeduction} onChange={(event) => setAutoDeduction(event.target.value)} /> : `${finalAuto.deduction_per_team} coins`}</dd></div>
-          <div><dt>Completed Auctions</dt><dd>{finalAuto.completed_auctions}</dd></div>
-        </dl>
-        {finalAuto.status === "PENDING" ? <button className="primary-button" disabled={working || autoDeduction === ""} onClick={() => setAutoConfirming(true)}>CONFIRM AUTO ALLOTMENT</button> : <div className="round-auto-allotment__teams"><strong>Assigned teams</strong><span>{finalAuto.teams.map((team) => team.team_name).join(", ")}</span></div>}
-      </> : <>
-        <div className="round-auto-allotment__heading"><span className="eyebrow">LAST PROBLEM AUTO ALLOTMENT</span><h3>Available at the final Round 1 problem</h3></div>
-        <div className="round-empty"><strong>Waiting for the final allotment state</strong><p>The confirmation grid becomes available when exactly one unused Round 1 problem and at least one eligible unassigned team remain.</p></div>
-      </>}
+    {!isWildcard && <section className="round-remaining-problems">
+      <header className="round-remaining-header"><div><h3>Remaining / Unassigned Problems</h3><p>Inspect assignment capacity, then choose whether to run another auction or assign specific eligible teams.</p></div><dl><div><dt>Unassigned teams</dt><dd>{remainingProblems?.unassigned_team_count ?? 0}</dd></div><div><dt>Suggested deduction</dt><dd>{remainingProblems?.suggested_deduction ?? 0} coins</dd></div><div><dt>Winning bid aggregate</dt><dd>{remainingProblems?.round1_winning_bid_sum ?? 0} / {remainingProblems?.round1_winning_bid_count ?? 0}<small>sum / actual winners</small></dd></div></dl></header>
+      <div className="round-remaining-table" role="table" aria-label="Round 1 problem assignment controls">
+        <div className="round-remaining-table__head" role="row"><span role="columnheader">Problem</span><span role="columnheader">Assigned</span><span role="columnheader">Capacity</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>
+        {(remainingProblems?.problems || []).map((problem) => <article className="round-remaining-row" role="row" key={problem.id}>
+          <div className="round-remaining-problem" role="cell"><strong>#{problem.problem_number} — {problem.title}</strong>{problem.assigned_teams.length ? <small title={problem.assigned_teams.map((team) => team.team_name).join(", ")}>{problem.assigned_teams.map((team) => team.team_name).join(", ")}</small> : <small>No teams assigned</small>}</div>
+          <strong className="round-remaining-count" role="cell">{problem.assigned_team_count} / 5</strong>
+          <span role="cell">{problem.capacity_remaining} open</span>
+          <span role="cell" className={`round-assignment-status round-assignment-status--${problem.assignment_status.toLowerCase()}`}>{problem.assignment_status === "PARTIAL" ? "Partially Assigned" : problem.assignment_status.charAt(0) + problem.assignment_status.slice(1).toLowerCase()}</span>
+          <div className="round-remaining-actions" role="cell">{problem.capacity_remaining > 0 ? <><button className="secondary-button" disabled={!problem.can_rebid || working} onClick={() => run(() => rebidRoundOneProblem(problem.id), `Problem #${problem.problem_number} selected for re-bid. Start its preview when ready.`)}>Re-bid</button><button className="primary-button" disabled={!problem.can_assign || working} onClick={() => openAssignment(problem)}>Assign</button></> : <span>Capacity filled</span>}</div>
+        </article>)}
+        {!remainingProblems?.problems.length && <div className="round-empty"><strong>No Round 1 problems</strong><p>Import the problem bank to begin.</p></div>}
+      </div>
     </section>}
     {!isWildcard && <div className="round-export-action"><button className="secondary-button" disabled={working} onClick={() => void downloadAssignments()}>DOWNLOAD ROUND 1 ASSIGNMENTS</button></div>}
-    {autoConfirming && finalAuto?.status === "PENDING" && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="auto-allotment-title"><h3 id="auto-allotment-title">Confirm final problem auto allotment?</h3><p>Assign Problem #{finalAuto.problem.problem_number} — {finalAuto.problem.title} to all {finalAuto.team_count} remaining teams and deduct up to {autoDeduction} coins from each team?</p><div><button className="secondary-button" disabled={working} onClick={() => setAutoConfirming(false)}>Cancel</button><button className="primary-button" disabled={working} onClick={() => void confirmAutoAllotment()}>{working ? "Assigning…" : "Confirm Auto Allotment"}</button></div></section></div>}
-    {endConfirming && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="end-round1-title"><h3 id="end-round1-title">END ROUND 1?</h3><p>This immediately stops Round 1. Existing assignments and balances remain unchanged; unassigned teams will stay unassigned.</p><dl><div><dt>Current problem</dt><dd>{current ? `#${current.problem_number} — ${current.title}` : finalAuto?.problem ? `#${finalAuto.problem.problem_number} — ${finalAuto.problem.title}` : "None"}</dd></div><div><dt>Assigned teams</dt><dd>{data.assigned_team_count ?? 0}</dd></div><div><dt>Unassigned teams</dt><dd>{data.unassigned_team_count ?? 0}</dd></div></dl><div><button className="secondary-button" disabled={working} onClick={() => setEndConfirming(false)}>Cancel</button><button className="danger-button" disabled={working} onClick={() => { setEndConfirming(false); void run(endRoundOne, "Round 1 ended. Wildcard can now be opened."); }}>{working ? "Ending…" : "END ROUND 1"}</button></div></section></div>}
+    {assignmentProblem && <div className="judging-confirmation-backdrop"><section className="judging-confirmation round-assignment-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-assignment-title">
+      <header><h3 id="manual-assignment-title">Assign Problem #{assignmentProblem.problem_number}</h3><p>{assignmentProblem.title}</p></header>
+      {assignmentStage === "select" ? <>
+        <dl className="round-assignment-summary"><div><dt>Currently assigned</dt><dd>{assignmentProblem.assigned_team_count} / 5</dd></div><div><dt>Remaining capacity</dt><dd>{assignmentProblem.capacity_remaining}</dd></div><div><dt>Calculated average</dt><dd>{remainingProblems.suggested_deduction} coins</dd></div></dl>
+        <label className="round-assignment-deduction" htmlFor="manual-assignment-deduction"><span>Coins to deduct per assigned team</span><input id="manual-assignment-deduction" type="number" min="0" step="1" inputMode="numeric" value={assignmentDeduction} onChange={(event) => { setAssignmentDeduction(event.target.value); setError(""); }} /><small>Editable. Manual assignments do not change the winning-bid average.</small></label>
+        <fieldset className="round-team-selector"><legend>Eligible teams <span>{selectedTeamIds.length} / {assignmentProblem.capacity_remaining} selected</span></legend>{remainingProblems.eligible_teams.length ? <div>{remainingProblems.eligible_teams.map((team) => { const selected = selectedTeamIds.includes(team.team_id); const atLimit = !selected && selectedTeamIds.length >= assignmentProblem.capacity_remaining; return <label key={team.team_id} className={selected ? "selected" : ""}><input type="checkbox" checked={selected} disabled={atLimit || working} onChange={() => toggleAssignmentTeam(team.team_id)} /><span><strong>{team.team_name}</strong><small>{team.coins} coins available</small></span></label>; })}</div> : <p>No eligible unassigned teams remain.</p>}</fieldset>
+        {insufficientTeams.length > 0 && <p className="round-assignment-warning" role="alert">The current deduction exceeds the balance of {insufficientTeams.map((team) => team.team_name).join(", ")}.</p>}
+        <div><button className="secondary-button" disabled={working} onClick={closeAssignment}>Cancel</button><button className="primary-button" disabled={working || !selectedTeamIds.length || !validDeduction || insufficientTeams.length > 0} onClick={reviewAssignment}>Review Assignment</button></div>
+      </> : <>
+        <div className="round-assignment-preview"><strong>Confirm this assignment</strong><p>Only these teams will receive Problem #{assignmentProblem.problem_number}. Existing winners remain unchanged.</p><ul>{selectedTeams.map((team) => <li key={team.team_id}><span>{team.team_name}</span><strong>{deductionValue} coins</strong></li>)}</ul></div>
+        <div><button className="secondary-button" disabled={working} onClick={() => setAssignmentStage("select")}>Back</button><button className="primary-button" disabled={working} onClick={() => void confirmManualAssignment()}>{working ? "Assigning…" : "Confirm Assignment"}</button></div>
+      </>}
+    </section></div>}
+    {endConfirming && <div className="judging-confirmation-backdrop"><section className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="end-round1-title"><h3 id="end-round1-title">END ROUND 1?</h3><p>This immediately stops Round 1. Existing assignments and balances remain unchanged; unassigned teams will stay unassigned.</p><dl><div><dt>Current problem</dt><dd>{current ? `#${current.problem_number} — ${current.title}` : "None"}</dd></div><div><dt>Assigned teams</dt><dd>{data.assigned_team_count ?? 0}</dd></div><div><dt>Unassigned teams</dt><dd>{data.unassigned_team_count ?? 0}</dd></div></dl><div><button className="secondary-button" disabled={working} onClick={() => setEndConfirming(false)}>Cancel</button><button className="danger-button" disabled={working} onClick={() => { setEndConfirming(false); void run(endRoundOne, "Round 1 ended. Wildcard can now be opened."); }}>{working ? "Ending…" : "END ROUND 1"}</button></div></section></div>}
   </section>;
 }
 
@@ -528,9 +616,21 @@ function SubmissionAdminPage() {
   const load = useCallback(async () => { try { const result = await getAdminSubmissions(); setData(result); setError(""); return result; } catch (cause) { setError(cause.message); return null; } }, []);
   useEffect(() => { let stopped = false; let timer; const poll = async () => { const result = await load(); if (!stopped) timer = setTimeout(poll, document.hidden ? 60000 : result?.open ? 3000 : 30000); }; void poll(); return () => { stopped = true; clearTimeout(timer); }; }, [load]);
   const run = async (operation, success) => { setWorking(true); setError(""); setNotice(""); try { setData(await operation()); setNotice(success); } catch (cause) { setError(cause.message || "Action failed."); } finally { setWorking(false); } };
+  const downloadFinalExport = async () => {
+    setWorking(true); setError(""); setNotice("");
+    try {
+      const blob = await downloadFinalEventResults();
+      const suffix = blob.type.includes("spreadsheet") ? "xlsx" : "csv";
+      const url = URL.createObjectURL(blob); const link = document.createElement("a");
+      link.href = url; link.download = `Bid_to_Build_Final_Results.${suffix}`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setNotice("Final event results downloaded.");
+    } catch (cause) { setError(cause.message || "Failed to export final results."); }
+    finally { setWorking(false); }
+  };
   const rows = (data?.rows || []).filter((row) => row.team_name.toLowerCase().includes(query.trim().toLowerCase()));
   if (!data) return <div className="loading-screen"><div className="loader" />Loading submissions…</div>;
-  return <section className="submission-admin"><header className="submission-admin__header"><div><span className="eyebrow">EVENT / SUBMISSION</span><h2>Submission monitor</h2><p>Open or close the window and track each team’s final GitHub repository.</p></div><button className={data.open ? "danger-button" : "primary-button"} disabled={working} onClick={() => run(data.open ? closeSubmissions : openSubmissions, data.open ? "Submissions closed." : "Submissions opened.")}>{data.open ? "Close submissions" : "Open submissions"}</button></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}<div className="submission-stats"><Stat label="WINDOW" value={data.open ? "OPEN" : "CLOSED"} /><Stat label="TOTAL TEAMS" value={data.total} /><Stat label="SUBMITTED" value={data.submitted} /><Stat label="PENDING" value={data.pending} /></div><div className="submission-table-panel"><div className="submission-toolbar"><div><h3>Team repositories</h3><span>{data.open ? "Live monitoring every three seconds." : "Closed window checks every thirty seconds."}</span></div><input aria-label="Search teams" placeholder="Search team…" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>FINAL PROBLEM</th><th>STATUS</th><th>GITHUB URL</th><th>SUBMITTED BY</th><th>UPDATED</th></tr></thead><tbody>{rows.map((row) => <tr key={row.team_id}><td><strong>{row.team_name}</strong></td><td>{row.final_problem ? `#${row.final_problem.ps_number} · ${row.final_problem.title}` : "—"}</td><td><span className={`table-status ${row.status === "SUBMITTED" ? "active" : "pending"}`}>{row.status}</span></td><td>{row.github_url ? <a href={row.github_url} target="_blank" rel="noreferrer">Open repository ↗</a> : "—"}</td><td>{row.submitted_by || "—"}</td><td>{row.updated_at || row.submitted_at ? new Date(row.updated_at || row.submitted_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div></div></section>;
+  return <section className="submission-admin"><header className="submission-admin__header"><div><span className="eyebrow">EVENT / SUBMISSION</span><h2>Submission monitor</h2><p>Open or close the window and track each team’s final GitHub repository.</p></div><div className="submission-admin__actions"><button className="secondary-button" disabled={working || !data.export_available} title={data.export_available ? "Download final event results" : "Available after submissions are closed"} onClick={() => void downloadFinalExport()}>{working ? "WORKING…" : "EXPORT EXCEL / CSV"}</button><button className={data.open ? "danger-button" : "primary-button"} disabled={working} onClick={() => run(data.open ? closeSubmissions : openSubmissions, data.open ? "Submissions closed." : "Submissions opened.")}>{data.open ? "Close submissions" : "Open submissions"}</button></div></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}{!data.export_available && <div className="admin-notice">Final export is available after submissions are closed.</div>}<div className="submission-stats"><Stat label="WINDOW" value={data.open ? "OPEN" : "CLOSED"} /><Stat label="TOTAL TEAMS" value={data.total} /><Stat label="SUBMITTED" value={data.submitted} /><Stat label="PENDING" value={data.pending} /></div><div className="submission-table-panel"><div className="submission-toolbar"><div><h3>Team repositories</h3><span>{data.open ? "Live monitoring every three seconds." : "Closed window checks every thirty seconds."}</span></div><input aria-label="Search teams" placeholder="Search team…" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>FINAL PROBLEM</th><th>STATUS</th><th>GITHUB URL</th><th>SUBMITTED BY</th><th>UPDATED</th></tr></thead><tbody>{rows.map((row) => <tr key={row.team_id}><td><strong>{row.team_name}</strong></td><td>{row.final_problem ? `#${row.final_problem.ps_number} · ${row.final_problem.title}` : "—"}</td><td><span className={`table-status ${row.status === "SUBMITTED" ? "active" : "pending"}`}>{row.status}</span></td><td>{row.github_url ? <a href={row.github_url} target="_blank" rel="noreferrer">Open repository ↗</a> : "—"}</td><td>{row.submitted_by || "—"}</td><td>{row.updated_at || row.submitted_at ? new Date(row.updated_at || row.submitted_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div></div></section>;
 }
 
 function SearchableTeamSelector({ label, teams, value, onChange, disabled }) {
@@ -615,7 +715,7 @@ function RecoveryPage({ onGlobalSync, onNavigate }) {
   useEffect(() => { void load(); const timer = setInterval(() => { if (!document.hidden) void load(); }, 5000); return () => clearInterval(timer); }, [load]);
   const run = async (operation, success) => { setWorking(true); setError(""); setNotice(""); try { const result = await operation(); setData(result?.current_phase ? result : await getRecoveryState()); setNotice(success); await onGlobalSync(); } catch (cause) { setError(cause.message || "Recovery action failed."); await load(); } finally { setWorking(false); } };
   const resetEvent = async () => { setWorking(true); setError(""); setNotice(""); try { const result = await resetEventData(eventResetConfirmation); setResetSummary(result); setEventResetConfirmation(""); setData(await getRecoveryState()); setNotice("Event data reset successfully. Participant accounts and passwords were preserved."); await onGlobalSync(); } catch (cause) { setError(cause.message || "Event data reset failed."); await load(); } finally { setWorking(false); } };
-  const resetCredentials = async () => { setWorking(true); setError(""); setNotice(""); try { const result = await resetRegistrationCredentials(credentialResetConfirmation); setCredentialResetSummary(result); setCredentialResetConfirmation(""); setData(await getRecoveryState()); setNotice("Imported participant credentials reset. Event data was preserved."); await onGlobalSync(); } catch (cause) { setError(cause.message || "Participant credential reset failed."); await load(); } finally { setWorking(false); } };
+  const resetCredentials = async () => { setWorking(true); setError(""); setNotice(""); try { const result = await resetRegistrationCredentials(credentialResetConfirmation); setCredentialResetSummary(result); setCredentialResetConfirmation(""); setData(await getRecoveryState()); setNotice("Imported participant registration cleared. The event lifecycle was not reset."); await onGlobalSync(); } catch (cause) { setError(cause.message || "Participant credential reset failed."); await load(); } finally { setWorking(false); } };
   if (!data) return <div className="loading-screen"><div className="loader" />Loading recovery state…</div>;
   const fields = [
     ["Current phase", labels[data.current_phase] || data.current_phase], ["Current sub-state", data.current_sub_state],
@@ -625,7 +725,7 @@ function RecoveryPage({ onGlobalSync, onNavigate }) {
     ["Wildcard auction", data.wildcard_auction_state], ["Selection rank", data.wildcard_selection_rank ?? "None"],
     ["Submissions", data.submission_state], ["Last state update", data.last_state_update ? new Date(data.last_state_update).toLocaleString() : "Not recorded"],
   ];
-  return <section className="operations-page"><header><div><h2>Safe event recovery</h2><p>Restore and re-synchronize the authoritative server state. Completed stages cannot be reopened here.</p></div></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}<dl className="recovery-grid">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><div className="recovery-actions"><button className="secondary-button" disabled={working || !data.timer.paused} onClick={() => run(resumeRecoveryTimer, "Current timer resumed from server state.")}>Resume current timer</button><button className="secondary-button" disabled={working} onClick={() => run(reloadRecoveryState, "Server state reloaded.")}>Reload server state</button><button className="secondary-button" disabled={working} onClick={() => run(resyncClients, "Connected clients were asked to re-sync.")}>Re-sync clients</button><button className="secondary-button" disabled={working} onClick={() => run(retryCurrentTransition, "Current transition re-evaluated safely.")}>Retry current transition</button></div><section className="event-data-reset"><div><strong>Reset event data</strong><h3>Prepare a clean event</h3><p>Permanently removes problem uploads, bids, assignments, Wildcard progress, submissions, timers, results, leaderboard event state, and event activity. Team registration, participant accounts, and every account password are preserved.</p><p>This cannot be undone. Reset is available at every event stage.</p></div><label>Type RESET EVENT<input value={eventResetConfirmation} onChange={(event) => setEventResetConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || eventResetConfirmation !== "RESET EVENT"} onClick={() => window.confirm("Reset current event state and competition data? Team registration and all account credentials will be preserved.") && void resetEvent()}>Reset event data</button>{resetSummary && <div className="reset-summary"><strong>Event data reset complete</strong><span>Teams preserved: {resetSummary.preserved.teams} · Participant accounts preserved: {resetSummary.preserved.participant_accounts} · Problems removed: {resetSummary.deleted.round1_problems + resetSummary.deleted.wildcard_problems} · Bids removed: {resetSummary.deleted.bids} · Submissions removed: {resetSummary.deleted.submissions}</span><button className="primary-button" onClick={() => onNavigate("round1")}>Go to Round 1</button></div>}</section><section className="event-data-reset"><div><strong>Reset credentials</strong><h3>Invalidate imported participant access</h3><p>Invalidates imported participant passwords and active sessions. Teams, assignments, bids, Wildcard progress, submissions, timers, and the current event stage are preserved.</p><p>Use Participant Passwords in Registration Import to assign new passwords. Permanent Admin, demo, and leaderboard display accounts remain available.</p></div><label>Type RESET CREDENTIALS<input value={credentialResetConfirmation} onChange={(event) => setCredentialResetConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || credentialResetConfirmation !== "RESET CREDENTIALS"} onClick={() => window.confirm("Invalidate imported participant credentials? The current event and all competition data will be preserved.") && void resetCredentials()}>Reset participant credentials</button>{credentialResetSummary && <div className="reset-summary"><strong>Credential reset complete</strong><span>Imported participant accounts reset: {credentialResetSummary.reset.participant_accounts} · Teams and event data preserved</span><button className="primary-button" onClick={() => onNavigate("imports")}>Set participant passwords</button></div>}</section>{data.reset_enabled && <section className="development-reset"><div><strong>Development only</strong><h3>Force-reset rehearsal state</h3><p>Available only when ENABLE_EVENT_RESET is enabled. This keeps registrations and imported problems.</p></div><label>Type RESET DEVELOPMENT EVENT<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || confirmation !== "RESET DEVELOPMENT EVENT"} onClick={() => window.confirm("Reset this development rehearsal? This cannot be undone.") && run(() => developmentReset(confirmation), "Development rehearsal reset completed.")}>Reset development event</button></section>}</section>;
+  return <section className="operations-page"><header><div><h2>Safe event recovery</h2><p>Restore and re-synchronize the authoritative server state. Completed stages cannot be reopened here.</p></div></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}<dl className="recovery-grid">{fields.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><div className="recovery-actions"><button className="secondary-button" disabled={working || !data.timer.paused} onClick={() => run(resumeRecoveryTimer, "Current timer resumed from server state.")}>Resume current timer</button><button className="secondary-button" disabled={working} onClick={() => run(reloadRecoveryState, "Server state reloaded.")}>Reload server state</button><button className="secondary-button" disabled={working} onClick={() => run(resyncClients, "Connected clients were asked to re-sync.")}>Re-sync clients</button><button className="secondary-button" disabled={working} onClick={() => run(retryCurrentTransition, "Current transition re-evaluated safely.")}>Retry current transition</button></div><section className="event-data-reset"><div><strong>Reset event data</strong><h3>Prepare a clean event</h3><p>Permanently removes problem uploads, bids, assignments, Wildcard progress, submissions, timers, results, leaderboard event state, and event activity. Team registration, participant accounts, and every account password are preserved.</p><p>This cannot be undone. Reset is available at every event stage.</p></div><label>Type RESET EVENT<input value={eventResetConfirmation} onChange={(event) => setEventResetConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || eventResetConfirmation !== "RESET EVENT"} onClick={() => window.confirm("Reset current event state and competition data? Team registration and all account credentials will be preserved.") && void resetEvent()}>Reset event data</button>{resetSummary && <div className="reset-summary"><strong>Event data reset complete</strong><span>Teams preserved: {resetSummary.preserved.teams} · Participant accounts preserved: {resetSummary.preserved.participant_accounts} · Problems removed: {resetSummary.deleted.round1_problems + resetSummary.deleted.wildcard_problems} · Bids removed: {resetSummary.deleted.bids} · Submissions removed: {resetSummary.deleted.submissions}</span><button className="primary-button" onClick={() => onNavigate("round1")}>Go to Round 1</button></div>}</section><section className="event-data-reset"><div><strong>Reset credentials</strong><h3>Clear imported participant registration</h3><p>Removes import-created participant accounts, imported teams, registration rows, active sessions, and team-scoped dependent records. The current event phase, timers, problems, and unrelated teams are not reset.</p><p>Permanent Admin, demo/system, and leaderboard display accounts remain available. Re-import the registration sheet to start cleanly.</p></div><label>Type RESET CREDENTIALS<input value={credentialResetConfirmation} onChange={(event) => setCredentialResetConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || credentialResetConfirmation !== "RESET CREDENTIALS"} onClick={() => window.confirm("Remove imported participant accounts and teams? The event lifecycle will not be reset.") && void resetCredentials()}>Reset participant credentials</button>{credentialResetSummary && <div className="reset-summary"><strong>Credential reset complete</strong><span>Participant accounts removed: {credentialResetSummary.deleted.participant_accounts} · Imported teams removed: {credentialResetSummary.deleted.teams} · Event lifecycle reset: No</span><button className="primary-button" onClick={() => onNavigate("imports")}>Re-import registrations</button></div>}</section>{data.reset_enabled && <section className="development-reset"><div><strong>Development only</strong><h3>Force-reset rehearsal state</h3><p>Available only when ENABLE_EVENT_RESET is enabled. This keeps registrations and imported problems.</p></div><label>Type RESET DEVELOPMENT EVENT<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button className="danger-button" disabled={working || confirmation !== "RESET DEVELOPMENT EVENT"} onClick={() => window.confirm("Reset this development rehearsal? This cannot be undone.") && run(() => developmentReset(confirmation), "Development rehearsal reset completed.")}>Reset development event</button></section>}</section>;
 }
 
 function ActivityLogPage() {
@@ -642,7 +742,7 @@ function TimerButtons({ state, remaining, run }) {
 }
 
 function Teams({ teams, onAction }) {
-  return <section className="page-section"><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>COINS</th><th>MEMBERS</th><th>STATUS</th><th>ACTIONS</th></tr></thead><tbody>{teams.map((team) => <tr key={team.id}><td><strong>{team.team_name}</strong></td><td className="coins">{team.coins}</td><td>{team.members?.length ?? 0}</td><td><span className={`table-status ${team.is_approved ? "active" : "pending"}`}>{team.is_approved ? "APPROVED" : "PENDING"}</span></td><td className="table-actions">{!team.is_approved && <button onClick={() => onAction(() => approveTeam(team.id), "Team approved.")}>Approve</button>}<button className="danger-link" onClick={() => window.confirm(`Delete ${team.team_name}?`) && onAction(() => deleteTeam(team.id), "Team deleted.")}>Delete</button></td></tr>)}</tbody></table></div></section>;
+  return <section className="page-section"><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>COINS</th><th>MEMBERS</th><th>STATUS</th><th>LOGGED IN</th><th>ACTIONS</th></tr></thead><tbody>{teams.map((team) => <tr key={team.id}><td><strong>{team.team_name}</strong></td><td className="coins">{team.coins}</td><td>{team.members?.length ?? 0}</td><td><span className={`table-status ${team.is_approved ? "active" : "pending"}`}>{team.is_approved ? "APPROVED" : "PENDING"}</span></td><td><span className={`table-status ${team.logged_in ? "active" : "inactive"}`}>{team.logged_in ? "YES" : "NO"}</span></td><td className="table-actions">{!team.is_approved && <button onClick={() => onAction(() => approveTeam(team.id), "Team approved.")}>Approve</button>}<button className="danger-link" onClick={() => window.confirm(`Delete ${team.team_name}?`) && onAction(() => deleteTeam(team.id), "Team deleted.")}>Delete</button></td></tr>)}</tbody></table></div></section>;
 }
 
 function Problems({ problems, state, onAction }) {
@@ -869,11 +969,11 @@ function RegistrationImport() {
       </div>}
     </section>
     <section className="participant-credential-reset">
-      <div><strong>Participant credential reset</strong><h3>Reset imported participant credentials</h3><p>Invalidate imported participant passwords and sessions, returning each account to Password Not Set.</p><p>Teams, event progress, assignments, bids, submissions, timers, and permanent system accounts remain unchanged.</p></div>
+      <div><strong>Participant credential reset</strong><h3>Clear imported participant registration</h3><p>Remove import-created participant accounts, imported teams, registration rows, and active participant sessions.</p><p>The event lifecycle is not reset. Permanent Admin, demo/system, and leaderboard display accounts remain unchanged.</p></div>
       <label>Type RESET CREDENTIALS<input value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value)} autoComplete="off" /></label>
-      <button className="danger-button" disabled={working || resetConfirmation !== "RESET CREDENTIALS"} onClick={() => window.confirm("Invalidate imported participant credentials? The current event and all competition data will be preserved.") && void resetCredentials()}>Reset participant credentials</button>
+      <button className="danger-button" disabled={working || resetConfirmation !== "RESET CREDENTIALS"} onClick={() => window.confirm("Remove imported participant accounts and teams? The event lifecycle will not be reset.") && void resetCredentials()}>Reset participant credentials</button>
       {resetError && <p className="participant-credential-reset__error" role="alert">{resetError}</p>}
-      {resetResult && <div className="participant-credential-reset__result" role="status"><strong>Credential reset complete</strong><span>Imported participant accounts reset: {resetResult.reset.participant_accounts} · Event data and {resetResult.preserved.system_accounts} permanent system accounts preserved</span></div>}
+      {resetResult && <div className="participant-credential-reset__result" role="status"><strong>Credential reset complete</strong><span>Participant accounts removed: {resetResult.deleted.participant_accounts} · Imported teams removed: {resetResult.deleted.teams} · Event lifecycle reset: No</span></div>}
     </section>
   </section>;
 }

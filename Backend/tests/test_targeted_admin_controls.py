@@ -1,7 +1,7 @@
 from app.core.security import get_password_hash
+from app.api.websockets import manager
 from app.models.models import GameConfig, ProblemStatement, RoundControl, Team, User, Wildcard
 from app.services.participant_presence import participant_presence_payload
-from app.services.round1_auto_assignment import is_final_auto_allotment_problem
 
 
 def _participant(db, *, name: str, email: str, session_id: str | None = None):
@@ -29,6 +29,7 @@ def test_participant_presence_counts_unique_active_teams_and_excludes_other_role
     db.commit()
 
     assert participant_presence_payload(db) == {
+        "logged_in_team_ids": [first_team.id, _second_team.id],
         "participant_logged_in_count": 2,
         "registered_participant_count": 2,
     }
@@ -38,6 +39,25 @@ def test_participant_presence_counts_unique_active_teams_and_excludes_other_role
     db.query(User).filter(User.team_id == first_team.id).update({User.session_id: None})
     db.commit()
     assert participant_presence_payload(db)["participant_logged_in_count"] == 1
+
+
+def test_admin_team_list_uses_unique_authenticated_connection_presence(client, admin_headers, db):
+    _first, first_team = _participant(db, name="Connected", email="connected@presence.test")
+    _second, second_team = _participant(db, name="Offline", email="offline@presence.test")
+    first_tab = object()
+    duplicate_tab = object()
+    manager.active_connections = {
+        first_tab: {"user_id": 10, "role": "leader", "team_id": first_team.id},
+        duplicate_tab: {"user_id": 10, "role": "leader", "team_id": first_team.id},
+    }
+    try:
+        response = client.get("/teams", headers=admin_headers)
+        assert response.status_code == 200, response.text
+        rows = {row["id"]: row for row in response.json()}
+        assert rows[first_team.id]["logged_in"] is True
+        assert rows[second_team.id]["logged_in"] is False
+    finally:
+        manager.active_connections.clear()
 
 
 def test_manual_round_one_end_stops_active_auction_without_assigning(client, admin_headers, db):
@@ -62,7 +82,7 @@ def test_manual_round_one_end_stops_active_auction_without_assigning(client, adm
     assert client.post("/admin/rounds/round-1/end", headers=admin_headers).status_code == 200
 
 
-def test_final_round_one_problem_rejects_every_normal_auction_api(client, admin_headers, db):
+def test_final_round_one_problem_uses_normal_auction_apis(client, admin_headers, db):
     participant, team = _participant(db, name="Final", email="final@round.test")
     login = client.post("/login", data={"username": participant.email, "password": "Participant@123"})
     participant_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
@@ -73,22 +93,16 @@ def test_final_round_one_problem_rejects_every_normal_auction_api(client, admin_
     db.add(control)
     db.commit()
 
-    assert is_final_auto_allotment_problem(db, problem.id) is True
     summary = client.get("/admin/rounds/round-1", headers=admin_headers)
     assert summary.status_code == 200
-    assert summary.json()["final_auto_assignment"]["status"] == "PENDING"
-    assert client.post("/admin/rounds/round-1/preview/start", headers=admin_headers).status_code == 409
-    assert client.post("/admin/rounds/round-1/bidding/start", headers=admin_headers).status_code == 409
-    game = db.query(GameConfig).one()
-    game.state = "ROUND1_BIDDING"
-    control.status = "BIDDING"
-    db.commit()
-    assert client.post("/bid", headers=participant_headers, json={"ps_id": problem.id, "increment": 5}).status_code == 409
-    assert client.post("/admin/rounds/round-1/bidding/close", headers=admin_headers).status_code == 409
-    assert client.post("/admin/rounds/round-1/assign-winners", headers=admin_headers).status_code == 409
-    assert client.post(f"/admin/auction/{problem.id}/finalize", headers=admin_headers).status_code == 409
-    ended = client.post("/admin/rounds/round-1/end", headers=admin_headers)
-    assert ended.status_code == 200 and ended.json()["unassigned_team_count"] == 1
+    remaining = summary.json()["remaining_problems"]
+    assert remaining["problems"][0]["assignment_status"] == "UNASSIGNED"
+    assert client.post("/admin/rounds/round-1/preview/start", headers=admin_headers).status_code == 200
+    assert client.post("/admin/rounds/round-1/bidding/start", headers=admin_headers).status_code == 200
+    assert client.post("/bid", headers=participant_headers, json={"ps_id": problem.id, "increment": 5}).status_code == 200
+    assert client.post("/admin/rounds/round-1/bidding/close", headers=admin_headers).status_code == 200
+    assigned = client.post("/admin/rounds/round-1/assign-winners", headers=admin_headers)
+    assert assigned.status_code == 200 and len(assigned.json()["winners"]) == 1
 
 
 def test_manual_wildcard_end_is_admin_only_and_preserves_incomplete_selection(client, admin_headers, display_headers, db):

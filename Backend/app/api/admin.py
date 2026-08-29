@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.models.models import (
-    User, Team, Member, EventConfig,
+    User, Team, Member, EventConfig, Submission,
     RegistrationImport, RegistrationImportRow, WalletTransaction, ProblemStatement,
 )
 from app.schemas.schemas import (
@@ -133,8 +133,8 @@ async def update_event_config_admin(
     data = updates.model_dump(exclude_unset=True)
 
     # Validation
-    if "starting_coins" in data and data["starting_coins"] < 0:
-        raise HTTPException(status_code=400, detail="starting_coins must be >= 0")
+    if "starting_coins" in data and not 0 <= data["starting_coins"] <= 1_000_000:
+        raise HTTPException(status_code=400, detail="starting_coins must be between 0 and 1000000")
     for field in ["round1_preview_seconds", "round1_bid_seconds", "wildcard_application_seconds", "wildcard_preview_seconds", "wildcard_bid_seconds"]:
         if field in data and data[field] <= 0:
             raise HTTPException(status_code=400, detail=f"{field} must be > 0")
@@ -286,7 +286,7 @@ def get_event_state_admin(
         **snapshot,
         "allowed_states": EVENT_STATES,
         "connected_clients": len(manager.active_connections),
-        **participant_presence_payload(db),
+        **participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
     }
 
 
@@ -454,7 +454,7 @@ def get_team_credentials(
     "/admin/participant-accounts/{user_id}/reset-password",
     response_model=CredentialRow,
 )
-def reset_participant_password(
+async def reset_participant_password(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin),
@@ -474,6 +474,11 @@ def reset_participant_password(
     account.session_id = None
     account.credentials_active = True
     db.commit()
+    await manager.disconnect_users({account.id})
+    await manager.broadcast_event(
+        "participant_presence_changed",
+        participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
+    )
     supplied_email = account.email if "@" in account.email else ""
     return _credential(account, team, password, supplied_email)
 
@@ -606,6 +611,7 @@ async def import_registrations(
     members_imported = 0
     leader_credentials: dict[int, dict[str, str]] = {}
     participant_accounts_created = 0
+    invalidated_account_ids: set[int] = set()
 
     try:
         import_record = RegistrationImport(
@@ -646,6 +652,7 @@ async def import_registrations(
                     leader.password_hash = get_password_hash(leader_password)
                     leader.credentials_active = True
                     leader.session_id = None
+                    invalidated_account_ids.add(leader.id)
             else:
                 leader = User(
                     name=row["leader_name"],
@@ -700,6 +707,7 @@ async def import_registrations(
                         member_user.password_hash = get_password_hash(member_password)
                         member_user.credentials_active = True
                         member_user.session_id = None
+                        invalidated_account_ids.add(member_user.id)
                 db.add(Member(team_id=team.id, member_name=member_name, email=login_id))
                 members_imported += 1
 
@@ -761,6 +769,12 @@ async def import_registrations(
         "download_token": download_token,
         "download_filename": output_filename,
     }
+    if invalidated_account_ids:
+        await manager.disconnect_users(invalidated_account_ids)
+        await manager.broadcast_event(
+            "participant_presence_changed",
+            participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
+        )
     await manager.broadcast_event("team_updated", {
         "action": "registrations_imported",
         "teams_created": teams_created,
@@ -782,6 +796,7 @@ async def reset_registration_credentials(
 
     try:
         credential_reset = reset_imported_participant_credentials(db, actor=current_user)
+        imported_user_ids = set(credential_reset.pop("user_ids"))
         db.commit()
     except Exception:
         db.rollback()
@@ -797,25 +812,33 @@ async def reset_registration_credentials(
                 pass
 
     game = get_or_create_game_config(db)
+    sockets_closed = await manager.disconnect_users(imported_user_ids)
+    presence = participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
+    await manager.broadcast_event("participant_presence_changed", presence)
     await manager.broadcast_event("team_updated", {
         "action": "registration_credentials_reset",
         "participant_accounts": credential_reset["participant_accounts"],
+        "teams_removed": credential_reset["deleted"]["teams"],
     })
     return {
         "status": "credentials_reset",
-        "reset": credential_reset,
+        "reset": {
+            "participant_accounts": credential_reset["participant_accounts"],
+            "sessions_invalidated": credential_reset["sessions_invalidated"],
+            "presence_connections_closed": sockets_closed,
+        },
         "deleted": {
-            "participant_accounts": 0,
-            "teams": 0,
-            "member_records": 0,
+            **credential_reset["deleted"],
             "credential_exports": credential_exports_removed,
         },
         "preserved": {
             "system_accounts": db.query(User).filter(User.is_system_account.is_(True)).count(),
             "system_teams": db.query(Team).filter(Team.is_system_team.is_(True)).count(),
             "admin_accounts": db.query(User).filter(User.role == "admin").count(),
+            "display_accounts": db.query(User).filter(User.role == "display").count(),
         },
         "event_state": game.state,
+        "event_lifecycle_reset": False,
     }
 
 
@@ -841,7 +864,7 @@ def list_imported_participant_accounts(
 
 
 @router.put("/admin/registration/participant-accounts/{user_id}/password")
-def set_imported_participant_password(
+async def set_imported_participant_password(
     user_id: int,
     payload: ParticipantPasswordRequest,
     db: Session = Depends(get_db),
@@ -869,6 +892,11 @@ def set_imported_participant_password(
     )
     db.commit()
     db.refresh(account)
+    await manager.disconnect_users({account.id})
+    await manager.broadcast_event(
+        "participant_presence_changed",
+        participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
+    )
     return {"status": "password_set", "account": _participant_account_payload(db, account)}
 
 
@@ -901,6 +929,10 @@ def _assignment_problem_values(problem: ProblemStatement | None) -> list[str]:
     return [problem.ps_number, problem.title, problem.description or ""]
 
 
+def _assigned_problem_label(problem: ProblemStatement | None) -> str:
+    return f"{problem.ps_number} - {problem.title}" if problem else ""
+
+
 def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], str]:
     latest_import = (
         db.query(RegistrationImport)
@@ -924,11 +956,11 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], st
             values = [str(value or "") for value in json.loads(stored.source_values_json or "[]")]
             values.extend([""] * (len(headers) - len(values)))
             team = db.query(Team).filter(Team.id == stored.team_id).first() if stored.team_id else None
-            if not team and stored.leader_email:
+            if not team and stored.team_id is None and stored.leader_email:
                 leader = db.query(User).filter(func.lower(User.email) == stored.leader_email.lower()).first()
                 if leader:
                     team = db.query(Team).filter(or_(Team.id == leader.team_id, Team.leader_id == leader.id)).first()
-            if not team:
+            if not team and stored.team_id is None:
                 team = db.query(Team).filter(func.lower(Team.team_name) == stored.team_name.lower()).first()
             source_rows.append((values[:len(headers)], team, stored.leader_email))
         suffix = ".xlsx" if latest_import.filename.lower().endswith((".xlsx", ".xlsm")) else ".csv"
@@ -979,8 +1011,12 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], st
             values[index] = "NOT EXPORTED"
         round1 = db.query(ProblemStatement).filter(ProblemStatement.id == team.round1_problem_id).first() if team and team.round1_problem_id else None
         wildcard = db.query(ProblemStatement).filter(ProblemStatement.id == team.wildcard_problem_id).first() if team and team.wildcard_problem_id else None
+        submission = db.query(Submission).filter(Submission.team_id == team.id).first() if team else None
         final = wildcard or round1
         assignment_values = [
+            _assigned_problem_label(round1),
+            _assigned_problem_label(wildcard),
+            submission.repository_url if submission else "",
             *_assignment_problem_values(round1),
             (team.round1_assignment_type or "BID_WINNER") if round1 and team else "",
             *_assignment_problem_values(wildcard),
@@ -1038,6 +1074,30 @@ def download_registration_assignments(
         BytesIO(content),
         media_type=XLSX_MEDIA_TYPE if suffix == ".xlsx" else "text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/admin/submissions/export/final")
+def download_final_event_results(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    del current_user
+    event_config = get_or_create_event_config(db)
+    game_config = get_or_create_game_config(db)
+    if event_config.submissions_open or game_config.state not in {"JUDGING_WAIT", "RESULTS"}:
+        raise HTTPException(status_code=409, detail="Final export is available after submissions are closed.")
+    headers, rows, suffix = _assignment_export_data(db)
+    if not rows:
+        raise HTTPException(status_code=409, detail="No imported participant registration data is available to export.")
+    content = (
+        build_registration_assignment_workbook(headers, rows)
+        if suffix == ".xlsx" else build_registration_assignment_csv(headers, rows)
+    )
+    return StreamingResponse(
+        BytesIO(content),
+        media_type=XLSX_MEDIA_TYPE if suffix == ".xlsx" else "text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="Bid_to_Build_Final_Results{suffix}"'},
     )
 
 @router.post("/admin/registration/import/preview", response_model=ImportPreviewResponse, deprecated=True)

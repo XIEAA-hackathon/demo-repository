@@ -44,7 +44,7 @@ export function isSyncStale({
   documentHidden,
   refreshPending,
   staleSeconds,
-  thresholdSeconds = 15,
+  thresholdSeconds = 45,
 }: {
   documentHidden: boolean
   refreshPending: boolean
@@ -53,6 +53,10 @@ export function isSyncStale({
 }) {
   if (documentHidden || refreshPending) return false
   return staleSeconds == null || staleSeconds > thresholdSeconds
+}
+
+export function shouldApplyHttpSnapshot(requestRevision: number, currentRevision: number) {
+  return requestRevision === currentRevision
 }
 
 export function deriveServerRemaining(timing: TimerTiming | null | undefined, localNow = Date.now(), fallbackSeconds = 0) {
@@ -102,6 +106,6 @@ export function shouldApplyTimerSnapshot({
   if (previousTimerKey !== nextTimerKey) return true
   if (Boolean(previousTiming.paused) !== Boolean(nextTiming?.paused)) return true
   if (valueFrom(previousTiming, 'started_at', 'startedAt') !== valueFrom(nextTiming, 'started_at', 'startedAt')) return true
-  if (Boolean(valueFrom(previousTiming, 'ends_at', 'endsAt')) !== Boolean(valueFrom(nextTiming, 'ends_at', 'endsAt'))) return true
+  if (valueFrom(previousTiming, 'ends_at', 'endsAt') !== valueFrom(nextTiming, 'ends_at', 'endsAt')) return true
   return Math.abs(serverRemaining - expectedRemaining) > TIMER_SNAPSHOT_TOLERANCE_SECONDS
 }

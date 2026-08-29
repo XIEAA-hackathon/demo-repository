@@ -145,35 +145,32 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert client.post("/admin/rounds/round-1/bidding/close", headers=admin_headers).status_code == 200
     second_assigned = client.post("/admin/rounds/round-1/assign-winners", headers=admin_headers)
     assert [winner["team_name"] for winner in second_assigned.json()["winners"]] == [f"Team {letter}" for letter in "FGHIJ"]
-    assert second_assigned.json()["final_auto_assignment"]["status"] == "PENDING"
-    assert second_assigned.json()["final_auto_assignment"]["suggested_deduction"] == 193
-    assert second_assigned.json()["final_auto_assignment"]["completed_auctions"] == 2
-    blocked_final_auction = client.post(
-        f"/admin/rounds/round-1/problems/{final_problem['id']}/select",
-        headers=admin_headers,
-    )
-    assert blocked_final_auction.status_code == 409
+    remaining = second_assigned.json()["remaining_problems"]
+    assert remaining["suggested_deduction"] == 193
+    final_row = next(row for row in remaining["problems"] if row["id"] == final_problem["id"])
+    assert final_row["assignment_status"] == "UNASSIGNED"
+    assert final_row["can_rebid"] is True and final_row["can_assign"] is True
     db.expire_all()
     control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one()
     assert (control.round1_winning_bid_sum, control.round1_winning_bid_count) == (1925, 10)
+    final_teams = db.query(Team).filter(Team.team_name.in_(["Team K", "Team L"])).all()
+    selected_team_ids = [team.id for team in final_teams]
     confirmed = client.post(
-        "/admin/rounds/round-1/final-auto-assignment",
+        f"/admin/rounds/round-1/problems/{final_problem['id']}/assign",
         headers=admin_headers,
-        json={"deduction": 190},
+        json={"team_ids": selected_team_ids, "deduction": 190},
     )
     assert confirmed.status_code == 200, confirmed.text
-    assert confirmed.json()["final_auto_assignment"]["status"] == "COMPLETED"
-    assert confirmed.json()["final_auto_assignment"]["deduction_per_team"] == 190
     db.expire_all()
     final_teams = db.query(Team).filter(Team.team_name.in_(["Team K", "Team L"])).all()
     assert all(team.round1_problem_id is not None for team in final_teams)
-    assert all(team.round1_assignment_type == "AUTO_FINAL_PROBLEM" for team in final_teams)
+    assert all(team.round1_assignment_type == "MANUAL_ASSIGNMENT" for team in final_teams)
     assert all(team.round1_assignment_cost == 190 for team in final_teams)
     balances_after_confirmation = {team.id: team.coins for team in final_teams}
     duplicate_confirmation = client.post(
-        "/admin/rounds/round-1/final-auto-assignment",
+        f"/admin/rounds/round-1/problems/{final_problem['id']}/assign",
         headers=admin_headers,
-        json={"deduction": 500},
+        json={"team_ids": selected_team_ids, "deduction": 500},
     )
     assert duplicate_confirmation.status_code == 200
     db.expire_all()
@@ -219,7 +216,7 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert team_h["Round 1 Problem Title"] == "Round Two Problem"
     team_k = next(row for row in final_rows if row["Team Name"] == "Team K")
     assert team_k["Round 1 Problem Number"] == "R1-3"
-    assert team_k["Round 1 Assignment Type"] == "AUTO_FINAL_PROBLEM"
+    assert team_k["Round 1 Assignment Type"] == "MANUAL_ASSIGNMENT"
     assert team_h["Wildcard Problem Number"] == "WC-2"
     assert team_h["Wildcard Problem Title"] == "Emergency Network"
     assert team_h["Final Problem Number"] == "WC-2"

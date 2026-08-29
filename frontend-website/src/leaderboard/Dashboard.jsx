@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { API_URL } from "../services/api/config";
 import LeaderboardDisplay from "./LeaderboardDisplay";
 import ProblemStatementDisplay from "./ProblemStatementDisplay";
@@ -11,6 +12,7 @@ function Dashboard() {
   const [token, setToken] = useState(() => localStorage.getItem(DISPLAY_TOKEN_KEY) || "");
   const [loginId, setLoginId] = useState(DEFAULT_LOGIN_ID);
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -117,14 +119,19 @@ function Dashboard() {
         required
       />
       <label htmlFor="leaderboard-password">Password</label>
-      <input
-        id="leaderboard-password"
-        type="password"
-        autoComplete="current-password"
-        value={password}
-        onChange={(event) => setPassword(event.target.value)}
-        required
-      />
+      <div className="leaderboard-password-field">
+        <input
+          id="leaderboard-password"
+          type={showPassword ? "text" : "password"}
+          autoComplete="current-password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          required
+        />
+        <button type="button" aria-label={showPassword ? "Hide password" : "Show password"} title={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} onClick={() => setShowPassword((visible) => !visible)}>
+          {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+        </button>
+      </div>
       {error && <p className="leaderboard-login-error" role="alert">{error}</p>}
       <button type="submit" disabled={submitting}>
         {submitting ? "OPENING…" : "OPEN LEADERBOARD"}
