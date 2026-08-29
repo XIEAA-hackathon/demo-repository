@@ -12,7 +12,7 @@ import {
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
   assignRoundOneProblem, rebidRoundOneProblem, endRoundOne, openWildcardApplications, closeWildcardApplications,
   confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding, endWildcardSelectionTurn, endWildcard,
-  getAdminSubmissions, openSubmissions, closeSubmissions, ApiError,
+  getAdminSubmissions, openSubmissions, closeSubmissions, downloadFinalEventResults, ApiError,
   getJudging, saveJudgingWinners, publishJudgingResults,
   getAdminHealth, runPreflight, getRecoveryState, resumeRecoveryTimer, reloadRecoveryState,
   resyncClients, retryCurrentTransition, getActivityLog, developmentReset, resetEventData,
@@ -20,7 +20,7 @@ import {
   createManagedLeaderboardUser, resetManagedUserPassword, resetManagedUsers,
 } from "./services/api";
 import { connectAuctionSocket } from "./services/auctionSocket";
-import { classifyApiStatus, deriveServerRemaining, isSyncStale, projectCountdown, shouldApplyTimerSnapshot } from "../services/realtime/timerReconciliation";
+import { classifyApiStatus, deriveServerRemaining, isSyncStale, projectCountdown, shouldApplyHttpSnapshot, shouldApplyTimerSnapshot } from "../services/realtime/timerReconciliation";
 
 const labels = {
   WAITING: "Waiting", ROUND1_PREVIEW: "Round 1 preview", ROUND1_BIDDING: "Round 1 bidding",
@@ -107,10 +107,13 @@ function AdminApplication({ onLogout }) {
   const loadInFlight = useRef(null);
   const lastSuccessfulLoadStartedAt = useRef(0);
   const socketStatusRef = useRef("connecting");
+  const realtimeRevision = useRef({ state: 0, bids: 0, teams: 0 });
+  const lastEventVersion = useRef(0);
 
   const load = useCallback(() => {
     if (loadInFlight.current) return loadInFlight.current;
     const startedAt = Date.now();
+    const requestRevision = { ...realtimeRevision.current };
     const request = (async () => {
       try {
         const results = await Promise.allSettled([
@@ -120,9 +123,9 @@ function AdminApplication({ onLogout }) {
         const fulfilled = (result) => result.status === "fulfilled";
         const eventStateFresh = fulfilled(eventStateResult);
 
-        if (fulfilled(teamResult)) setTeams(teamResult.value);
+        if (fulfilled(teamResult) && shouldApplyHttpSnapshot(requestRevision.teams, realtimeRevision.current.teams)) setTeams(teamResult.value);
         if (fulfilled(problemResult)) setProblems(problemResult.value);
-        if (fulfilled(bidResult)) setBids(bidResult.value);
+        if (fulfilled(bidResult) && shouldApplyHttpSnapshot(requestRevision.bids, realtimeRevision.current.bids)) setBids(bidResult.value);
         if (fulfilled(configResult)) setConfig(configResult.value);
 
         let healthFailed = false;
@@ -132,7 +135,7 @@ function AdminApplication({ onLogout }) {
           healthFailed = true;
         }
 
-        if (eventStateFresh) {
+        if (eventStateFresh && shouldApplyHttpSnapshot(requestRevision.state, realtimeRevision.current.state)) {
           const syncedAt = Date.now();
           const eventState = eventStateResult.value;
           setState({ ...eventState, timing: { ...eventState.timing, received_at: syncedAt } });
@@ -198,11 +201,16 @@ function AdminApplication({ onLogout }) {
       }, 300);
     };
     const disconnect = connectAuctionSocket({
-      onStatus: (status) => { setSocketStatus(status); socketStatusRef.current = status; if (status === "reconnected") queueLoad(); },
+      onStatus: (status) => { setSocketStatus(status); socketStatusRef.current = status; if (status === "reconnected") { lastEventVersion.current = 0; queueLoad(); } },
       onMessage: (message) => {
+        const previousVersion = lastEventVersion.current;
+        if (message.version > 0 && previousVersion > 0 && message.version < previousVersion) return;
+        if (message.version > 0) lastEventVersion.current = message.version;
+        if (previousVersion > 0 && message.version > previousVersion + 1) queueLoad();
         if (message.type === "bid_updated") {
           const nextBid = message.payload?.bid;
           if (!nextBid) return;
+          realtimeRevision.current.bids += 1;
           setBids((current) => [
             nextBid,
             ...current.filter((bid) => !(bid.team_id === nextBid.team_id && bid.ps_id === nextBid.ps_id && bid.round === nextBid.round)),
@@ -210,6 +218,7 @@ function AdminApplication({ onLogout }) {
           return;
         }
         if (message.type === "participant_presence_changed") {
+          realtimeRevision.current.teams += 1;
           setState((current) => ({ ...current, ...message.payload }));
           const loggedInTeamIds = new Set(message.payload?.logged_in_team_ids || []);
           setTeams((current) => current.map((team) => ({ ...team, logged_in: loggedInTeamIds.has(team.id) })));
@@ -221,6 +230,7 @@ function AdminApplication({ onLogout }) {
           return;
         }
         if (["event_snapshot", "event_state_changed", "timer_sync"].includes(message.type) && message.payload?.event_state) {
+          realtimeRevision.current.state += 1;
           const syncedAt = Date.now();
           setState((current) => ({ ...current, ...message.payload, timing: { ...message.payload.timing, received_at: syncedAt } }));
           setLastSyncAt(syncedAt);
@@ -606,9 +616,21 @@ function SubmissionAdminPage() {
   const load = useCallback(async () => { try { const result = await getAdminSubmissions(); setData(result); setError(""); return result; } catch (cause) { setError(cause.message); return null; } }, []);
   useEffect(() => { let stopped = false; let timer; const poll = async () => { const result = await load(); if (!stopped) timer = setTimeout(poll, document.hidden ? 60000 : result?.open ? 3000 : 30000); }; void poll(); return () => { stopped = true; clearTimeout(timer); }; }, [load]);
   const run = async (operation, success) => { setWorking(true); setError(""); setNotice(""); try { setData(await operation()); setNotice(success); } catch (cause) { setError(cause.message || "Action failed."); } finally { setWorking(false); } };
+  const downloadFinalExport = async () => {
+    setWorking(true); setError(""); setNotice("");
+    try {
+      const blob = await downloadFinalEventResults();
+      const suffix = blob.type.includes("spreadsheet") ? "xlsx" : "csv";
+      const url = URL.createObjectURL(blob); const link = document.createElement("a");
+      link.href = url; link.download = `Bid_to_Build_Final_Results.${suffix}`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setNotice("Final event results downloaded.");
+    } catch (cause) { setError(cause.message || "Failed to export final results."); }
+    finally { setWorking(false); }
+  };
   const rows = (data?.rows || []).filter((row) => row.team_name.toLowerCase().includes(query.trim().toLowerCase()));
   if (!data) return <div className="loading-screen"><div className="loader" />Loading submissions…</div>;
-  return <section className="submission-admin"><header className="submission-admin__header"><div><span className="eyebrow">EVENT / SUBMISSION</span><h2>Submission monitor</h2><p>Open or close the window and track each team’s final GitHub repository.</p></div><button className={data.open ? "danger-button" : "primary-button"} disabled={working} onClick={() => run(data.open ? closeSubmissions : openSubmissions, data.open ? "Submissions closed." : "Submissions opened.")}>{data.open ? "Close submissions" : "Open submissions"}</button></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}<div className="submission-stats"><Stat label="WINDOW" value={data.open ? "OPEN" : "CLOSED"} /><Stat label="TOTAL TEAMS" value={data.total} /><Stat label="SUBMITTED" value={data.submitted} /><Stat label="PENDING" value={data.pending} /></div><div className="submission-table-panel"><div className="submission-toolbar"><div><h3>Team repositories</h3><span>{data.open ? "Live monitoring every three seconds." : "Closed window checks every thirty seconds."}</span></div><input aria-label="Search teams" placeholder="Search team…" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>FINAL PROBLEM</th><th>STATUS</th><th>GITHUB URL</th><th>SUBMITTED BY</th><th>UPDATED</th></tr></thead><tbody>{rows.map((row) => <tr key={row.team_id}><td><strong>{row.team_name}</strong></td><td>{row.final_problem ? `#${row.final_problem.ps_number} · ${row.final_problem.title}` : "—"}</td><td><span className={`table-status ${row.status === "SUBMITTED" ? "active" : "pending"}`}>{row.status}</span></td><td>{row.github_url ? <a href={row.github_url} target="_blank" rel="noreferrer">Open repository ↗</a> : "—"}</td><td>{row.submitted_by || "—"}</td><td>{row.updated_at || row.submitted_at ? new Date(row.updated_at || row.submitted_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div></div></section>;
+  return <section className="submission-admin"><header className="submission-admin__header"><div><span className="eyebrow">EVENT / SUBMISSION</span><h2>Submission monitor</h2><p>Open or close the window and track each team’s final GitHub repository.</p></div><div className="submission-admin__actions"><button className="secondary-button" disabled={working || !data.export_available} title={data.export_available ? "Download final event results" : "Available after submissions are closed"} onClick={() => void downloadFinalExport()}>{working ? "WORKING…" : "EXPORT EXCEL / CSV"}</button><button className={data.open ? "danger-button" : "primary-button"} disabled={working} onClick={() => run(data.open ? closeSubmissions : openSubmissions, data.open ? "Submissions closed." : "Submissions opened.")}>{data.open ? "Close submissions" : "Open submissions"}</button></div></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}{!data.export_available && <div className="admin-notice">Final export is available after submissions are closed.</div>}<div className="submission-stats"><Stat label="WINDOW" value={data.open ? "OPEN" : "CLOSED"} /><Stat label="TOTAL TEAMS" value={data.total} /><Stat label="SUBMITTED" value={data.submitted} /><Stat label="PENDING" value={data.pending} /></div><div className="submission-table-panel"><div className="submission-toolbar"><div><h3>Team repositories</h3><span>{data.open ? "Live monitoring every three seconds." : "Closed window checks every thirty seconds."}</span></div><input aria-label="Search teams" placeholder="Search team…" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>FINAL PROBLEM</th><th>STATUS</th><th>GITHUB URL</th><th>SUBMITTED BY</th><th>UPDATED</th></tr></thead><tbody>{rows.map((row) => <tr key={row.team_id}><td><strong>{row.team_name}</strong></td><td>{row.final_problem ? `#${row.final_problem.ps_number} · ${row.final_problem.title}` : "—"}</td><td><span className={`table-status ${row.status === "SUBMITTED" ? "active" : "pending"}`}>{row.status}</span></td><td>{row.github_url ? <a href={row.github_url} target="_blank" rel="noreferrer">Open repository ↗</a> : "—"}</td><td>{row.submitted_by || "—"}</td><td>{row.updated_at || row.submitted_at ? new Date(row.updated_at || row.submitted_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div></div></section>;
 }
 
 function SearchableTeamSelector({ label, teams, value, onChange, disabled }) {

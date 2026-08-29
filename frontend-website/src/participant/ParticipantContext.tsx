@@ -6,7 +6,7 @@ import { connectEventSocket } from './services/eventSocket'
 import type { EventMessage } from './services/eventSocket'
 import { participantEventStates, type ParticipantDashboard, type ParticipantEventState } from './types'
 import { getStageRoute } from './routeConfig'
-import type { ApiStatus } from '../services/realtime/timerReconciliation'
+import { shouldApplyHttpSnapshot, type ApiStatus } from '../services/realtime/timerReconciliation'
 
 interface ParticipantContextValue {
   dashboard: ParticipantDashboard | null
@@ -38,23 +38,27 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
   const dashboardRef = useRef<ParticipantDashboard | null>(null)
   const lastSuccessfulRefreshStartedAt = useRef(0)
   const lastEventVersion = useRef(0)
+  const realtimeRevision = useRef(0)
   const socketStatusRef = useRef('connecting')
   const navigate = useNavigate()
 
   const refresh = useCallback(() => {
     if (refreshInFlight.current) return refreshInFlight.current
     const startedAt = Date.now()
+    const requestRevision = realtimeRevision.current
     const request = (async () => {
       setRefreshPending(true)
       try {
         setError(null)
         const next = await participantService.getParticipantDashboard()
-        setDashboard(next)
-        dashboardRef.current = next
-        lastSuccessfulRefreshStartedAt.current = startedAt
-        setLastSyncAt(Date.now())
+        if (shouldApplyHttpSnapshot(requestRevision, realtimeRevision.current)) {
+          setDashboard(next)
+          dashboardRef.current = next
+          lastSuccessfulRefreshStartedAt.current = startedAt
+          setLastSyncAt(Date.now())
+        }
         setApiStatus('healthy')
-        return next
+        return dashboardRef.current ?? next
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : 'Participant data could not be loaded.')
         setApiStatus(dashboardRef.current ? 'degraded' : 'offline')
@@ -136,11 +140,13 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     }
     const disconnect = connectEventSocket((message) => {
       const previousVersion = lastEventVersion.current
+      if (message.version > 0 && previousVersion > 0 && message.version < previousVersion) return
       if (message.version > 0) lastEventVersion.current = message.version
       if (previousVersion > 0 && message.version > previousVersion + 1) queueRefresh()
       setRealtimeEvent(message)
 
       if (message.type === 'event_snapshot' || message.type === 'event_state_changed' || message.type === 'timer_sync') {
+        realtimeRevision.current += 1
         const rawState = message.payload.event_state
         const nextState = typeof rawState === 'string' && participantEventStates.includes(rawState as ParticipantEventState)
           ? rawState as ParticipantEventState
@@ -173,6 +179,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
 
       if (message.type === 'bid_updated' || message.type === 'wildcard_bid_updated') return
       if (message.type === 'round_updated' && message.payload.action === 'winners_assigned') {
+        realtimeRevision.current += 1
         const winners = Array.isArray(message.payload.winners) ? message.payload.winners : []
         const winner = winners.find((row) => String((row as Record<string, unknown>).team_id) === dashboardRef.current?.team.id) as Record<string, unknown> | undefined
         const rawProblem = message.payload.problem as Record<string, unknown> | undefined
@@ -205,14 +212,20 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         return
       }
       if (message.type === 'round1_assignment_changed') {
-        if (String(message.payload.team_id) === dashboardRef.current?.team.id) queueRefresh()
+        if (String(message.payload.team_id) === dashboardRef.current?.team.id) {
+          realtimeRevision.current += 1
+          queueRefresh()
+        }
         return
       }
       queueRefresh()
     }, (status) => {
       setSocketStatus(status)
       socketStatusRef.current = status
-      if (status === 'reconnected') queueRefresh()
+      if (status === 'reconnected') {
+        lastEventVersion.current = 0
+        queueRefresh()
+      }
     })
     return () => {
       if (timer !== undefined) window.clearTimeout(timer)

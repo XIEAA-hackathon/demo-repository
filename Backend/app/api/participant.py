@@ -439,6 +439,7 @@ def get_admin_submissions(db: Session = Depends(get_db), current_user: User = De
     submitted = sum(row["status"] == "SUBMITTED" for row in rows)
     return {
         "open": bool(config.submissions_open),
+        "export_available": not config.submissions_open and get_or_create_game_config(db).state in {"JUDGING_WAIT", "RESULTS"},
         "total": len(rows),
         "submitted": submitted,
         "pending": len(rows) - submitted,

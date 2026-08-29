@@ -146,6 +146,7 @@ export const endWildcardSelectionTurn = (expectedRank, expectedTeamId) => reques
 export const getAdminSubmissions = () => request("/admin/submissions");
 export const openSubmissions = () => request("/admin/submissions/open", { method: "POST" });
 export const closeSubmissions = () => request("/admin/submissions/close", { method: "POST" });
+export const downloadFinalEventResults = () => request("/admin/submissions/export/final", { responseType: "blob" });
 export const getJudging = () => request("/admin/judging");
 export const saveJudgingWinners = (payload) => request("/admin/judging/winners", { method: "PUT", body: JSON.stringify(payload) });
 export const publishJudgingResults = () => request("/admin/judging/publish", { method: "POST" });

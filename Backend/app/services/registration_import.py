@@ -370,6 +370,9 @@ def build_registration_credential_csv(
 
 
 ASSIGNMENT_HEADERS = [
+    "Round 1 Assigned Problem",
+    "Wildcard Assigned Problem",
+    "GitHub Link",
     "Round 1 Problem Number",
     "Round 1 Problem Title",
     "Round 1 Problem Description",
@@ -383,11 +386,18 @@ ASSIGNMENT_HEADERS = [
 ]
 
 
+def _spreadsheet_safe(value: Any) -> Any:
+    """Keep user-controlled text from being interpreted as a spreadsheet formula."""
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+        return f"'{value}"
+    return value
+
+
 def build_registration_assignment_csv(headers: List[str], rows: List[List[Any]]) -> bytes:
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\r\n")
-    writer.writerow(headers)
-    writer.writerows(rows)
+    writer.writerow([_spreadsheet_safe(value) for value in headers])
+    writer.writerows([[_spreadsheet_safe(value) for value in row] for row in rows])
     return output.getvalue().encode("utf-8-sig")
 
 
@@ -399,9 +409,9 @@ def build_registration_assignment_workbook(headers: List[str], rows: List[List[A
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Participant Assignments"
-    sheet.append(headers)
+    sheet.append([_spreadsheet_safe(value) for value in headers])
     for row in rows:
-        sheet.append(row)
+        sheet.append([_spreadsheet_safe(value) for value in row])
     for cell in sheet[1]:
         cell.font = Font(bold=True)
     sheet.freeze_panes = "A2"
