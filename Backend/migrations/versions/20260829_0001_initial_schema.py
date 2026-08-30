@@ -75,7 +75,12 @@ def _reconcile_legacy_schema() -> bool:
             sa.text("SELECT COUNT(*) FROM users WHERE created_at IS NULL")
         ).scalar_one()
         if null_created_at:
-            raise RuntimeError("Cannot make users.created_at non-null while null values exist.")
+            # The pre-Alembic production schema allowed this field to be null.
+            # Its original timestamps cannot be recovered, so use the migration
+            # time before enforcing the baseline's non-null constraint.
+            connection.execute(
+                sa.text("UPDATE users SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+            )
         with op.batch_alter_table("users", recreate="always") as batch_op:
             batch_op.alter_column(
                 "created_at",
