@@ -3,12 +3,13 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import get_password_hash, verify_password
 from app.models.models import EventConfig, Team, User, WalletTransaction
+from app.services.participant_session import clear_user_session
 
 
 def _set_password(user: User, password: str) -> None:
     if not user.password_hash or not verify_password(password, user.password_hash):
         user.password_hash = get_password_hash(password)
-        user.session_id = None
+        clear_user_session(user)
 
 
 def provision_demo_accounts(db: Session) -> dict[str, str]:

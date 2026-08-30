@@ -1,16 +1,13 @@
 import { API_URL } from '../../services/api/config'
+import { clearAccessToken, getAccessToken } from './participantToken'
 
-const TOKEN_KEY = 'bid_to_build_participant_token'
+export { clearAccessToken, getAccessToken, setAccessToken } from './participantToken'
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly retryAfterSeconds?: number) {
     super(message)
   }
 }
-
-export const getAccessToken = () => localStorage.getItem(TOKEN_KEY)
-export const setAccessToken = (token: string) => localStorage.setItem(TOKEN_KEY, token)
-export const clearAccessToken = () => localStorage.removeItem(TOKEN_KEY)
 
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getAccessToken()
@@ -36,10 +33,11 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
     if (response.status === 409 || response.status === 429 || response.status === 503) {
       window.dispatchEvent(new Event('participant:resync'))
     }
+    const retryAfterHeader = Number(response.headers.get('Retry-After'))
     throw new ApiError(
       data?.detail || data?.message || `Request failed (${response.status}).`,
       response.status,
-      data?.retry_after_seconds,
+      data?.retry_after_seconds || (Number.isFinite(retryAfterHeader) ? retryAfterHeader : undefined),
     )
   }
   return data as T

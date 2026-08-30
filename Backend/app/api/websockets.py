@@ -18,6 +18,7 @@ from app.core.database import SessionLocal
 from app.models.models import User
 from app.services.event_service import event_snapshot, get_team_for_user
 from app.services.participant_presence import participant_presence_payload
+from app.services.participant_session import PARTICIPANT_ROLES, touch_participant_session
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
@@ -147,6 +148,20 @@ def _authenticate_socket(
         with session_factory() as db:
             user = db.query(User).filter(User.email == email).first()
             if not user or not user.credentials_active or not user.session_id or user.session_id != session_id:
+                logger.info("Rejected WebSocket session reason=session_mismatch")
+                return None, None
+            if user.role in PARTICIPANT_ROLES and not touch_participant_session(
+                db,
+                user_id=user.id,
+                session_id=session_id,
+                last_seen_at=user.session_last_seen_at,
+                force=True,
+            ):
+                logger.info(
+                    "Rejected WebSocket session user_id=%s role=%s reason=concurrent_replacement",
+                    user.id,
+                    user.role,
+                )
                 return None, None
             team = get_team_for_user(db, user) if user.role != "admin" else None
             identity = {
@@ -161,10 +176,11 @@ def _authenticate_socket(
             snapshot["identity"] = {"role": user.role, "team_id": team.id if team else None}
             return identity, snapshot
     except JWTError:
+        logger.info("Rejected WebSocket session reason=jwt_validation")
         return None, None
 
 
-async def _broadcast_presence_snapshot(
+async def broadcast_presence_snapshot(
     session_factory: Callable[[], Session],
     *,
     exclude: set[WebSocket] | None = None,
@@ -185,6 +201,18 @@ async def _broadcast_presence_snapshot(
         exclude=exclude,
         roles={"admin"},
     )
+
+
+def _touch_socket_identity(
+    identity: dict[str, Any],
+    session_factory: Callable[[], Session],
+) -> bool:
+    with session_factory() as db:
+        return touch_participant_session(
+            db,
+            user_id=int(identity["user_id"]),
+            session_id=str(identity["session_id"]),
+        )
 
 
 async def _safe_close(websocket: WebSocket, *, code: int, reason: str) -> None:
@@ -217,7 +245,7 @@ async def websocket_auction(websocket: WebSocket):
         connected = True
         if identity["role"] in ("leader", "member"):
             try:
-                await _broadcast_presence_snapshot(session_factory, exclude={websocket})
+                await broadcast_presence_snapshot(session_factory, exclude={websocket})
             except SQLAlchemyError:
                 logger.warning("Participant presence snapshot was skipped after WebSocket connect.")
         # The first client-visible frame is sent only after all initial DB work
@@ -231,14 +259,37 @@ async def websocket_auction(websocket: WebSocket):
             # accepted as keep-alives and never rebroadcast.
             expires_at = identity.get("expires_at")
             if expires_at is None:
-                await websocket.receive_text()
+                message = await websocket.receive_text()
+                if identity["role"] in PARTICIPANT_ROLES and message == "heartbeat":
+                    session_alive = await run_in_threadpool(
+                        _touch_socket_identity,
+                        identity,
+                        session_factory,
+                    )
+                    if not session_alive:
+                        await websocket.close(code=4401, reason="Session revoked")
+                        break
+                    await manager.send_event(websocket, "session_heartbeat", {"status": "active"})
                 continue
             seconds_until_expiry = expires_at - datetime.now(timezone.utc).timestamp()
             if seconds_until_expiry <= 0:
                 await websocket.close(code=4401, reason="Session expired")
                 break
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=seconds_until_expiry)
+                message = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=seconds_until_expiry,
+                )
+                if identity["role"] in PARTICIPANT_ROLES and message == "heartbeat":
+                    session_alive = await run_in_threadpool(
+                        _touch_socket_identity,
+                        identity,
+                        session_factory,
+                    )
+                    if not session_alive:
+                        await websocket.close(code=4401, reason="Session revoked")
+                        break
+                    await manager.send_event(websocket, "session_heartbeat", {"status": "active"})
             except asyncio.TimeoutError:
                 await websocket.close(code=4401, reason="Session expired")
                 break
@@ -253,6 +304,6 @@ async def websocket_auction(websocket: WebSocket):
         disconnected_identity = manager.disconnect(websocket) if connected else None
         if disconnected_identity and disconnected_identity.get("role") in ("leader", "member"):
             try:
-                await _broadcast_presence_snapshot(session_factory)
+                await broadcast_presence_snapshot(session_factory)
             except SQLAlchemyError:
                 logger.warning("Participant presence snapshot was skipped after WebSocket disconnect.")

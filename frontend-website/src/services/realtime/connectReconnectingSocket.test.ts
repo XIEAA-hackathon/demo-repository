@@ -6,6 +6,7 @@ type CloseHandler = ((event: Pick<CloseEvent, 'code' | 'reason' | 'wasClean'>) =
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
+  static OPEN = 1
 
   readonly url: string
   onopen: OpenHandler = null
@@ -13,28 +14,37 @@ class FakeWebSocket {
   onerror: (() => void) | null = null
   onclose: CloseHandler = null
   closed = false
+  readyState = 0
+  sent: string[] = []
 
   constructor(url: string) {
     this.url = url
     FakeWebSocket.instances.push(this)
   }
 
-  open() { this.onopen?.() }
+  open() {
+    this.readyState = FakeWebSocket.OPEN
+    this.onopen?.()
+  }
+
+  send(message: string) { this.sent.push(message) }
 
   forceClose(code = 1006, reason = 'test disconnect') {
     this.closed = true
+    this.readyState = 3
     this.onclose?.({ code, reason, wasClean: false })
   }
 
   close() {
     if (this.closed) return
     this.closed = true
+    this.readyState = 3
     this.onclose?.({ code: 1000, reason: '', wasClean: true })
   }
 }
 
 Object.assign(globalThis, {
-  window: { setTimeout, clearTimeout },
+  window: { setTimeout, clearTimeout, setInterval, clearInterval },
   WebSocket: FakeWebSocket,
 })
 
@@ -48,12 +58,15 @@ try {
     url: 'ws://test.invalid/ws/auction',
     getToken: () => 'secret-test-token',
     onStatus: (status) => statuses.push(status),
+    heartbeatIntervalMs: 20,
   })
 
   assert.equal(FakeWebSocket.instances.length, 1)
   assert.deepEqual(statuses, ['connecting'])
   FakeWebSocket.instances[0].open()
   assert.equal(statuses.at(-1), 'connected')
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  assert.deepEqual(FakeWebSocket.instances[0].sent, ['heartbeat'])
 
   FakeWebSocket.instances[0].forceClose()
   assert.equal(statuses.at(-1), 'reconnecting')
@@ -69,6 +82,20 @@ try {
   assert.equal(statuses.at(-1), 'disconnected')
   await new Promise((resolve) => setTimeout(resolve, 1_050))
   assert.equal(FakeWebSocket.instances.length, 2)
+
+  let unauthorized = false
+  const unauthorizedSocket = connectReconnectingSocket({
+    url: 'ws://test.invalid/ws/auction',
+    getToken: () => 'revoked-test-token',
+    onUnauthorized: () => { unauthorized = true },
+  })
+  const rejected = FakeWebSocket.instances.at(-1)!
+  rejected.open()
+  rejected.forceClose(4401, 'Session revoked')
+  assert.equal(unauthorized, true)
+  await new Promise((resolve) => setTimeout(resolve, 1_050))
+  assert.equal(FakeWebSocket.instances.at(-1), rejected)
+  unauthorizedSocket()
 
   const diagnosticText = JSON.stringify(diagnostics)
   assert.doesNotMatch(diagnosticText, /secret-test-token/)

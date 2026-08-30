@@ -1,4 +1,5 @@
 import { ApiError, apiRequest, clearAccessToken, setAccessToken } from './apiClient'
+import { participantLoginErrorMessage } from './loginMessages'
 
 interface TokenResponse {
   access_token: string
@@ -13,14 +14,12 @@ export async function login(email: string, password: string) {
     await apiRequest('/participant/dashboard')
   } catch (cause) {
     clearAccessToken()
-    if (cause instanceof ApiError && cause.status === 401) {
-      throw new ApiError('Invalid username/email or password.', 401)
-    }
-    if (cause instanceof ApiError && cause.status === 403 && cause.message === 'Participant access required') {
-      throw new ApiError('Participant access required.', 403)
-    }
-    if (cause instanceof ApiError && cause.status === 502) {
-      throw new ApiError('Authentication service temporarily unavailable.', 502)
+    if (cause instanceof ApiError) {
+      throw new ApiError(
+        participantLoginErrorMessage(cause.status, cause.message),
+        cause.status,
+        cause.retryAfterSeconds,
+      )
     }
     throw cause
   }

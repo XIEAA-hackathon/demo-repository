@@ -11,6 +11,7 @@ from app.api import auth, participant
 from app.core.database import Base, get_db
 from app.core.security import get_password_hash
 from app.models.models import EventActivityLog, EventConfig, GameConfig, Team, User
+from app.services.auth_password_verifier import BoundedPasswordVerifier
 
 
 def _concurrent_login_app(tmp_path, leader_count: int):
@@ -118,12 +119,18 @@ def test_login_releases_database_connection_before_password_verification(tmp_pat
 def test_ten_simultaneous_logins_acquire_exactly_one_leader_session(tmp_path, monkeypatch):
     engine, session_factory, app = _concurrent_login_app(tmp_path, 1)
     barrier = Barrier(10)
+    test_password_verifier = BoundedPasswordVerifier(
+        concurrency=10,
+        queue_limit=10,
+        queue_timeout_seconds=10,
+    )
 
     def synchronized_verify(_plain_password, _password_hash):
         barrier.wait(timeout=10)
         return True
 
     monkeypatch.setattr(auth, "verify_password", synchronized_verify)
+    monkeypatch.setattr(auth, "password_verifier", test_password_verifier)
     try:
         with TestClient(app) as client:
             def login_once(_index: int):
@@ -147,11 +154,14 @@ def test_ten_simultaneous_logins_acquire_exactly_one_leader_session(tmp_path, mo
         with session_factory() as db:
             leader = db.query(User).filter(User.email == "leader-0@concurrency.test").one()
             assert leader.session_id
+            assert leader.session_created_at is not None
+            assert leader.session_last_seen_at is not None
             assert db.query(EventActivityLog).filter(EventActivityLog.action == "auth.login").count() == 1
             assert db.query(EventActivityLog).filter(
                 EventActivityLog.action == "auth.login_rejected_duplicate"
             ).count() == 9
     finally:
+        test_password_verifier.shutdown()
         engine.dispose()
 
 
@@ -172,5 +182,6 @@ def test_fifty_distinct_leaders_can_login_concurrently(tmp_path, monkeypatch):
         assert [response.status_code for response in responses] == [200] * 50
         with session_factory() as db:
             assert db.query(User).filter(User.session_id.is_not(None)).count() == 50
+            assert db.query(User).filter(User.session_last_seen_at.is_not(None)).count() == 50
     finally:
         engine.dispose()

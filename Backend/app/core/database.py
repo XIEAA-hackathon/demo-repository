@@ -53,6 +53,11 @@ REQUIRED_TABLES = {
     "wildcards",
 }
 
+REQUIRED_USER_COLUMNS = {
+    "session_created_at",
+    "session_last_seen_at",
+}
+
 
 def initialize_database() -> None:
     """Verify connectivity and schema without performing startup migrations.
@@ -81,6 +86,13 @@ def initialize_database() -> None:
             raise RuntimeError(
                 "Database schema is not at the required revision; missing tables: "
                 f"{sorted(missing)}. Run 'alembic upgrade head'."
+            )
+        user_columns = {column["name"] for column in inspector.get_columns("users")}
+        missing_user_columns = REQUIRED_USER_COLUMNS.difference(user_columns)
+        if missing_user_columns:
+            raise RuntimeError(
+                "Database schema is not at the required revision; missing users columns: "
+                f"{sorted(missing_user_columns)}. Run 'alembic upgrade head'."
             )
     except OperationalError:
         if database_backend == "postgresql":

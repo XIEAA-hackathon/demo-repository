@@ -10,6 +10,7 @@ from app.core.database import get_db
 from app.core.security import get_password_hash
 from app.models.models import User
 from app.services.activity_log import record_event
+from app.services.participant_session import clear_user_session
 
 
 router = APIRouter(prefix="/admin/management")
@@ -126,7 +127,7 @@ def reset_managed_user_password(
     if target.role == "admin" and target.is_system_account:
         raise HTTPException(status_code=403, detail="The permanent system Admin password is managed through backend configuration.")
     target.password_hash = get_password_hash(payload.new_password)
-    target.session_id = None
+    clear_user_session(target)
     record_event(
         db,
         "management.password_reset",

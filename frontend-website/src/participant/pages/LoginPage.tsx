@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
+import { LOGIN_PENDING_LABEL } from '../services/loginMessages'
 
 export default function LoginPage() {
   const { authenticated, login } = useAuth()
@@ -12,10 +13,13 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [working, setWorking] = useState(false)
+  const submitInFlight = useRef(false)
   if (authenticated) return <Navigate to="/participant" replace />
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if (submitInFlight.current) return
+    submitInFlight.current = true
     setWorking(true)
     setError('')
     try {
@@ -25,6 +29,7 @@ export default function LoginPage() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Sign in failed.')
     } finally {
+      submitInFlight.current = false
       setWorking(false)
     }
   }
@@ -40,7 +45,7 @@ export default function LoginPage() {
           <label><span>Email or participant ID</span><input type="text" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required /></label>
           <label><span>Password</span><div className="participant-password-field"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /><button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} title={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} onClick={() => setShowPassword((visible) => !visible)}>{showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}</button></div></label>
           {error && <p className="error" role="alert">{error}</p>}
-          <button className="button button--primary" disabled={working} type="submit">{working ? 'Signing in…' : 'Sign in'}</button>
+          <button className="button button--primary" disabled={working} type="submit">{working ? LOGIN_PENDING_LABEL : 'Sign in'}</button>
         </form>
       </section>
     </main>

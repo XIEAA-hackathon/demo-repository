@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "test:permissions": "node --experimental-strip-types src/participant/permissions.test.ts",
+    "test:auth": "node --experimental-strip-types src/participant/services/authContract.test.ts",
     "test:realtime": "node --experimental-strip-types src/services/realtime/connectReconnectingSocket.test.ts && node --experimental-strip-types src/services/realtime/timerReconciliation.test.ts"
   },
   "dependencies": {

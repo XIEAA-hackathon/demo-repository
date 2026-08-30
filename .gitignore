@@ -6,6 +6,8 @@
 *.key
 demo.txt
 test_credentials.txt
+load_test/credentials.json
+load_test/credentials-*.json
 
 # Databases and persistent state
 *.db

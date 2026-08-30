@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ import tempfile
 import time
 from pydantic import BaseModel
 
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.models.models import (
     User, Team, Member, EventConfig, Submission,
     RegistrationImport, RegistrationImportRow, WalletTransaction, ProblemStatement, Wildcard,
@@ -26,7 +26,7 @@ from app.schemas.schemas import (
     EventStateUpdate, TimerAdjustment, EVENT_STATES,
 )
 from app.api.auth import get_current_active_admin
-from app.api.websockets import manager
+from app.api.websockets import broadcast_presence_snapshot, manager
 from app.services.participant_presence import participant_presence_payload
 from app.services.event_service import (
     event_snapshot,
@@ -45,6 +45,7 @@ from app.services.registration_import import (
 )
 from app.services.reset_service import reset_event_and_imported_participants, reset_imported_participant_credentials
 from app.services.activity_log import record_event
+from app.services.participant_session import clear_user_session
 from app.core.security import get_password_hash
 from app.core.event_constants import ROUND1_WINNER_COUNT
 import json
@@ -477,7 +478,7 @@ async def reset_participant_password(
         raise HTTPException(status_code=409, detail="Participant account is not assigned to a team.")
     password = _default_password()
     account.password_hash = get_password_hash(password)
-    account.session_id = None
+    clear_user_session(account)
     account.credentials_active = True
     db.commit()
     await manager.disconnect_users({account.id})
@@ -487,6 +488,51 @@ async def reset_participant_password(
     )
     supplied_email = account.email if "@" in account.email else ""
     return _credential(account, team, password, supplied_email)
+
+
+@router.post("/admin/participant-accounts/{user_id}/force-logout")
+async def force_logout_participant(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    account = db.query(User).filter(
+        User.id == user_id,
+        User.role.in_(("leader", "member")),
+    ).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Participant account not found.")
+
+    participant_role = account.role
+    had_active_session = bool(account.session_id)
+    clear_user_session(account)
+    record_event(
+        db,
+        "auth.force_logout",
+        actor=current_user,
+        entity_type="user",
+        entity_id=account.id,
+        metadata={"role": participant_role, "had_active_session": had_active_session},
+    )
+    db.commit()
+    logger.info(
+        "Admin force logout completed user_id=%s role=%s had_active_session=%s",
+        user_id,
+        participant_role,
+        had_active_session,
+    )
+    db.close()
+
+    sockets_closed = await manager.disconnect_users({user_id}, reason="Signed out by event admin")
+    session_factory = getattr(request.app.state, "session_factory", SessionLocal)
+    await broadcast_presence_snapshot(session_factory)
+    return {
+        "status": "force_logged_out",
+        "user_id": user_id,
+        "had_active_session": had_active_session,
+        "presence_connections_closed": sockets_closed,
+    }
 
 
 # ---------------------------------------------------------------- Registration Import
@@ -657,7 +703,7 @@ async def import_registrations(
                 if leader_password:
                     leader.password_hash = get_password_hash(leader_password)
                     leader.credentials_active = True
-                    leader.session_id = None
+                    clear_user_session(leader)
                     invalidated_account_ids.add(leader.id)
             else:
                 leader = User(
@@ -712,7 +758,7 @@ async def import_registrations(
                     if member_password:
                         member_user.password_hash = get_password_hash(member_password)
                         member_user.credentials_active = True
-                        member_user.session_id = None
+                        clear_user_session(member_user)
                         invalidated_account_ids.add(member_user.id)
                 db.add(Member(team_id=team.id, member_name=member_name, email=login_id))
                 members_imported += 1
@@ -887,7 +933,7 @@ async def set_imported_participant_password(
         raise HTTPException(status_code=404, detail="Imported participant account not found.")
     account.password_hash = get_password_hash(payload.new_password)
     account.credentials_active = True
-    account.session_id = None
+    clear_user_session(account)
     record_event(
         db,
         "registration.participant_password_set",

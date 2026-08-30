@@ -5,6 +5,9 @@ interface ReconnectingSocketOptions<T> {
   getToken: () => string | null
   onMessage?: (message: T) => void
   onStatus?: (status: RealtimeStatus) => void
+  onUnauthorized?: () => void
+  heartbeatIntervalMs?: number
+  heartbeatMessage?: string
 }
 
 export function connectReconnectingSocket<T>({
@@ -12,12 +15,23 @@ export function connectReconnectingSocket<T>({
   getToken,
   onMessage,
   onStatus,
+  onUnauthorized,
+  heartbeatIntervalMs,
+  heartbeatMessage = 'heartbeat',
 }: ReconnectingSocketOptions<T>) {
   let socket: WebSocket | null = null
   let stopped = false
   let attempt = 0
   let retryTimer: number | undefined
   let settledTimer: number | undefined
+  let heartbeatTimer: number | undefined
+
+  const stopHeartbeat = () => {
+    if (heartbeatTimer !== undefined) {
+      window.clearInterval(heartbeatTimer)
+      heartbeatTimer = undefined
+    }
+  }
 
   const connect = () => {
     const token = getToken()
@@ -31,6 +45,12 @@ export function connectReconnectingSocket<T>({
       if (settledTimer !== undefined) window.clearTimeout(settledTimer)
       onStatus?.(recovered ? 'reconnected' : 'connected')
       if (recovered) settledTimer = window.setTimeout(() => onStatus?.('connected'), 2_000)
+      stopHeartbeat()
+      if (heartbeatIntervalMs && heartbeatIntervalMs > 0) {
+        heartbeatTimer = window.setInterval(() => {
+          if (socket?.readyState === WebSocket.OPEN) socket.send(heartbeatMessage)
+        }, heartbeatIntervalMs)
+      }
     }
     socket.onmessage = (event) => {
       try {
@@ -41,6 +61,7 @@ export function connectReconnectingSocket<T>({
     }
     socket.onerror = () => onStatus?.('error')
     socket.onclose = (event) => {
+      stopHeartbeat()
       if (settledTimer !== undefined) {
         window.clearTimeout(settledTimer)
         settledTimer = undefined
@@ -51,8 +72,12 @@ export function connectReconnectingSocket<T>({
         timestamp: new Date().toISOString(),
         wasClean: event.wasClean,
       })
-      onStatus?.(stopped ? 'disconnected' : 'reconnecting')
-      if (stopped || event.code === 4401) return
+      if (stopped || event.code === 4401) {
+        onStatus?.('disconnected')
+        if (!stopped && event.code === 4401) onUnauthorized?.()
+        return
+      }
+      onStatus?.('reconnecting')
       const baseDelay = Math.min(30_000, 1_000 * 2 ** attempt++)
       const jitteredDelay = Math.round(baseDelay * (0.85 + Math.random() * 0.3))
       retryTimer = window.setTimeout(connect, jitteredDelay)
@@ -64,6 +89,7 @@ export function connectReconnectingSocket<T>({
     stopped = true
     if (retryTimer !== undefined) window.clearTimeout(retryTimer)
     if (settledTimer !== undefined) window.clearTimeout(settledTimer)
+    stopHeartbeat()
     socket?.close()
   }
 }

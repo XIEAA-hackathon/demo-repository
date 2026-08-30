@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from app.core.security import get_password_hash
 from app.api.websockets import manager
 from app.models.models import GameConfig, ProblemStatement, RoundControl, Team, User, Wildcard
@@ -11,6 +13,8 @@ def _participant(db, *, name: str, email: str, session_id: str | None = None):
         password_hash=get_password_hash("Participant@123"),
         role="leader",
         session_id=session_id,
+        session_created_at=datetime.now(timezone.utc) if session_id else None,
+        session_last_seen_at=datetime.now(timezone.utc) if session_id else None,
     )
     db.add(user)
     db.flush()
@@ -23,7 +27,8 @@ def _participant(db, *, name: str, email: str, session_id: str | None = None):
 def test_participant_presence_counts_unique_active_teams_and_excludes_other_roles(db):
     first, first_team = _participant(db, name="First", email="first@presence.test", session_id="leader-session")
     second, _second_team = _participant(db, name="Second", email="second@presence.test", session_id="second-session")
-    db.add(User(name="First member", email="member@presence.test", password_hash="x", role="member", team_id=first_team.id, session_id="member-session"))
+    now = datetime.now(timezone.utc)
+    db.add(User(name="First member", email="member@presence.test", password_hash="x", role="member", team_id=first_team.id, session_id="member-session", session_created_at=now, session_last_seen_at=now))
     db.add(User(name="Other admin", email="admin@presence.test", password_hash="x", role="admin", session_id="admin-session"))
     db.add(User(name="Display", email="display@presence.test", password_hash="x", role="display", session_id="display-session"))
     db.commit()
@@ -31,6 +36,12 @@ def test_participant_presence_counts_unique_active_teams_and_excludes_other_role
     assert participant_presence_payload(db) == {
         "logged_in_team_ids": [first_team.id, _second_team.id],
         "participant_logged_in_count": 2,
+        "online_team_ids": [first_team.id, _second_team.id],
+        "participant_online_count": 2,
+        "active_session_team_ids": [first_team.id, _second_team.id],
+        "participant_active_session_count": 2,
+        "stale_session_team_ids": [],
+        "participant_stale_session_count": 0,
         "registered_participant_count": 2,
     }
     first.session_id = None

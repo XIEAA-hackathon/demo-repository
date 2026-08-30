@@ -1,20 +1,32 @@
 import logging
 import uuid
+from time import perf_counter
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from starlette.concurrency import run_in_threadpool
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.models.models import User, Team, Member
 from app.schemas.schemas import UserCreate, UserResponse, Token, TeamCreate
 from app.core.security import get_password_hash, verify_password, create_access_token
 from jose import JWTError, jwt
 from app.core.config import settings
 from app.services.activity_log import record_event
-from app.services.participant_presence import participant_presence_payload
-from app.api.websockets import manager
+from app.services.auth_password_verifier import (
+    AuthenticationCapacityUnavailable,
+    PasswordVerificationResult,
+    password_verifier,
+)
+from app.services.participant_session import (
+    PARTICIPANT_ROLES,
+    acquire_participant_session,
+    cleared_session_values,
+    participant_session_is_stale,
+    touch_participant_session,
+    utc_now,
+)
+from app.api.websockets import broadcast_presence_snapshot, manager
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -36,19 +48,44 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         email: str = payload.get("sub")
         session_id: str = payload.get("session_id")
         if email is None or not session_id:
+            logger.info("Rejected invalid session token reason=missing_claims")
             raise credentials_exception
     except JWTError:
+        logger.info("Rejected invalid session token reason=jwt_validation")
         raise credentials_exception
     user = db.query(User).filter(User.email == email).first()
     if user is None or not user.credentials_active:
+        logger.info("Rejected invalid session token reason=account_unavailable")
         raise credentials_exception
     
     # A token is valid only while both sides carry the same active session.
     # A null database session is an explicit revocation, not a skipped check.
     if not user.session_id or user.session_id != session_id:
+        logger.info(
+            "Rejected invalid session token user_id=%s role=%s reason=session_mismatch",
+            user.id,
+            user.role,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session expired. You logged in from another device.",
+            detail="Session expired or was revoked. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.role in PARTICIPANT_ROLES and not touch_participant_session(
+        db,
+        user_id=user.id,
+        session_id=session_id,
+        last_seen_at=user.session_last_seen_at,
+    ):
+        logger.info(
+            "Rejected invalid session token user_id=%s role=%s reason=concurrent_replacement",
+            user.id,
+            user.role,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired or was revoked. Please log in again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
         
@@ -74,6 +111,7 @@ def get_current_active_display(current_user: User = Depends(get_current_user)):
 
 def _issue_session(user: User, db: Session) -> dict:
     new_session_id = uuid.uuid4().hex
+    now = utc_now()
 
     # Capture primitive values BEFORE commit. SQLAlchemy normally expires ORM
     # objects on commit, and reading them afterwards can trigger another query
@@ -83,6 +121,8 @@ def _issue_session(user: User, db: Session) -> dict:
     user_role = user.role
 
     user.session_id = new_session_id
+    user.session_created_at = now
+    user.session_last_seen_at = now
     record_event(db, "auth.login", actor=user)
     db.commit()
     logger.info("Successful login user_id=%s role=%s", user_id, user_role)
@@ -101,23 +141,25 @@ def _issue_session(user: User, db: Session) -> dict:
     }
 
 
-def _acquire_participant_session(user: User, password_hash: str, db: Session) -> dict:
-    """Atomically claim an inactive participant credential without replacing it."""
+def _acquire_participant_session(user: User, password_hash: str, db: Session) -> tuple[dict, bool]:
+    """Atomically claim a free or stale participant credential."""
     new_session_id = uuid.uuid4().hex
+    now = utc_now()
     user_id = user.id
     user_email = user.email
     user_role = user.role
-    acquired = (
-        db.query(User)
-        .filter(
-            User.id == user_id,
-            User.credentials_active.is_(True),
-            User.password_hash == password_hash,
-            User.session_id.is_(None),
-        )
-        .update({User.session_id: new_session_id}, synchronize_session=False)
+    replaced_stale_session = bool(user.session_id) and participant_session_is_stale(
+        user.session_last_seen_at,
+        now=now,
     )
-    if acquired != 1:
+    acquired = acquire_participant_session(
+        db,
+        user_id=user_id,
+        password_hash=password_hash,
+        new_session_id=new_session_id,
+        now=now,
+    )
+    if not acquired:
         db.rollback()
         current = db.query(User).filter(User.id == user_id).first()
         if not current or not current.credentials_active or current.password_hash != password_hash:
@@ -140,13 +182,32 @@ def _acquire_participant_session(user: User, password_hash: str, db: Session) ->
         )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
-    record_event(db, "auth.login", actor=user)
+    if replaced_stale_session:
+        record_event(
+            db,
+            "auth.session_replaced_stale",
+            actor=user,
+            metadata={"stale_after_seconds": settings.SESSION_STALE_SECONDS},
+        )
+    record_event(
+        db,
+        "auth.login",
+        actor=user,
+        metadata={"replaced_stale_session": replaced_stale_session},
+    )
     db.commit()
-    logger.info("Successful login user_id=%s role=%s", user_id, user_role)
+    if replaced_stale_session:
+        logger.info("Replaced stale participant session user_id=%s role=%s", user_id, user_role)
+    logger.info(
+        "Successful login user_id=%s role=%s replaced_stale_session=%s",
+        user_id,
+        user_role,
+        replaced_stale_session,
+    )
     access_token = create_access_token(
         data={"sub": user_email, "role": user_role, "session_id": new_session_id}
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"access_token": access_token, "token_type": "bearer"}, replaced_stale_session
 
 @router.post("/register")
 def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends(get_db)):
@@ -183,62 +244,129 @@ def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends
 
 @router.post("/login", response_model=Token)
 async def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    login_id = form_data.username.strip().lower()
-    candidate = db.query(User).filter(func.lower(User.email) == login_id).first()
-    candidate_id = candidate.id if candidate and candidate.credentials_active else None
-    password_hash = candidate.password_hash if candidate_id else ""
-    # A password check is intentionally CPU-expensive. Release the SQLite
-    # connection before running bcrypt away from the single asyncio event loop.
-    db.close()
-    password_valid = bool(candidate_id) and await run_in_threadpool(
-        verify_password,
-        form_data.password,
-        password_hash,
-    )
-    if not password_valid:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    user = db.query(User).filter(User.id == candidate_id, User.credentials_active.is_(True)).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    total_started_at = perf_counter()
+    lookup_ms = 0.0
+    queue_wait_ms = 0.0
+    bcrypt_ms = 0.0
+    acquisition_ms = 0.0
+    outcome = "internal_error"
+    candidate_id: int | None = None
+    candidate_role: str | None = None
 
-    if user.role == "display":
-        raise HTTPException(
-            status_code=403,
-            detail="Use the dedicated leaderboard display login.",
-        )
+    try:
+        login_id = form_data.username.strip().lower()
+        lookup_started_at = perf_counter()
+        candidate = db.query(User).filter(func.lower(User.email) == login_id).first()
+        lookup_ms = (perf_counter() - lookup_started_at) * 1000
+        candidate_id = candidate.id if candidate and candidate.credentials_active else None
+        candidate_role = candidate.role if candidate_id else None
+        password_hash = candidate.password_hash if candidate_id else ""
 
-    participant = user.role in ("leader", "member")
+        # Release the request connection before queueing or doing CPU-bound
+        # bcrypt work. The session reopens only for the short final claim.
+        db.close()
+        verification = PasswordVerificationResult(False, 0.0, 0.0)
+        if candidate_id:
+            try:
+                verification = await password_verifier.verify(
+                    form_data.password,
+                    password_hash,
+                    verify_password,
+                )
+            except AuthenticationCapacityUnavailable as exc:
+                queue_wait_ms = exc.queue_wait_ms
+                outcome = f"auth_busy_{exc.reason}"
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Authentication service is busy. Please retry shortly.",
+                    headers={"Retry-After": str(settings.AUTH_LOGIN_RETRY_AFTER_SECONDS)},
+                ) from exc
+        queue_wait_ms = verification.queue_wait_ms
+        bcrypt_ms = verification.bcrypt_ms
 
-    if participant:
-        if user.team_id:
-            team = db.query(Team).filter(Team.id == user.team_id).first()
-        else:
-            team = db.query(Team).filter(Team.leader_id == user.id).first()
-
-        if not team or not team.is_approved:
+        if not verification.valid:
+            outcome = "invalid_credentials"
             raise HTTPException(
-                status_code=403,
-                detail="Team is not approved by admin yet.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
             )
 
-    token = (
-        _acquire_participant_session(user, password_hash, db)
-        if participant
-        else _issue_session(user, db)
-    )
-    db.close()
-    return token
+        user = db.query(User).filter(User.id == candidate_id, User.credentials_active.is_(True)).first()
+        if not user:
+            outcome = "account_changed"
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        candidate_role = user.role
+        if user.role == "display":
+            outcome = "display_route_required"
+            raise HTTPException(
+                status_code=403,
+                detail="Use the dedicated leaderboard display login.",
+            )
+
+        participant = user.role in PARTICIPANT_ROLES
+        if participant:
+            if user.team_id:
+                team = db.query(Team).filter(Team.id == user.team_id).first()
+            else:
+                team = db.query(Team).filter(Team.leader_id == user.id).first()
+
+            if not team or not team.is_approved:
+                outcome = "team_not_approved"
+                raise HTTPException(
+                    status_code=403,
+                    detail="Team is not approved by admin yet.",
+                )
+
+        user_id = user.id
+        acquisition_started_at = perf_counter()
+        try:
+            if participant:
+                token, replaced_stale_session = _acquire_participant_session(user, password_hash, db)
+            else:
+                token = _issue_session(user, db)
+                replaced_stale_session = False
+        finally:
+            acquisition_ms = (perf_counter() - acquisition_started_at) * 1000
+        db.close()
+
+        if replaced_stale_session:
+            await manager.disconnect_users(
+                {user_id},
+                reason="Stale session replaced by a new login",
+            )
+            session_factory = getattr(request.app.state, "session_factory", SessionLocal)
+            await broadcast_presence_snapshot(session_factory)
+        outcome = "success"
+        return token
+    except HTTPException as exc:
+        if outcome == "internal_error":
+            outcome = f"http_{exc.status_code}"
+        raise
+    finally:
+        db.close()
+        logger.info(
+            "Participant login timing outcome=%s user_id=%s role=%s "
+            "lookup_ms=%.2f queue_wait_ms=%.2f bcrypt_ms=%.2f "
+            "session_acquisition_ms=%.2f total_ms=%.2f",
+            outcome,
+            candidate_id,
+            candidate_role,
+            lookup_ms,
+            queue_wait_ms,
+            bcrypt_ms,
+            acquisition_ms,
+            (perf_counter() - total_started_at) * 1000,
+        )
 
 
 @router.post("/leaderboard/login", response_model=Token)
@@ -255,6 +383,7 @@ def leaderboard_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Sess
 
 @router.post("/logout")
 async def logout(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -267,7 +396,7 @@ async def logout(
     cleared = (
         db.query(User)
         .filter(User.id == user_id, User.session_id == active_session_id)
-        .update({User.session_id: None}, synchronize_session=False)
+        .update(cleared_session_values(), synchronize_session=False)
     )
     if cleared != 1:
         db.rollback()
@@ -275,16 +404,11 @@ async def logout(
     db.commit()
     logger.info("Logout completed user_id=%s role=%s", user_id, user_role)
 
-    presence = (
-        participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
-        if participant_logout
-        else None
-    )
-
     # Release request DB connection before WebSocket/network I/O.
     db.close()
 
     if participant_logout:
         await manager.disconnect_users({user_id})
-        await manager.broadcast_event("participant_presence_changed", presence, roles={"admin"})
+        session_factory = getattr(request.app.state, "session_factory", SessionLocal)
+        await broadcast_presence_snapshot(session_factory)
     return {"message": "Successfully logged out"}

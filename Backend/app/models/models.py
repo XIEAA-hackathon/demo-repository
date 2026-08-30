@@ -13,6 +13,8 @@ class User(Base):
     role = Column(String, nullable=False) # 'admin', 'leader', 'member', or 'display'
     team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
     session_id = Column(String, nullable=True) # Used to track the active session
+    session_created_at = Column(DateTime(timezone=True), nullable=True)
+    session_last_seen_at = Column(DateTime(timezone=True), nullable=True)
     is_system_account = Column(Boolean, nullable=False, default=False)
     account_source = Column(String, nullable=False, default="MANUAL") # MANUAL, IMPORTED
     credentials_active = Column(Boolean, nullable=False, default=True)
