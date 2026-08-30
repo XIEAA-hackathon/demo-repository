@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging, management
 from app.core.database import initialize_database, SessionLocal
+from app.core.logging import install_sensitive_query_redaction
 from app.models import models
 from app.core.config import settings
 from app.core.security import get_password_hash
@@ -20,6 +21,7 @@ from app.services.wildcard_service import reconcile_wildcard_selection
 from app.api.websockets import manager
 
 logger = logging.getLogger("uvicorn.error")
+install_sensitive_query_redaction()
 
 
 def validate_startup_configuration() -> None:
