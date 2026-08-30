@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import re
 from typing import Iterable
 
@@ -42,6 +43,7 @@ from app.services.round1_assignment import (
 from app.services.wildcard_service import ranking_payload, wildcard_payload
 
 router = APIRouter()
+logger = logging.getLogger("uvicorn.error")
 
 ROUND_META = {
     "round-1": {"type": "ROUND1", "number": 1, "prefix": "R1", "label": "Round 1"},
@@ -339,6 +341,7 @@ async def close_bidding(round_slug: str, db: Session = Depends(get_db), current_
     db.refresh(control)
     game = get_or_create_game_config(db)
     if control.status == "READY" and game.state == "ROUND1_RESULT":
+        logger.info("Duplicate Round 1 close request ignored; bidding is already closed.")
         return _round_payload(db, meta)
     if control.status != "BIDDING":
         raise HTTPException(status_code=409, detail="Bidding is not active.")
@@ -370,6 +373,7 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
             .one()
         )
         if control.current_problem_id is None and control.status in {"READY", "COMPLETE"}:
+            logger.info("Duplicate Round 1 winner assignment request ignored; assignment is already complete.")
             return {"message": "Winner assignment already completed.", "winners": [], **_round_payload(db, meta)}
         problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id, ProblemStatement.round == meta["number"]).first()
         if not problem or control.status != "READY":
@@ -720,6 +724,7 @@ async def rebid_problem(
 async def end_round_one(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
     control = get_or_create_round_control(db, "ROUND1")
     if control.ended:
+        logger.info("Duplicate Round 1 end request ignored; the round is already closed.")
         return _round_payload(db, ROUND_META["round-1"])
     assigned_count = db.query(Team).filter(Team.round1_problem_id.is_not(None)).count()
     unassigned_count = db.query(Team).filter(

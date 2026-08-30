@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -38,6 +39,7 @@ from app.services.wildcard_service import (
 )
 
 router = APIRouter()
+logger = logging.getLogger("uvicorn.error")
 
 
 def _require_round_one_complete(db: Session) -> None:
@@ -245,6 +247,11 @@ async def close_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
     sync_expired_event_state(db)
     control = get_or_create_round_control(db, "WILDCARD")
     if control.status in {"PROBLEM_SELECTION", "COMPLETE"}:
+        logger.info(
+            "Duplicate Wildcard bidding close ignored user_id=%s status=%s",
+            current_user.id,
+            control.status,
+        )
         winners = finalize_slot_bidding(db, control)
         return {"winners": winners, **wildcard_payload(db)}
     if control.status not in {"BIDDING_OPEN", "BIDDING_CLOSED"}:
@@ -279,6 +286,7 @@ async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=De
 async def end_wildcard(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
     control = get_or_create_round_control(db, "WILDCARD")
     if control.ended:
+        logger.info("Duplicate Wildcard end ignored user_id=%s", current_user.id)
         return wildcard_payload(db)
 
     applications = db.query(Wildcard).filter(Wildcard.status.in_(("applied", "qualified", "selected", "eliminated"))).count()

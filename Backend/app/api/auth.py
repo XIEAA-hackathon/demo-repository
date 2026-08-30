@@ -1,13 +1,12 @@
+import logging
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-<<<<<<< HEAD
 from starlette.concurrency import run_in_threadpool
 from app.core.database import get_db
-=======
-from app.core.database import get_db, SessionLocal
->>>>>>> 8a80e4a318ca75704239df16ee1b4c0dc4e39928
 from app.models.models import User, Team, Member
 from app.schemas.schemas import UserCreate, UserResponse, Token, TeamCreate
 from app.core.security import get_password_hash, verify_password, create_access_token
@@ -19,6 +18,12 @@ from app.api.websockets import manager
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+logger = logging.getLogger("uvicorn.error")
+
+ALREADY_LOGGED_IN_MESSAGE = (
+    "This leader account is already logged in on another device. "
+    "Please log out from the existing session before logging in again."
+)
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
@@ -68,19 +73,19 @@ def get_current_active_display(current_user: User = Depends(get_current_user)):
 
 
 def _issue_session(user: User, db: Session) -> dict:
-    import uuid
-
     new_session_id = uuid.uuid4().hex
 
     # Capture primitive values BEFORE commit. SQLAlchemy normally expires ORM
     # objects on commit, and reading them afterwards can trigger another query
     # and checkout another DB connection.
+    user_id = user.id
     user_email = user.email
     user_role = user.role
 
     user.session_id = new_session_id
     record_event(db, "auth.login", actor=user)
     db.commit()
+    logger.info("Successful login user_id=%s role=%s", user_id, user_role)
 
     access_token = create_access_token(
         data={
@@ -94,6 +99,54 @@ def _issue_session(user: User, db: Session) -> dict:
         "access_token": access_token,
         "token_type": "bearer",
     }
+
+
+def _acquire_participant_session(user: User, password_hash: str, db: Session) -> dict:
+    """Atomically claim an inactive participant credential without replacing it."""
+    new_session_id = uuid.uuid4().hex
+    user_id = user.id
+    user_email = user.email
+    user_role = user.role
+    acquired = (
+        db.query(User)
+        .filter(
+            User.id == user_id,
+            User.credentials_active.is_(True),
+            User.password_hash == password_hash,
+            User.session_id.is_(None),
+        )
+        .update({User.session_id: new_session_id}, synchronize_session=False)
+    )
+    if acquired != 1:
+        db.rollback()
+        current = db.query(User).filter(User.id == user_id).first()
+        if not current or not current.credentials_active or current.password_hash != password_hash:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        record_event(
+            db,
+            "auth.login_rejected_duplicate",
+            actor=current,
+            metadata={"reason": "active_session"},
+        )
+        db.commit()
+        logger.info("Rejected duplicate participant login user_id=%s role=%s", user_id, user_role)
+        detail = ALREADY_LOGGED_IN_MESSAGE if user_role == "leader" else (
+            "This participant account is already logged in on another device. "
+            "Please log out from the existing session before logging in again."
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+    record_event(db, "auth.login", actor=user)
+    db.commit()
+    logger.info("Successful login user_id=%s role=%s", user_id, user_role)
+    access_token = create_access_token(
+        data={"sub": user_email, "role": user_role, "session_id": new_session_id}
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
 
 @router.post("/register")
 def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends(get_db)):
@@ -134,7 +187,6 @@ async def login(
     db: Session = Depends(get_db),
 ):
     login_id = form_data.username.strip().lower()
-<<<<<<< HEAD
     candidate = db.query(User).filter(func.lower(User.email) == login_id).first()
     candidate_id = candidate.id if candidate and candidate.credentials_active else None
     password_hash = candidate.password_hash if candidate_id else ""
@@ -154,16 +206,6 @@ async def login(
         )
     user = db.query(User).filter(User.id == candidate_id, User.credentials_active.is_(True)).first()
     if not user:
-=======
-
-    user = db.query(User).filter(func.lower(User.email) == login_id).first()
-
-    if (
-        not user
-        or not user.credentials_active
-        or not verify_password(form_data.password, user.password_hash)
-    ):
->>>>>>> 8a80e4a318ca75704239df16ee1b4c0dc4e39928
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -185,58 +227,17 @@ async def login(
             team = db.query(Team).filter(Team.leader_id == user.id).first()
 
         if not team or not team.is_approved:
-<<<<<<< HEAD
-            raise HTTPException(status_code=403, detail="Team is not approved by admin yet.")
-            
-    if user.role in ("leader", "member"):
-        participant_user_id = user.id
-    else:
-        participant_user_id = None
-    token = _issue_session(user, db)
-    # No request-scoped connection is held while an older socket is closed.
-    # The replacement socket publishes the authoritative presence update when
-    # it actually connects; login alone must not fan out a false online state.
-    db.close()
-    if participant_user_id is not None:
-        await manager.disconnect_users({participant_user_id}, reason="Signed in from another session")
-=======
             raise HTTPException(
                 status_code=403,
                 detail="Team is not approved by admin yet.",
             )
 
-    # Capture everything needed after the database session closes.
-    user_id = user.id
-
-    # Issue the new session/token entirely inside DB work.
-    token = _issue_session(user, db)
-
-    # CRITICAL:
-    # Return this request's SQLAlchemy connection to the pool BEFORE any
-    # WebSocket/network await.
+    token = (
+        _acquire_participant_session(user, password_hash, db)
+        if participant
+        else _issue_session(user, db)
+    )
     db.close()
-
-    if participant:
-        # No DB session is held while waiting for old sockets to close.
-        await manager.disconnect_users(
-            {user_id},
-            reason="Signed in from another session",
-        )
-
-        # Open a fresh, very short-lived DB session only to build presence.
-        with SessionLocal() as presence_db:
-            presence = participant_presence_payload(
-                presence_db,
-                connected_team_ids=manager.participant_team_ids(),
-            )
-
-        # presence_db is CLOSED before network I/O.
-        await manager.broadcast_event(
-            "participant_presence_changed",
-            presence,
-        )
-
->>>>>>> 8a80e4a318ca75704239df16ee1b4c0dc4e39928
     return token
 
 
@@ -259,33 +260,31 @@ async def logout(
 ):
     participant_logout = current_user.role in ("leader", "member")
     user_id = current_user.id
+    user_role = current_user.role
+    active_session_id = current_user.session_id
 
     record_event(db, "auth.logout", actor=current_user)
-    current_user.session_id = None
+    cleared = (
+        db.query(User)
+        .filter(User.id == user_id, User.session_id == active_session_id)
+        .update({User.session_id: None}, synchronize_session=False)
+    )
+    if cleared != 1:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is no longer active.")
     db.commit()
+    logger.info("Logout completed user_id=%s role=%s", user_id, user_role)
+
+    presence = (
+        participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
+        if participant_logout
+        else None
+    )
 
     # Release request DB connection before WebSocket/network I/O.
     db.close()
 
     if participant_logout:
-<<<<<<< HEAD
-        await manager.disconnect_users({current_user.id})
-        presence = participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
-        db.close()
-        await manager.broadcast_event("participant_presence_changed", presence, roles={"admin"})
-=======
         await manager.disconnect_users({user_id})
-
-        with SessionLocal() as presence_db:
-            presence = participant_presence_payload(
-                presence_db,
-                connected_team_ids=manager.participant_team_ids(),
-            )
-
-        await manager.broadcast_event(
-            "participant_presence_changed",
-            presence,
-        )
-
->>>>>>> 8a80e4a318ca75704239df16ee1b4c0dc4e39928
+        await manager.broadcast_event("participant_presence_changed", presence, roles={"admin"})
     return {"message": "Successfully logged out"}

@@ -13,7 +13,7 @@ from app.models import models
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.services.demo_seed import provision_demo_accounts
-from app.services.event_service import get_or_create_event_config, get_or_create_game_config, upgrade_legacy_starting_coins
+from app.services.event_service import event_snapshot, get_or_create_event_config, get_or_create_game_config, upgrade_legacy_starting_coins
 from app.services.event_service import sync_expired_event_state
 from app.services.wildcard_service import reconcile_wildcard_selection
 from app.api.websockets import manager
@@ -31,66 +31,50 @@ def validate_startup_configuration() -> None:
             raise RuntimeError("ENABLE_EVENT_RESET must be false in production.")
 
 
+async def process_expiry_cycle(session_factory=SessionLocal, connection_manager=manager) -> list[str]:
+    """Persist one expiry cycle, then publish its committed authoritative snapshot."""
+    actions: list[str] = []
+    wildcard_assignment = None
+    snapshot = None
+    db = session_factory()
+    try:
+        actions = sync_expired_event_state(db)
+        wildcard_assignment = reconcile_wildcard_selection(db)
+        if wildcard_assignment:
+            actions.append("wildcard_selection_timeout")
+        if actions:
+            snapshot = event_snapshot(db)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    # All database work is committed and the session is closed before network I/O.
+    if wildcard_assignment:
+        await connection_manager.broadcast_event(
+            "wildcard_updated",
+            {
+                "action": "selection_timeout",
+                "team_name": wildcard_assignment["team_name"],
+                "problem_id": wildcard_assignment["problem"]["id"],
+            },
+        )
+    if actions:
+        await connection_manager.broadcast_event(
+            "event_state_changed",
+            {**snapshot, "expiry_actions": actions},
+        )
+    return actions
+
+
 async def expiry_worker() -> None:
     while True:
         await asyncio.sleep(1)
-
-        actions = []
-        wildcard_assignment = None
-
-        db = SessionLocal()
         try:
-            actions = sync_expired_event_state(db)
-            wildcard_assignment = reconcile_wildcard_selection(db)
-
-            if wildcard_assignment:
-                actions.append("wildcard_selection_timeout")
-<<<<<<< HEAD
-            # Both services above finish their DB work before any network I/O.
-            # Closing here returns the connection to the pool while broadcasts
-            # wait on participant sockets.
-            db.close()
-            if wildcard_assignment:
-                await manager.broadcast_event("wildcard_updated", {
-                    "action": "selection_timeout",
-                    "team_name": wildcard_assignment["team_name"],
-                    "problem_id": wildcard_assignment["problem"]["id"],
-                })
-            if actions:
-                await manager.broadcast_event("event_state_changed", {"expiry_actions": actions})
-=======
-
->>>>>>> 8a80e4a318ca75704239df16ee1b4c0dc4e39928
+            await process_expiry_cycle()
         except Exception:
-            db.rollback()
             logger.exception("Timer expiry worker failed; it will retry.")
-            continue
-
-        finally:
-            db.close()
-
-        # IMPORTANT:
-        # All database work is finished and the session is closed
-        # before doing any WebSocket/network I/O.
-        try:
-            if wildcard_assignment:
-                await manager.broadcast_event(
-                    "wildcard_updated",
-                    {
-                        "action": "selection_timeout",
-                        "team_name": wildcard_assignment["team_name"],
-                        "problem_id": wildcard_assignment["problem"]["id"],
-                    },
-                )
-
-            if actions:
-                await manager.broadcast_event(
-                    "event_state_changed",
-                    {"expiry_actions": actions},
-                )
-
-        except Exception:
-            logger.exception("Timer expiry broadcast failed; it will retry on the next state change.")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

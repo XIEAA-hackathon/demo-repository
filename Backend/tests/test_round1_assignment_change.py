@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 
+from openpyxl import load_workbook
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -70,6 +72,18 @@ def _change(client, admin_headers, team: Team, target: ProblemStatement):
     )
 
 
+def _exported_team(client, admin_headers, team_name: str) -> dict[str, object]:
+    response = client.get("/admin/rounds/round-1/assignments/export", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    workbook = load_workbook(BytesIO(response.content), read_only=True, data_only=True)
+    try:
+        values = list(workbook["Participant Assignments"].iter_rows(values_only=True))
+        headers = [str(value) for value in values[0]]
+        return next(dict(zip(headers, row)) for row in values[1:] if row[0] == team_name)
+    finally:
+        workbook.close()
+
+
 def test_normal_change_moves_current_assignment_without_balance_or_aggregate_change(client, admin_headers, db):
     old, target = _problem(db, 1), _problem(db, 2)
     team = _team(db, "Team Alpha", old, coins=1700)
@@ -90,6 +104,9 @@ def test_normal_change_moves_current_assignment_without_balance_or_aggregate_cha
     target_row = next(row for row in snapshot["problems"] if row["id"] == target.id)
     assert old_row["assigned_team_count"] == 0
     assert target_row["assigned_team_count"] == 1
+    exported = _exported_team(client, admin_headers, "Team Alpha")
+    assert exported["Round 1 Problem Number"] == "R1-2"
+    assert exported["Round 1 Final Price / Winning Bid"] == 300
 
 
 def test_full_target_rejects_change_and_preserves_original_assignment(client, admin_headers, db):
@@ -125,6 +142,8 @@ def test_previously_unassigned_team_gets_problem_without_coin_deduction(client, 
     assert team.round1_assignment_type == "MANUAL_ASSIGNMENT"
     assert team.round1_assignment_cost == 0 and team.coins == 1250
     assert db.query(WalletTransaction).filter(WalletTransaction.team_id == team.id).count() == 0
+    exported = _exported_team(client, admin_headers, "Team Beta")
+    assert exported["Round 1 Final Price / Winning Bid"] == 0
 
 
 def test_participant_websocket_receives_authoritative_assignment_change(client, admin_headers, db):

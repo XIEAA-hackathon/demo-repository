@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -16,7 +17,7 @@ from pydantic import BaseModel
 from app.core.database import get_db
 from app.models.models import (
     User, Team, Member, EventConfig, Submission,
-    RegistrationImport, RegistrationImportRow, WalletTransaction, ProblemStatement,
+    RegistrationImport, RegistrationImportRow, WalletTransaction, ProblemStatement, Wildcard,
 )
 from app.schemas.schemas import (
     EventConfigUpdate, EventConfigResponse,
@@ -49,6 +50,7 @@ from app.core.event_constants import ROUND1_WINNER_COUNT
 import json
 
 router = APIRouter()
+logger = logging.getLogger("uvicorn.error")
 
 _EXPORT_TTL_SECONDS = 15 * 60
 _EXPORT_DIRECTORY = Path(tempfile.gettempdir()) / "bid_to_build_credential_exports"
@@ -937,7 +939,7 @@ def _assigned_problem_label(problem: ProblemStatement | None) -> str:
     return f"{problem.ps_number} - {problem.title}" if problem else ""
 
 
-def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], str]:
+def _assignment_export_data(db: Session) -> tuple[list[str], list[list[object]], str]:
     latest_import = (
         db.query(RegistrationImport)
         .filter(RegistrationImport.status == "committed")
@@ -1003,7 +1005,7 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], st
         or normalized.endswith("password")
     ]
 
-    output_rows: list[list[str]] = []
+    output_rows: list[list[object]] = []
     for source_values, team, leader_email in source_rows:
         values = [*source_values, *([""] * (len(headers) - len(source_values)))]
         values[login_index] = leader_email
@@ -1015,15 +1017,26 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[str]], st
             values[index] = "NOT EXPORTED"
         round1 = db.query(ProblemStatement).filter(ProblemStatement.id == team.round1_problem_id).first() if team and team.round1_problem_id else None
         wildcard = db.query(ProblemStatement).filter(ProblemStatement.id == team.wildcard_problem_id).first() if team and team.wildcard_problem_id else None
+        wildcard_assignment = db.query(Wildcard).filter(Wildcard.team_id == team.id).first() if team else None
         submission = db.query(Submission).filter(Submission.team_id == team.id).first() if team else None
         final = wildcard or round1
+        round1_price = team.round1_assignment_cost if team and round1 and team.round1_assignment_cost is not None else ""
+        wildcard_price = (
+            wildcard_assignment.winning_bid
+            if wildcard and wildcard_assignment and wildcard_assignment.winning_bid is not None
+            else wildcard_assignment.coins_paid
+            if wildcard and wildcard_assignment
+            else ""
+        )
         assignment_values = [
             _assigned_problem_label(round1),
             _assigned_problem_label(wildcard),
             submission.repository_url if submission else "",
             *_assignment_problem_values(round1),
             (team.round1_assignment_type or "BID_WINNER") if round1 and team else "",
+            round1_price,
             *_assignment_problem_values(wildcard),
+            wildcard_price,
             *_assignment_problem_values(final),
         ]
         for index, value in zip(assignment_indexes, assignment_values):
@@ -1036,6 +1049,7 @@ def _assignment_workbook_response(db: Session, filename: str) -> StreamingRespon
     headers, rows, _suffix = _assignment_export_data(db)
     if not rows:
         raise HTTPException(status_code=409, detail="No imported participant registration data is available to export.")
+    logger.info("Excel assignment export generated filename=%s rows=%s", filename, len(rows))
     return StreamingResponse(
         BytesIO(build_registration_assignment_workbook(headers, rows)),
         media_type=XLSX_MEDIA_TYPE,

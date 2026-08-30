@@ -27,9 +27,6 @@ export async function login(email: string, password: string) {
 }
 
 export async function logout() {
-  try {
-    await apiRequest('/logout', { method: 'POST' })
-  } finally {
-    clearAccessToken()
-  }
+  await apiRequest('/logout', { method: 'POST' })
+  clearAccessToken()
 }

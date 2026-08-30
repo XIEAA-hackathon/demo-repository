@@ -17,8 +17,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuthenticated(true)
   }, [])
   const logout = useCallback(async () => {
-    await authService.logout()
-    setAuthenticated(false)
+    try {
+      await authService.logout()
+    } finally {
+      setAuthenticated(Boolean(getAccessToken()))
+    }
   }, [])
 
   useEffect(() => {

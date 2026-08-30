@@ -196,7 +196,7 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
     system_leader = db.query(User).filter(User.email == settings.DEMO_LEADER_EMAIL).one()
     system_team = db.query(Team).filter(Team.team_name == settings.DEMO_TEAM_NAME).one()
     demo_admin_headers = _login(client, settings.DEMO_ADMIN_EMAIL, settings.DEMO_ADMIN_PASSWORD)
-    assert _login(client, settings.DEMO_LEADER_EMAIL, settings.DEMO_LEADER_PASSWORD)
+    demo_leader_headers = _login(client, settings.DEMO_LEADER_EMAIL, settings.DEMO_LEADER_PASSWORD)
     assert provisioned == {
         "team": "Demo Team",
         "leader": "leader@demo.example.com",
@@ -285,8 +285,12 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
 
     # Existing Admin bearer token and permanent demo leader credentials remain valid.
     assert client.get("/admin/state", headers=demo_admin_headers).status_code == 200
+    assert client.get("/participant/dashboard", headers=demo_leader_headers).status_code == 200
+    assert client.post("/logout", headers=demo_leader_headers).status_code == 200
     assert _login(client, system_leader.email, settings.DEMO_LEADER_PASSWORD)
     assert _login(client, settings.DEMO_ADMIN_EMAIL, settings.DEMO_ADMIN_PASSWORD)
+    assert client.get("/participant/dashboard", headers=alpha_headers).status_code == 200
+    assert client.post("/logout", headers=alpha_headers).status_code == 200
     assert client.post("/login", data={"username": imported_alpha_email, "password": "temp-pass"}).status_code == 200
     assert db.query(Team).filter(Team.id == system_team.id, Team.is_system_team.is_(True)).count() == 1
     assert db.query(User).filter(User.id == system_leader.id, User.is_system_account.is_(True)).count() == 1

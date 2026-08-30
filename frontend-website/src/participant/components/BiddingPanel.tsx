@@ -75,6 +75,7 @@ export default function BiddingPanel({
   if (!dashboard) return null
   const isLeader = dashboard.team.leaderId === dashboard.currentUserId
   const isWildcard = round === 'WILDCARD'
+  const biddingActive = dashboard.eventState === (isWildcard ? 'WILDCARD_BIDDING' : 'ROUND1_BIDDING')
   const currentPrice = Math.max(problem.startingBid, ...entries.map((entry) => entry.amount))
   const ownBid = dashboard.latestBid?.round === round && dashboard.latestBid.problemId === problem.id
     ? dashboard.latestBid.amount
@@ -137,7 +138,7 @@ export default function BiddingPanel({
             <div className="bid-current"><span>Current auction bid</span><strong>{currentPrice} coins</strong>{ownBid != null && <small>Your bid: {ownBid} coins</small>}</div>
             <div className="quick-bid-buttons" aria-label="Quick bid increments">
               {BID_INCREMENTS.map((increment) => (
-                <Button key={increment} type="button" disabled={!isLeader || submitting || cooldownRemaining > 0 || !canAfford(increment)} onClick={() => void placeIncrement(increment)}>
+                <Button key={increment} type="button" disabled={!biddingActive || !isLeader || submitting || cooldownRemaining > 0 || !canAfford(increment)} onClick={() => void placeIncrement(increment)}>
                   +{increment}
                 </Button>
               ))}

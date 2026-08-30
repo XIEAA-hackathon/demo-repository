@@ -119,6 +119,9 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     assert first_by_team["Team A"]["Organizer Notes"] == "Preserve note A"
     assert first_by_team["Team A"]["Round 1 Problem Number"] == "R1-1"
     assert first_by_team["Team A"]["Round 1 Assignment Type"] == "BID_WINNER"
+    db.expire_all()
+    team_a_price = db.query(Team).filter(Team.team_name == "Team A").one().round1_assignment_cost
+    assert first_by_team["Team A"]["Round 1 Final Price / Winning Bid"] == str(team_a_price)
     assert first_by_team["Team A"]["Wildcard Problem Number"] == ""
     assert first_by_team["Team A"]["Final Problem Number"] == "R1-1"
     assert first_by_team["Team F"]["Round 1 Problem Number"] == ""
@@ -128,6 +131,7 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     round_one_rows = _assignment_workbook_rows(round_one_workbook)
     round_one_by_team = {row["Team Name"]: row for row in round_one_rows}
     assert round_one_by_team["Team A"]["Round 1 Problem Title"] == "Round One Problem"
+    assert round_one_by_team["Team A"]["Round 1 Final Price / Winning Bid"] == team_a_price
     assert round_one_by_team["Team F"]["Round 1 Problem Number"] in (None, "")
 
     updated = client.put("/admin/config", headers=admin_headers, json={"round1_minimum_bid": 200})
@@ -217,8 +221,10 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     team_k = next(row for row in final_rows if row["Team Name"] == "Team K")
     assert team_k["Round 1 Problem Number"] == "R1-3"
     assert team_k["Round 1 Assignment Type"] == "MANUAL_ASSIGNMENT"
+    assert team_k["Round 1 Final Price / Winning Bid"] == "190"
     assert team_h["Wildcard Problem Number"] == "WC-2"
     assert team_h["Wildcard Problem Title"] == "Emergency Network"
+    assert team_h["Wildcard Final Price / Winning Bid"] == "305"
     assert team_h["Final Problem Number"] == "WC-2"
     assert team_h["Final Problem Description"] == "Wildcard description"
     wildcard_workbook = client.get("/admin/rounds/wildcard/assignments/export", headers=admin_headers)
@@ -227,6 +233,7 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     wildcard_by_team = {row["Team Name"]: row for row in wildcard_rows}
     assert wildcard_by_team["Team H"]["Round 1 Problem Number"] == "R1-2"
     assert wildcard_by_team["Team H"]["Wildcard Problem Number"] == "WC-2"
+    assert wildcard_by_team["Team H"]["Wildcard Final Price / Winning Bid"] == 305
     assert wildcard_by_team["Team A"]["Wildcard Problem Number"] in (None, "")
 
     reset = client.post("/admin/event-data/reset", headers=admin_headers, json={"confirmation": "RESET EVENT"})

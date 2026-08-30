@@ -11,6 +11,8 @@ export default function ParticipantLayout() {
   const { logout } = useAuth()
   const stage = getStageRoute(dashboard?.eventState ?? 'WAITING')
   const [now, setNow] = useState(Date.now())
+  const [logoutWorking, setLogoutWorking] = useState(false)
+  const [logoutError, setLogoutError] = useState('')
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)
     return () => window.clearInterval(timer)
@@ -19,6 +21,17 @@ export default function ParticipantLayout() {
   const stale = isSyncStale({ documentHidden, refreshPending, staleSeconds })
   const connectionLabel = socketStatus === 'connected' ? 'Connected' : socketStatus === 'reconnected' ? 'Reconnected' : socketStatus === 'error' ? 'Connection error' : 'Reconnecting…'
   const apiLabel = apiStatus === 'healthy' ? 'API healthy' : apiStatus === 'degraded' ? 'API degraded' : apiStatus === 'offline' ? 'API offline' : 'API checking'
+  const handleLogout = async () => {
+    setLogoutWorking(true)
+    setLogoutError('')
+    try {
+      await logout()
+    } catch {
+      setLogoutError('Logout could not reach the event server. You remain signed in; check your connection and try again.')
+    } finally {
+      setLogoutWorking(false)
+    }
+  }
 
   return (
     <div className="app-shell">
@@ -41,10 +54,11 @@ export default function ParticipantLayout() {
               <em>{dashboard?.isLeader ? 'Team leader' : 'Team member'}</em>
             </span>
             <strong>Coins: {dashboard?.wallet.balance.toLocaleString() ?? '—'}</strong>
-            <button className="button button--secondary" type="button" onClick={() => void logout()}>Logout</button>
+            <button className="button button--secondary" type="button" disabled={logoutWorking} onClick={() => void handleLogout()}>{logoutWorking ? 'Logging out…' : 'Logout'}</button>
           </div>
         </div>
       </header>
+      {logoutError && <div className="participant-stale-warning" role="alert"><strong>Logout incomplete.</strong> {logoutError}</div>}
       {stale && <div className="participant-stale-warning" role="alert"><strong>Live state may be stale.</strong> Last successful API synchronization: {staleSeconds === null ? 'not yet completed' : `${staleSeconds} seconds ago`}. Dashboard polling is recovering; the live connection is tracked separately.</div>}
       <div className="workspace">
         <StageNavigation />

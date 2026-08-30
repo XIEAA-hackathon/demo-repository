@@ -57,7 +57,9 @@ def test_imported_password_lifecycle_and_resets(client, admin_headers, db):
     initial_login = _login(client, "leader.test@example.com", "Alpha@123")
     assert initial_login.status_code == 200
     initial_headers = {"Authorization": f"Bearer {initial_login.json()['access_token']}"}
-    assert _login(client, "member.test@example.com", "MemberInitial@123").status_code == 200
+    initial_member_login = _login(client, "member.test@example.com", "MemberInitial@123")
+    assert initial_member_login.status_code == 200
+    initial_member_headers = {"Authorization": f"Bearer {initial_member_login.json()['access_token']}"}
 
     stored = db.query(RegistrationImportRow).one()
     assert "Alpha@123" not in stored.source_values_json
@@ -68,11 +70,25 @@ def test_imported_password_lifecycle_and_resets(client, admin_headers, db):
     assert changed.status_code == 200, changed.text
     assert client.get("/participant/dashboard", headers=initial_headers).status_code == 401
     assert _login(client, "leader.test@example.com", "Alpha@123").status_code == 401
-    assert _login(client, "leader.test@example.com", "AlphaNew@456").status_code == 200
+    changed_login = _login(client, "leader.test@example.com", "AlphaNew@456")
+    assert changed_login.status_code == 200
+    changed_headers = {"Authorization": f"Bearer {changed_login.json()['access_token']}"}
+    assert client.get("/participant/dashboard", headers=initial_member_headers).status_code == 401
+    changed_member_login = _login(client, "member.test@example.com", "MemberInitial@123")
+    assert changed_member_login.status_code == 200
+    changed_member_headers = {
+        "Authorization": f"Bearer {changed_member_login.json()['access_token']}"
+    }
 
     blank = _import(client, admin_headers, _registration_csv("", ""))
     assert blank.status_code == 200, blank.text
     assert blank.json()["rows_failed"] == 0
+    assert client.get("/participant/dashboard", headers=changed_headers).status_code == 200
+    assert client.get("/participant/dashboard", headers=changed_member_headers).status_code == 200
+    assert _login(client, "leader.test@example.com", "AlphaNew@456").status_code == 409
+    assert _login(client, "member.test@example.com", "MemberInitial@123").status_code == 409
+    assert client.post("/logout", headers=changed_headers).status_code == 200
+    assert client.post("/logout", headers=changed_member_headers).status_code == 200
     assert _login(client, "leader.test@example.com", "AlphaNew@456").status_code == 200
     assert _login(client, "member.test@example.com", "MemberInitial@123").status_code == 200
 
@@ -83,7 +99,9 @@ def test_imported_password_lifecycle_and_resets(client, admin_headers, db):
     manual = _set_password(client, admin_headers, leader["user_id"], "Manual@789")
     assert manual.status_code == 200, manual.text
     assert _login(client, "leader.test@example.com", "AlphaNew@456").status_code == 401
-    assert _login(client, "leader.test@example.com", "Manual@789").status_code == 200
+    manual_login = _login(client, "leader.test@example.com", "Manual@789")
+    assert manual_login.status_code == 200
+    manual_headers = {"Authorization": f"Bearer {manual_login.json()['access_token']}"}
 
     reset_event = client.post(
         "/admin/event-data/reset",
@@ -92,7 +110,8 @@ def test_imported_password_lifecycle_and_resets(client, admin_headers, db):
     )
     assert reset_event.status_code == 200, reset_event.text
     assert _login(client, "leader.test@example.com", "AlphaNew@456").status_code == 401
-    assert _login(client, "leader.test@example.com", "Manual@789").status_code == 200
+    assert client.get("/participant/dashboard", headers=manual_headers).status_code == 200
+    assert _login(client, "leader.test@example.com", "Manual@789").status_code == 409
 
     db.query(GameConfig).one().state = "SUBMISSION"
     db.commit()

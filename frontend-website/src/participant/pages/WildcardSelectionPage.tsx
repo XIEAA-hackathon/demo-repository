@@ -47,6 +47,7 @@ export default function WildcardSelectionPage() {
   if (!dashboard) return null
   const permissions = getParticipantPermissions(dashboard)
   const wildcard = dashboard.wildcard
+  const selectionActive = dashboard.eventState === 'WILDCARD_SELECTION' && Boolean(wildcard?.isSelectionTurn)
   if (wildcard?.status === 'selected' && dashboard.wildcardProblem) {
     const automatic = wildcard.selectionMethod === 'timeout' || wildcard.selectionMethod === 'admin_end_turn'
     return <div className="stack"><PageHeading eyebrow="Wildcard · Problem selection" title={wildcard.selectionMethod === 'timeout' ? 'Time expired' : automatic ? 'Selection turn ended' : 'Final problem confirmed'} /><Card className="center-card"><span className="confirmation-mark">{automatic ? '!' : '✓'}</span>{automatic && <p className="eyebrow">Problem automatically assigned</p>}<h2>Problem #{String(dashboard.wildcardProblem.number).padStart(2, '0')}</h2><p>{dashboard.wildcardProblem.title}</p><p className="muted">{dashboard.wildcardProblem.description}</p></Card></div>
@@ -62,7 +63,7 @@ export default function WildcardSelectionPage() {
       <div className="problem-grid">
         {problems.map((item) => (
           <label key={item.id} className={`card selectable ${selected === item.id ? 'is-selected' : ''}`}>
-            <input type="radio" name="problem" checked={selected === item.id} onChange={() => setSelected(item.id)} disabled={!permissions.canSelectWildcardProblem || !wildcard.isSelectionTurn} />
+            <input type="radio" name="problem" checked={selected === item.id} onChange={() => setSelected(item.id)} disabled={!permissions.canSelectWildcardProblem || !selectionActive} />
             <span><small>Problem #{String(item.number).padStart(2, '0')}</small><strong>{item.title}</strong><small className="wildcard-problem-description">{item.description}</small></span>
           </label>
         ))}
@@ -71,7 +72,7 @@ export default function WildcardSelectionPage() {
       {!loadingProblems && problemError && <Card className="center-card"><p className="error" role="alert">{problemError}</p><Button variant="secondary" onClick={() => void loadProblems()}>Retry</Button></Card>}
       {!loadingProblems && !problemError && !problems.length && <Card className="center-card"><p className="notice">No available problems remain. Ask the organizer to verify the Wildcard problem bank.</p><Button variant="secondary" onClick={() => void loadProblems()}>Retry</Button></Card>}
       <Card className="action-row">
-        <Button onClick={() => setPendingChange(true)} disabled={!permissions.canSelectWildcardProblem || !selected}>Choose final problem</Button>
+        <Button onClick={() => setPendingChange(true)} disabled={!permissions.canSelectWildcardProblem || !selectionActive || !selected}>Choose final problem</Button>
         {!permissions.canSelectWildcardProblem && <p className="notice">Only your team leader can confirm the problem. Teammates can view the available choices.</p>}
       </Card>
       {message && <p className={message.includes('confirmed') ? 'success' : 'error'} role="status">{message}</p>}

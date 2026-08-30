@@ -14,6 +14,7 @@ export default function WildcardApplicationPage() {
   const applied = Boolean(dashboard.wildcardApplication)
   const permissions = getParticipantPermissions(dashboard)
   const declined = dashboard.wildcard?.status === 'declined'
+  const applicationsActive = dashboard.eventState === 'WILDCARD_APPLICATION' && dashboard.wildcardApplicationsOpen
 
   const apply = async () => {
     setWorking(true)
@@ -59,7 +60,7 @@ export default function WildcardApplicationPage() {
         <Card className="center-card"><h2>Wildcard declined</h2><WaitingState text="Waiting for the event to continue…" /></Card>
       ) : (
         <Card className="center-card">
-          <div className="button-row"><Button variant="gold" onClick={() => void apply()} disabled={!permissions.isLeader || working || !dashboard.wildcardApplicationsOpen}>{working ? 'Applying…' : 'Apply for wildcard'}</Button><Button variant="secondary" onClick={() => void decline()} disabled={!permissions.isLeader || working || !dashboard.wildcardApplicationsOpen}>Do not apply</Button></div>
+          <div className="button-row"><Button variant="gold" onClick={() => void apply()} disabled={!permissions.isLeader || working || !applicationsActive}>{working ? 'Applying…' : 'Apply for wildcard'}</Button><Button variant="secondary" onClick={() => void decline()} disabled={!permissions.isLeader || working || !applicationsActive}>Do not apply</Button></div>
           {!dashboard.wildcardApplicationsOpen && <p className="notice">Wildcard applications are closed.</p>}
           {!permissions.isLeader && <p className="notice">Only your team leader can apply. You can continue watching the wildcard status here.</p>}
           {error && <p className="error" role="alert">{error}</p>}
