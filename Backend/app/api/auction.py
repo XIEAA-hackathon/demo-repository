@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import perf_counter
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, OperationalError
+from starlette.concurrency import run_in_threadpool
 from typing import List
 
-from app.core.database import get_db
-from app.models.models import Bid, Team, ProblemStatement, GameConfig, WalletTransaction, EventConfig, RoundControl
+from app.core.database import SessionLocal, get_db
+from app.models.models import Bid, Team, ProblemStatement, GameConfig, WalletTransaction, EventConfig, RoundControl, User
 from app.schemas.schemas import BidCreate, EVENT_STATES
 from app.api.auth import get_current_user, get_current_active_admin
 from app.api.websockets import manager
@@ -16,11 +21,10 @@ from app.services.event_service import (
     event_snapshot, get_or_create_game_config, get_or_create_event_config,
     get_team_for_user, ensure_leader, transition_event_state,
     pause_event_timer, resume_event_timer, adjust_event_timer,
-    get_or_create_round_control,
-    sync_expired_event_state,
+    get_or_create_round_control, sync_expired_event_state, _remaining_seconds,
 )
 from app.services.activity_log import record_event
-from app.services.bid_cooldown import bid_cooldown_rejection, bid_cooldown_remaining
+from app.services.bid_cooldown import bid_cooldown_rejection
 from app.services.round1_assignment import (
     ROUND1_FINALIZATION_LOCK,
     ROUND1_PROBLEM_CAPACITY,
@@ -28,6 +32,26 @@ from app.services.round1_assignment import (
 )
 
 router = APIRouter()
+logger = logging.getLogger("uvicorn.error")
+
+
+@dataclass(frozen=True)
+class Round1BidResult:
+    bid_id: int
+    team_id: int
+    team_name: str
+    problem_id: int
+    amount: int
+    round_number: int
+    timestamp: datetime
+    auction_lock_wait_ms: float
+    transaction_ms: float
+
+
+class BidCooldownActive(RuntimeError):
+    def __init__(self, remaining_seconds: float):
+        super().__init__("Bid cooldown active")
+        self.remaining_seconds = remaining_seconds
 
 
 def _round1_bid_leaderboard(db: Session, ps_id: int, round_number: int) -> list[dict]:
@@ -48,6 +72,186 @@ def _round1_bid_leaderboard(db: Session, ps_id: int, round_number: int) -> list[
         for rank, (row, team) in enumerate(rows, start=1)
     ]
 
+
+def _round1_bid_leaderboard_from_factory(session_factory, ps_id: int, round_number: int) -> list[dict]:
+    with session_factory() as db:
+        return _round1_bid_leaderboard(db, ps_id, round_number)
+
+
+def _sync_expired_event_state_from_factory(session_factory) -> list[str]:
+    with session_factory() as db:
+        return sync_expired_event_state(db)
+
+
+def _place_round1_bid_transaction(
+    session_factory,
+    *,
+    user_id: int,
+    session_id: str,
+    problem_id: int,
+    increment: int,
+) -> Round1BidResult:
+    """Commit one bid while holding only the auction row and bidding team row."""
+    started_at = perf_counter()
+    with session_factory() as db:
+        try:
+            # Revalidate the authenticated session in the transaction. This is
+            # a plain read and takes no row lock.
+            user = (
+                db.query(User)
+                .filter(
+                    User.id == user_id,
+                    User.credentials_active.is_(True),
+                    User.session_id == session_id,
+                )
+                .first()
+            )
+            if not user:
+                raise HTTPException(status_code=401, detail="Session expired or was revoked. Please log in again.")
+            if user.role != "leader":
+                raise HTTPException(status_code=403, detail="Only the imported team leader can perform this action.")
+            team_id = user.team_id
+            if team_id is None:
+                team_id = db.query(Team.id).filter(Team.leader_id == user.id).scalar()
+            if team_id is None:
+                raise HTTPException(status_code=403, detail="No team is linked to your account.")
+
+            # This single row serializes price decisions for the active Round 1
+            # auction. Finalization, rebids and assignments use the same first
+            # lock, so MAX(amount) does not need to lock every Bid row.
+            auction_lock_started_at = perf_counter()
+            control = (
+                db.query(RoundControl)
+                .filter(RoundControl.round_type == "ROUND1")
+                .with_for_update()
+                .one_or_none()
+            )
+            auction_lock_wait_ms = (perf_counter() - auction_lock_started_at) * 1000
+            if control is None:
+                raise HTTPException(status_code=409, detail="Round 1 is not initialized.")
+
+            config = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
+            event_config = db.query(EventConfig).order_by(EventConfig.id.asc()).first()
+            if not config or not event_config:
+                raise HTTPException(status_code=409, detail="Event configuration is unavailable.")
+            if config.state != "ROUND1_BIDDING" or _remaining_seconds(config) == 0:
+                raise HTTPException(status_code=409, detail="Round 1 bidding is not open.")
+
+            problem = db.query(ProblemStatement).filter(ProblemStatement.id == problem_id).first()
+            if (
+                not problem
+                or problem.id != control.current_problem_id
+                or problem.status != "current"
+                or control.status != "BIDDING"
+            ):
+                raise HTTPException(status_code=400, detail="Invalid or unavailable Problem Statement")
+
+            # Team is the second and final row lock. It protects this team's
+            # wallet, assignment state and cooldown against concurrent tabs.
+            team = (
+                db.query(Team)
+                .filter(Team.id == team_id)
+                .with_for_update()
+                .populate_existing()
+                .first()
+            )
+            if not team or team.leader_id != user.id:
+                raise HTTPException(status_code=403, detail="Only the imported team leader can perform this action.")
+            if team.round1_problem_id is not None or team.ps_id is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Your team already has a Round 1 problem and cannot participate in another Round 1 auction.",
+                )
+
+            round_number = config.current_round
+            highest_amount = (
+                db.query(func.max(Bid.amount))
+                .filter(Bid.ps_id == problem.id, Bid.round == round_number)
+                .scalar()
+            )
+            current_price = max(event_config.round1_minimum_bid, highest_amount or 0)
+            next_amount = current_price + increment
+            if next_amount > (team.coins or 0):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"A +{increment} bid would be {next_amount} coins and exceed "
+                        f"the team wallet balance of {team.coins}."
+                    ),
+                )
+
+            existing_bid = (
+                db.query(Bid)
+                .filter(
+                    Bid.team_id == team.id,
+                    Bid.ps_id == problem.id,
+                    Bid.round == round_number,
+                )
+                .one_or_none()
+            )
+            cooldown = event_config.bid_cooldown_seconds or 0
+            remaining = 0.0
+            if existing_bid is not None:
+                latest = existing_bid.timestamp
+                if latest is not None:
+                    latest_utc = latest if latest.tzinfo else latest.replace(tzinfo=timezone.utc)
+                    remaining = max(0.0, cooldown - (datetime.now(timezone.utc) - latest_utc).total_seconds())
+            if remaining > 0:
+                raise BidCooldownActive(remaining)
+
+            now = datetime.now(timezone.utc)
+            if existing_bid:
+                bid_row = existing_bid
+                bid_row.amount = next_amount
+                bid_row.timestamp = now
+            else:
+                bid_row = Bid(
+                    team_id=team.id,
+                    ps_id=problem.id,
+                    amount=next_amount,
+                    round=round_number,
+                    timestamp=now,
+                )
+                db.add(bid_row)
+            record_event(
+                db,
+                "round1.bid_placed",
+                actor=user,
+                entity_type="team",
+                entity_id=team.id,
+                metadata={"problem_id": problem.id, "increment": increment, "amount": next_amount},
+            )
+            db.flush()
+            result_values = {
+                "bid_id": bid_row.id,
+                "team_id": team.id,
+                "team_name": team.team_name,
+                "problem_id": problem.id,
+                "amount": next_amount,
+                "round_number": round_number,
+                "timestamp": now,
+                "auction_lock_wait_ms": auction_lock_wait_ms,
+            }
+            db.commit()
+            return Round1BidResult(
+                **result_values,
+                transaction_ms=(perf_counter() - started_at) * 1000,
+            )
+        except (HTTPException, BidCooldownActive):
+            db.rollback()
+            raise
+        except IntegrityError as exc:
+            db.rollback()
+            logger.info("Round 1 bid constraint conflict user_id=%s", user_id)
+            raise HTTPException(status_code=409, detail="The bid changed concurrently. Refresh and retry.") from exc
+        except OperationalError:
+            db.rollback()
+            logger.exception("Round 1 bid database operation failed user_id=%s", user_id)
+            raise
+        except Exception:
+            db.rollback()
+            raise
+
 def _assert_state(state: str, config: GameConfig, allowed: List[str]):
     if state not in allowed:
         raise HTTPException(status_code=409, detail=f"Action not allowed in state '{state}'. Allowed: {allowed}")
@@ -55,97 +259,83 @@ def _assert_state(state: str, config: GameConfig, allowed: List[str]):
 # ---------------------------------------------------------------- Bidding
 
 @router.post("/bid")
-async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
-    # Leader-only: identity comes from imported registration data
-    team = ensure_leader(db, current_user)
-    sync_expired_event_state(db)
-    config = get_or_create_game_config(db)
-    event_config = get_or_create_event_config(db)
+async def place_bid(
+    request: Request,
+    bid: BidCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    request_started_at = perf_counter()
+    user_id = int(current_user.id)
+    session_id = str(current_user.session_id)
+    # Authentication has completed. Return its connection before waiting on
+    # the auction lock or doing any post-commit work.
+    db.close()
+    session_factory = getattr(request.app.state, "session_factory", SessionLocal)
 
-    _assert_state(config.state, config, ["ROUND1_BIDDING"])
+    # This is a cheap non-locking read for active auctions. Only an actually
+    # expired timer enters the short RoundControl -> GameConfig transition.
+    await run_in_threadpool(_sync_expired_event_state_from_factory, session_factory)
 
-    if team.round1_problem_id is not None or team.ps_id is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="Your team already has a Round 1 problem and cannot participate in another Round 1 auction.",
-        )
-
-    control = get_or_create_round_control(db, "ROUND1")
-    # Use the same lock order as finalization: round control, problem, team,
-    # then bids. Locking the singleton control serializes the price decision so
-    # concurrent requests cannot calculate from the same stale highest bid.
-    control = (
-        db.query(RoundControl)
-        .filter(RoundControl.id == control.id)
-        .with_for_update()
-        .one()
-    )
-    ps = db.query(ProblemStatement).filter(ProblemStatement.id == bid.ps_id).with_for_update().first()
-    team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
-    if not ps or ps.id != control.current_problem_id or ps.status != "current":
-        raise HTTPException(status_code=400, detail="Invalid or unavailable Problem Statement")
-    auction_bids = db.query(Bid).filter(
-        Bid.ps_id == ps.id,
-        Bid.round == config.current_round,
-    ).with_for_update().all()
-    current_price = max(
-        [event_config.round1_minimum_bid, *(row.amount for row in auction_bids)],
-    )
-    next_amount = current_price + bid.increment
-    if next_amount > team.coins:
-        raise HTTPException(
-            status_code=400,
-            detail=f"A +{bid.increment} bid would be {next_amount} coins and exceed the team wallet balance of {team.coins}.",
-        )
-
-    existing_bid = next((row for row in auction_bids if row.team_id == team.id), None)
-
-    cooldown = event_config.bid_cooldown_seconds or 0
-    remaining = bid_cooldown_remaining(
-        db,
-        team.id,
-        cooldown,
-        round_type="ROUND1",
-        problem_id=ps.id,
-        round_number=config.current_round,
-    )
-    if remaining > 0:
-        return bid_cooldown_rejection(remaining)
-
-    now = datetime.now(timezone.utc)
-    if existing_bid:
-        existing_bid.amount = next_amount
-        existing_bid.timestamp = now
-    else:
-        db.add(Bid(team_id=team.id, ps_id=ps.id, amount=next_amount, round=config.current_round, timestamp=now))
-    record_event(db, "round1.bid_placed", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": ps.id, "increment": bid.increment, "amount": next_amount})
     try:
-        db.commit()
-    except (IntegrityError, OperationalError) as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="The bid changed concurrently. Refresh and retry.") from exc
+        result = await run_in_threadpool(
+            _place_round1_bid_transaction,
+            session_factory,
+            user_id=user_id,
+            session_id=session_id,
+            problem_id=bid.ps_id,
+            increment=bid.increment,
+        )
+    except BidCooldownActive as exc:
+        return bid_cooldown_rejection(exc.remaining_seconds)
+    try:
+        leaderboard = await run_in_threadpool(
+            _round1_bid_leaderboard_from_factory,
+            session_factory,
+            result.problem_id,
+            result.round_number,
+        )
+    except Exception:
+        logger.exception("Post-commit Round 1 leaderboard refresh failed bid_id=%s", result.bid_id)
+        leaderboard = []
 
     payload = {
-        "team_name": team.team_name,
-        "team_id": team.id,
-        "ps_id": ps.id,
-        "amount": next_amount,
+        "team_name": result.team_name,
+        "team_id": result.team_id,
+        "ps_id": result.problem_id,
+        "amount": result.amount,
         "round": "ROUND1",
         "bid": {
-            "id": existing_bid.id if existing_bid else f"{ps.id}-{team.id}",
-            "team_id": team.id,
-            "ps_id": ps.id,
-            "amount": next_amount,
-            "round": config.current_round,
-            "timestamp": now.isoformat(),
+            "id": result.bid_id,
+            "team_id": result.team_id,
+            "ps_id": result.problem_id,
+            "amount": result.amount,
+            "round": result.round_number,
+            "timestamp": result.timestamp.isoformat(),
         },
-        "leaderboard": _round1_bid_leaderboard(db, ps.id, config.current_round),
+        "leaderboard": leaderboard,
     }
-    db.close()
-    await manager.broadcast_event("bid_updated", {
-        **payload,
-    })
-    return {"message": "Bid placed successfully. Coins are not deducted yet.", "increment": bid.increment, "amount": next_amount}
+    queued = manager.publish_event("bid_updated", payload)
+    response.headers["Server-Timing"] = (
+        f"auction-lock;dur={result.auction_lock_wait_ms:.2f}, "
+        f"db-transaction;dur={result.transaction_ms:.2f}"
+    )
+    logger.info(
+        "Round 1 bid timing bid_id=%s team_id=%s auction_lock_wait_ms=%.2f "
+        "transaction_ms=%.2f total_ms=%.2f broadcast_queued=%s",
+        result.bid_id,
+        result.team_id,
+        result.auction_lock_wait_ms,
+        result.transaction_ms,
+        (perf_counter() - request_started_at) * 1000,
+        queued,
+    )
+    return {
+        "message": "Bid placed successfully. Coins are not deducted yet.",
+        "increment": bid.increment,
+        "amount": result.amount,
+    }
 
 @router.get("/bid-history")
 def get_bid_history(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
@@ -186,7 +376,7 @@ async def finalize_round_one(
         ranked_bids = db.query(Bid).filter(
             Bid.ps_id == ps.id,
             Bid.round == config.current_round,
-        ).order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).with_for_update().all()
+        ).order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).all()
 
         existing_assignment_count = db.query(Team).filter(Team.round1_problem_id == ps.id).count()
         winner_count = max(0, ROUND1_PROBLEM_CAPACITY - existing_assignment_count)

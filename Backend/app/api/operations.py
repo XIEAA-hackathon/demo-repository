@@ -255,12 +255,12 @@ async def development_reset(
     game = get_or_create_game_config(db)
     game.state = "WAITING"
     game.current_round = 1
-    game.phase_started_at = datetime.utcnow()
+    game.phase_started_at = datetime.now(timezone.utc)
     game.auction_timer_end = None
     game.timer_paused = False
     game.timer_paused_remaining_seconds = None
     game.timer_bias_seconds = 0
-    game.last_state_update = datetime.utcnow()
+    game.last_state_update = datetime.now(timezone.utc)
     event.submissions_open = False
     db.add_all([
         RoundControl(

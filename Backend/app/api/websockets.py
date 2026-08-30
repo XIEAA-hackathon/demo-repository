@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -38,16 +39,91 @@ def make_event(event_type: str, payload: dict[str, Any] | None = None, *, versio
 class ConnectionManager:
     """In-memory fan-out for the single-instance hackathon deployment."""
 
-    def __init__(self):
+    def __init__(self, *, queue_size: int = 256, send_timeout_seconds: float = 0.5):
         self.active_connections: dict[WebSocket, dict[str, Any]] = {}
         self._version = 0
-        self._broadcast_lock = asyncio.Lock()
+        self._queue_size = queue_size
+        self._send_timeout_seconds = send_timeout_seconds
+        self._broadcast_queue: asyncio.Queue | None = None
+        self._broadcast_worker: asyncio.Task | None = None
+        self._worker_loop: asyncio.AbstractEventLoop | None = None
+        self._send_locks: dict[WebSocket, asyncio.Lock] = {}
+
+    def start(self) -> None:
+        """Start one bounded, ordered fan-out worker for the current event loop."""
+        loop = asyncio.get_running_loop()
+        if (
+            self._broadcast_worker is not None
+            and not self._broadcast_worker.done()
+            and self._worker_loop is loop
+        ):
+            return
+        self._broadcast_queue = asyncio.Queue(maxsize=self._queue_size)
+        self._worker_loop = loop
+        self._broadcast_worker = loop.create_task(
+            self._run_broadcast_worker(),
+            name="websocket-broadcast",
+        )
+
+    async def stop(self) -> None:
+        worker = self._broadcast_worker
+        if worker is not None and not worker.done():
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
+        self._broadcast_worker = None
+        self._broadcast_queue = None
+        self._worker_loop = None
+
+    async def wait_for_pending(self) -> None:
+        """Wait until events already accepted by the bounded queue are delivered."""
+        if self._broadcast_queue is not None:
+            await self._broadcast_queue.join()
+
+    async def _run_broadcast_worker(self) -> None:
+        assert self._broadcast_queue is not None
+        while True:
+            event_type, payload, exclude, roles, completion = await self._broadcast_queue.get()
+            try:
+                await self._deliver_broadcast(event_type, payload, exclude=exclude, roles=roles)
+                if completion is not None and not completion.done():
+                    completion.set_result(None)
+            except Exception as exc:
+                logger.exception("WebSocket broadcast worker failed event_type=%s", event_type)
+                if completion is not None and not completion.done():
+                    completion.set_exception(exc)
+            finally:
+                self._broadcast_queue.task_done()
+
+    def publish_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        exclude: set[WebSocket] | None = None,
+        roles: set[str] | None = None,
+    ) -> bool:
+        """Queue a committed hot-path event without waiting on client sockets."""
+        self.start()
+        assert self._broadcast_queue is not None
+        try:
+            self._broadcast_queue.put_nowait((event_type, payload, exclude, roles, None))
+            return True
+        except asyncio.QueueFull:
+            logger.error(
+                "WebSocket broadcast queue full; dropped event_type=%s queue_size=%s",
+                event_type,
+                self._queue_size,
+            )
+            return False
 
     async def connect(self, websocket: WebSocket, identity: dict[str, Any]):
         await websocket.accept()
         self.active_connections[websocket] = identity
+        self._send_locks.setdefault(websocket, asyncio.Lock())
 
     def disconnect(self, websocket: WebSocket) -> dict[str, Any] | None:
+        self._send_locks.pop(websocket, None)
         return self.active_connections.pop(websocket, None)
 
     def participant_team_ids(self) -> set[int]:
@@ -79,10 +155,12 @@ class ConnectionManager:
             self.disconnect(websocket)
             return False
         try:
-            await asyncio.wait_for(
-                websocket.send_json(make_event(event_type, payload, version=self._version)),
-                timeout=2.0,
-            )
+            lock = self._send_locks.setdefault(websocket, asyncio.Lock())
+            async with lock:
+                await asyncio.wait_for(
+                    websocket.send_json(make_event(event_type, payload, version=self._version)),
+                    timeout=self._send_timeout_seconds,
+                )
             return True
         except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError):
             self.disconnect(websocket)
@@ -96,28 +174,49 @@ class ConnectionManager:
         exclude: set[WebSocket] | None = None,
         roles: set[str] | None = None,
     ):
-        async with self._broadcast_lock:
-            # The shared version tracks events every client is eligible to
-            # receive. Admin-only presence messages must not create apparent
-            # gaps that force all participant clients to reconcile.
-            if roles is None:
-                self._version += 1
-            message = make_event(event_type, payload, version=self._version)
-            connections = [
-                connection
-                for connection, identity in self.active_connections.items()
-                if (not exclude or connection not in exclude)
-                and (roles is None or identity.get("role") in roles)
-            ]
+        self.start()
+        assert self._broadcast_queue is not None
+        completion = asyncio.get_running_loop().create_future()
+        await self._broadcast_queue.put((event_type, payload, exclude, roles, completion))
+        await completion
 
-            async def send(connection: WebSocket) -> WebSocket | None:
-                try:
-                    await asyncio.wait_for(connection.send_json(message), timeout=2.0)
-                    return None
-                except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError):
-                    return connection
+    async def _deliver_broadcast(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None,
+        *,
+        exclude: set[WebSocket] | None,
+        roles: set[str] | None,
+    ) -> None:
+        # The shared version tracks events every client is eligible to receive.
+        # Admin-only presence messages must not create participant version gaps.
+        if roles is None:
+            self._version += 1
+        message = make_event(event_type, payload, version=self._version)
+        connections = [
+            connection
+            for connection, identity in self.active_connections.items()
+            if (not exclude or connection not in exclude)
+            and (roles is None or identity.get("role") in roles)
+        ]
 
-            dead = [connection for connection in await asyncio.gather(*(send(connection) for connection in connections)) if connection]
+        async def send(connection: WebSocket) -> WebSocket | None:
+            try:
+                lock = self._send_locks.setdefault(connection, asyncio.Lock())
+                async with lock:
+                    await asyncio.wait_for(
+                        connection.send_json(message),
+                        timeout=self._send_timeout_seconds,
+                    )
+                return None
+            except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError):
+                return connection
+
+        dead = [
+            connection
+            for connection in await asyncio.gather(*(send(connection) for connection in connections))
+            if connection
+        ]
         for connection in dead:
             self.disconnect(connection)
 

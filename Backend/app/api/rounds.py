@@ -722,7 +722,14 @@ async def rebid_problem(
 
 @router.post("/admin/rounds/round-1/end")
 async def end_round_one(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
-    control = get_or_create_round_control(db, "ROUND1")
+    unlocked_control = get_or_create_round_control(db, "ROUND1")
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.id == unlocked_control.id)
+        .with_for_update()
+        .populate_existing()
+        .one()
+    )
     if control.ended:
         logger.info("Duplicate Round 1 end request ignored; the round is already closed.")
         return _round_payload(db, ROUND_META["round-1"])

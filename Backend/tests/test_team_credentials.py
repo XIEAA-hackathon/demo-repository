@@ -142,13 +142,13 @@ def test_only_team_leader_controls_mutations(client, admin_headers, db):
     assert member_dashboard["isLeader"] is False
 
     config.state = "WILDCARD_APPLICATION"
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     wildcard_control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
     round_one_control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one()
     round_one_control.ended = True
     wildcard_control.status = "APPLICATIONS_OPEN"
     wildcard_control.applications_open = True
-    config.auction_timer_end = datetime.utcnow() + timedelta(seconds=30)
+    config.auction_timer_end = datetime.now(timezone.utc) + timedelta(seconds=30)
     db.commit()
     assert client.post("/wildcard/apply", headers=member_headers).status_code == 403
     assert client.post("/wildcard/apply", headers=leader_headers).status_code == 200

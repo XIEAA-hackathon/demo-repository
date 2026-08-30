@@ -7,9 +7,11 @@ from sqlalchemy.orm import Session
 
 from app.models.models import (
     Bid,
+    EventConfig,
     EventActivityLog,
     ExchangeRequest,
     FinalResult,
+    GameConfig,
     Member,
     ProblemStatement,
     RegistrationImport,
@@ -159,11 +161,11 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
     """Stage an event-only reset without touching account credentials or identities."""
     event = get_or_create_event_config(db)
     game = get_or_create_game_config(db)
-    # Match the mutation lock order used by bidding: game, round controls,
-    # event configuration, then teams. This prevents a reset from racing a bid,
-    # winner charge, assignment, or timer transition in another worker.
-    game = db.query(GameConfig).filter(GameConfig.id == game.id).with_for_update().one()
+    # Round controls are the first serialization point for auction mutations.
+    # Lock them before global configuration and teams to match bidding, expiry,
+    # finalization and assignment operations.
     db.query(RoundControl).order_by(RoundControl.id.asc()).with_for_update().all()
+    game = db.query(GameConfig).filter(GameConfig.id == game.id).with_for_update().one()
     event = db.query(EventConfig).filter(EventConfig.id == event.id).with_for_update().one()
     locked_teams = db.query(Team).order_by(Team.id.asc()).with_for_update().all()
 

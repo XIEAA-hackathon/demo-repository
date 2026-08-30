@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.concurrency import run_in_threadpool
 from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging, management
 from app.core.database import initialize_database, SessionLocal
 from app.models import models
@@ -47,8 +48,8 @@ def validate_startup_configuration() -> None:
             raise RuntimeError("ENABLE_EVENT_RESET must be false in production.")
 
 
-async def process_expiry_cycle(session_factory=SessionLocal, connection_manager=manager) -> list[str]:
-    """Persist one expiry cycle, then publish its committed authoritative snapshot."""
+def _process_expiry_database_cycle(session_factory) -> tuple[list[str], dict | None, dict | None]:
+    """Run synchronous SQLAlchemy expiry work outside the asyncio event loop."""
     actions: list[str] = []
     wildcard_assignment = None
     snapshot = None
@@ -65,6 +66,15 @@ async def process_expiry_cycle(session_factory=SessionLocal, connection_manager=
         raise
     finally:
         db.close()
+    return actions, wildcard_assignment, snapshot
+
+
+async def process_expiry_cycle(session_factory=SessionLocal, connection_manager=manager) -> list[str]:
+    """Persist one expiry cycle, then publish its committed authoritative snapshot."""
+    actions, wildcard_assignment, snapshot = await run_in_threadpool(
+        _process_expiry_database_cycle,
+        session_factory,
+    )
 
     # All database work is committed and the session is closed before network I/O.
     if wildcard_assignment:
@@ -125,6 +135,7 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    manager.start()
     worker = asyncio.create_task(expiry_worker(), name="event-timer-expiry")
     try:
         yield
@@ -132,6 +143,7 @@ async def lifespan(app: FastAPI):
         worker.cancel()
         with suppress(asyncio.CancelledError):
             await worker
+        await manager.stop()
 
 app = FastAPI(title="Hackathon Auction Platform API", lifespan=lifespan)
 

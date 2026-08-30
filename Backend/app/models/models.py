@@ -153,6 +153,14 @@ class WildcardBid(Base):
     # at which that team's current final amount was reached, then team id.
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+
+Index(
+    "ix_wildcard_bids_rank",
+    WildcardBid.amount.desc(),
+    WildcardBid.timestamp.asc(),
+    WildcardBid.team_id.asc(),
+)
+
 class ExchangeRequest(Base):
     __tablename__ = "exchange_requests"
 

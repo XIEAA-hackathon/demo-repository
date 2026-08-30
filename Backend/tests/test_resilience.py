@@ -1,11 +1,11 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.orm import sessionmaker
 
 from app.core.security import get_password_hash
-from app.models.models import EventActivityLog, GameConfig, ProblemStatement, RoundControl, Team, User
+from app.models.models import EventActivityLog, EventConfig, GameConfig, ProblemStatement, RoundControl, Team, User
 from app.main import process_expiry_cycle
 from app.services.event_service import _remaining_seconds
 
@@ -68,7 +68,7 @@ def test_duplicate_leader_login_is_rejected_without_revoking_original_session(cl
 
 
 def test_backend_timer_keeps_fractional_final_second_open():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     game = GameConfig(auction_timer_end=now + timedelta(milliseconds=100))
     assert _remaining_seconds(game, now=now) == 1
     game.auction_timer_end = now
@@ -89,7 +89,7 @@ def test_natural_expiry_broadcasts_committed_snapshot_once(db):
     game = GameConfig(
         state="ROUND1_BIDDING",
         current_round=1,
-        auction_timer_end=datetime.utcnow() - timedelta(milliseconds=1),
+        auction_timer_end=datetime.now(timezone.utc) - timedelta(milliseconds=1),
     )
     db.add(game)
     db.commit()
@@ -151,7 +151,7 @@ def test_expired_round_one_bidding_rejects_late_bid_and_marks_ready(client, db):
         db.add(game)
     game.state = "ROUND1_BIDDING"
     game.current_round = 1
-    game.auction_timer_end = datetime.utcnow() - timedelta(seconds=1)
+    game.auction_timer_end = datetime.now(timezone.utc) - timedelta(seconds=1)
     db.commit()
 
     headers = _login(client, user.email, "temp-pass")
@@ -173,9 +173,10 @@ def test_bid_in_fractional_final_second_is_accepted(client, db):
     db.add(game)
     game.state = "ROUND1_BIDDING"
     game.current_round = 1
+    db.add(EventConfig())
     db.commit()
     headers = _login(client, user.email, "temp-pass")
-    game.auction_timer_end = datetime.utcnow() + timedelta(milliseconds=900)
+    game.auction_timer_end = datetime.now(timezone.utc) + timedelta(milliseconds=900)
     db.commit()
 
     response = client.post("/bid", headers=headers, json={"ps_id": problem.id, "increment": 5})
@@ -194,7 +195,7 @@ def test_manual_close_before_expiry_wins_without_auto_close_race(
     game = db.query(GameConfig).one()
     game.state = "ROUND1_BIDDING"
     game.current_round = 1
-    game.auction_timer_end = datetime.utcnow() + timedelta(milliseconds=remaining_ms)
+    game.auction_timer_end = datetime.now(timezone.utc) + timedelta(milliseconds=remaining_ms)
     db.commit()
 
     response = client.post("/admin/rounds/round-1/bidding/close", headers=admin_headers)

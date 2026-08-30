@@ -97,7 +97,7 @@ def transition_event_state(
             detail=f"Cannot transition from {config.state} to {state}. Allowed next state(s): {allowed}",
         )
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     duration = _duration_for_state(get_or_create_event_config(db), state)
     config.state = state
     if state == "WAITING" or state.startswith("ROUND1"):
@@ -147,52 +147,89 @@ def _remaining_seconds(config: GameConfig, now: datetime | None = None) -> int |
         return max(0, config.timer_paused_remaining_seconds or 0)
     if not config.auction_timer_end:
         return None
-    current_time = now or datetime.utcnow()
-    return max(0, ceil((config.auction_timer_end - current_time).total_seconds()))
+    ends_at = config.auction_timer_end
+    if ends_at.tzinfo is not None:
+        current_time = now or datetime.now(timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+    else:
+        current_time = now or datetime.now(timezone.utc).replace(tzinfo=None)
+        if current_time.tzinfo is not None:
+            current_time = current_time.astimezone(timezone.utc).replace(tzinfo=None)
+    return max(0, ceil((ends_at - current_time).total_seconds()))
 
 
 def sync_expired_event_state(db: Session) -> list[str]:
     """Persist safe timer expiry outcomes from server time.
 
-    This function is safe to call from requests and the background expiry worker.
-    It closes mutation windows but never performs a rule-sensitive winner assignment.
+    The normal path is deliberately a non-locking read. An exclusive lock is
+    taken only after the timer appears expired, and the round row is always
+    locked before GameConfig so bidding/finalization and expiry use one order.
     """
-    return _sync_expired_event_state(db)
-
-
-def _sync_expired_event_state(db: Session) -> list[str]:
     config = get_or_create_game_config(db)
-    # Serialize expiry decisions across every Uvicorn worker through PostgreSQL.
-    config = db.query(GameConfig).filter(GameConfig.id == config.id).with_for_update().one()
-    if config.timer_paused or _remaining_seconds(config) != 0:
+    round_type = {
+        "ROUND1_PREVIEW": "ROUND1",
+        "ROUND1_BIDDING": "ROUND1",
+        "WILDCARD_APPLICATION": "WILDCARD",
+        "WILDCARD_BIDDING": "WILDCARD",
+    }.get(config.state)
+    if round_type is None or config.timer_paused or _remaining_seconds(config) != 0:
+        return []
+    return _sync_expired_event_state(db, config.id, round_type)
+
+
+def _sync_expired_event_state(db: Session, config_id: int, round_type: str) -> list[str]:
+    # The RoundControl row is the serialization point shared with the auction.
+    # Lock it first; GameConfig is second everywhere a timer transition touches
+    # both rows. A re-check under the locks prevents duplicate transitions.
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.round_type == round_type)
+        .with_for_update()
+        .one_or_none()
+    )
+    if control is None:
+        logger.warning("Skipped timer expiry because %s RoundControl is missing.", round_type)
+        return []
+    config = (
+        db.query(GameConfig)
+        .filter(GameConfig.id == config_id)
+        .with_for_update()
+        .populate_existing()
+        .one()
+    )
+    expected_round_type = "ROUND1" if config.state.startswith("ROUND1_") else "WILDCARD"
+    if (
+        expected_round_type != round_type
+        or config.timer_paused
+        or _remaining_seconds(config) != 0
+    ):
+        db.commit()
         return []
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     actions: list[str] = []
     if config.state == "ROUND1_PREVIEW":
-        control = get_or_create_round_control(db, "ROUND1")
         if control.status == "PREVIEW":
             control.status = "PREVIEW_EXPIRED"
             actions.append("round1.preview_expired")
     elif config.state == "ROUND1_BIDDING":
-        control = get_or_create_round_control(db, "ROUND1")
         if control.status == "BIDDING":
             control.status = "READY"
             config.state = "ROUND1_RESULT"
             actions.append("round1.bidding_expired")
     elif config.state == "WILDCARD_APPLICATION":
-        control = get_or_create_round_control(db, "WILDCARD")
         if control.status == "APPLICATIONS_OPEN" or control.applications_open:
             control.applications_open = False
             control.status = "APPLICATIONS_CLOSED"
             actions.append("wildcard.applications_expired")
     elif config.state == "WILDCARD_BIDDING":
-        control = get_or_create_round_control(db, "WILDCARD")
         if control.status == "BIDDING_OPEN":
             control.status = "BIDDING_CLOSED"
             actions.append("wildcard.bidding_expired")
 
     if not actions:
+        db.commit()
         return []
     config.auction_timer_end = None
     config.timer_paused = False
@@ -215,7 +252,7 @@ def pause_event_timer(db: Session) -> GameConfig:
         raise HTTPException(status_code=400, detail="The current stage has no active timer.")
     config.timer_paused = True
     config.timer_paused_remaining_seconds = remaining
-    config.last_state_update = datetime.utcnow()
+    config.last_state_update = datetime.now(timezone.utc)
     db.commit()
     db.refresh(config)
     return config
@@ -226,10 +263,10 @@ def resume_event_timer(db: Session) -> GameConfig:
     if not config.timer_paused:
         raise HTTPException(status_code=409, detail="The event timer is not paused.")
     remaining = max(0, config.timer_paused_remaining_seconds or 0)
-    config.auction_timer_end = datetime.utcnow() + timedelta(seconds=remaining)
+    config.auction_timer_end = datetime.now(timezone.utc) + timedelta(seconds=remaining)
     config.timer_paused = False
     config.timer_paused_remaining_seconds = None
-    config.last_state_update = datetime.utcnow()
+    config.last_state_update = datetime.now(timezone.utc)
     db.commit()
     db.refresh(config)
     return config
@@ -247,9 +284,9 @@ def adjust_event_timer(db: Session, seconds: int) -> GameConfig:
     if config.timer_paused:
         config.timer_paused_remaining_seconds = adjusted
     else:
-        config.auction_timer_end = datetime.utcnow() + timedelta(seconds=adjusted)
+        config.auction_timer_end = datetime.now(timezone.utc) + timedelta(seconds=adjusted)
     config.timer_bias_seconds += applied_delta
-    config.last_state_update = datetime.utcnow()
+    config.last_state_update = datetime.now(timezone.utc)
     db.commit()
     db.refresh(config)
     return config

@@ -256,7 +256,7 @@ def test_selection_timeout_assigns_first_frozen_problem_and_starts_fresh_timer(c
     teams, headers = _prepare_active_selection(client, admin_headers, db)
     db.expire_all()
     control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
-    control.selection_ends_at = datetime.utcnow() - timedelta(seconds=1)
+    control.selection_ends_at = datetime.now(timezone.utc) - timedelta(seconds=1)
     db.commit()
 
     background_result = reconcile_wildcard_selection(db)
@@ -299,7 +299,7 @@ def test_manual_submit_at_expiry_has_exactly_one_assignment(client, admin_header
     requested_problem_id = choices[-1]["id"]
     db.expire_all()
     control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
-    control.selection_ends_at = datetime.utcnow() - timedelta(milliseconds=1)
+    control.selection_ends_at = datetime.now(timezone.utc) - timedelta(milliseconds=1)
     db.commit()
 
     response = client.post(f"/wildcard/select/{requested_problem_id}", headers=headers[0])
@@ -404,12 +404,12 @@ def test_equal_slot_bids_use_earlier_final_bid_timestamp(client, admin_headers, 
     game = db.query(GameConfig).first()
     game.state = "WILDCARD_BIDDING"
     game.current_round = 2
-    game.auction_timer_end = datetime.utcnow() + timedelta(seconds=60)
+    game.auction_timer_end = datetime.now(timezone.utc) + timedelta(seconds=60)
     db.commit()
 
     db.add_all([
-        WildcardBid(team_id=team1.id, amount=500, timestamp=datetime.utcnow() - timedelta(seconds=1)),
-        WildcardBid(team_id=team2.id, amount=500, timestamp=datetime.utcnow()),
+        WildcardBid(team_id=team1.id, amount=500, timestamp=datetime.now(timezone.utc) - timedelta(seconds=1)),
+        WildcardBid(team_id=team2.id, amount=500, timestamp=datetime.now(timezone.utc)),
     ])
     db.commit()
     result = client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers)

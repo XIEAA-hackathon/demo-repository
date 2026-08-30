@@ -143,7 +143,7 @@ def freeze_selection_pool(db: Session, control: RoundControl) -> list[WildcardSe
     )
     if len(problems) != slot_count:
         raise ValueError(f"Wildcard requires {slot_count} available problems but only {len(problems)} remain.")
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     rows = [
         WildcardSelectionPool(position=index, problem_id=problem.id, frozen_at=now)
         for index, problem in enumerate(problems, start=1)

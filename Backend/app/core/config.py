@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -44,6 +45,20 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def normalize_postgresql_driver(cls, value):
+        """Route common PostgreSQL URL schemes through the installed psycopg 3 driver."""
+        if not isinstance(value, str):
+            return value
+        database_url = value.strip()
+        lowered = database_url.lower()
+        if lowered.startswith("postgres://"):
+            return "postgresql+psycopg://" + database_url[len("postgres://"):]
+        if lowered.startswith("postgresql://"):
+            return "postgresql+psycopg://" + database_url[len("postgresql://"):]
+        return database_url
 
     @property
     def cors_origins(self) -> list[str]:

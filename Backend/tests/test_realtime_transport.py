@@ -114,3 +114,26 @@ def test_closed_socket_is_removed_without_interrupting_healthy_recipients():
         assert closed not in manager.active_connections
 
     asyncio.run(scenario())
+
+
+def test_hot_path_publish_is_bounded_and_does_not_wait_for_slow_socket():
+    async def scenario():
+        manager = ConnectionManager(queue_size=8, send_timeout_seconds=0.05)
+        healthy = FakeSocket()
+        slow = FakeSocket(delay=1)
+        manager.active_connections = {
+            healthy: {"role": "leader"},
+            slow: {"role": "leader"},
+        }
+
+        started = time.perf_counter()
+        assert manager.publish_event("bid_updated", {"amount": 105}) is True
+        publish_elapsed = time.perf_counter() - started
+        await manager.wait_for_pending()
+
+        assert publish_elapsed < 0.02
+        assert [message["type"] for message in healthy.messages] == ["bid_updated"]
+        assert slow not in manager.active_connections
+        await manager.stop()
+
+    asyncio.run(scenario())

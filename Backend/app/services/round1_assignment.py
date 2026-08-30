@@ -132,18 +132,6 @@ def change_round1_problem_assignment(
                 .populate_existing()
                 .one()
             )
-            team = (
-                db.query(Team)
-                .filter(Team.id == team_id)
-                .with_for_update()
-                .populate_existing()
-                .first()
-            )
-            if not team:
-                raise Round1AssignmentError("Team not found.")
-            if not team.is_approved or team.is_system_team:
-                raise Round1AssignmentError("Only approved participant teams can receive a Round 1 problem.")
-
             target = (
                 db.query(ProblemStatement)
                 .filter(
@@ -156,6 +144,19 @@ def change_round1_problem_assignment(
             )
             if not target:
                 raise Round1AssignmentError("Target problem is not eligible for manual assignment.")
+
+            # Mutation lock order is RoundControl -> ProblemStatement -> Team.
+            team = (
+                db.query(Team)
+                .filter(Team.id == team_id)
+                .with_for_update()
+                .populate_existing()
+                .first()
+            )
+            if not team:
+                raise Round1AssignmentError("Team not found.")
+            if not team.is_approved or team.is_system_team:
+                raise Round1AssignmentError("Only approved participant teams can receive a Round 1 problem.")
 
             previous_problem_id = team.round1_problem_id
             previous_problem = (

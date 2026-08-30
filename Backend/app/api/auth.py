@@ -4,8 +4,10 @@ from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy import func
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from starlette.concurrency import run_in_threadpool
 from app.core.database import SessionLocal, get_db
 from app.models.models import User, Team, Member
 from app.schemas.schemas import UserCreate, UserResponse, Token, TeamCreate
@@ -209,6 +211,59 @@ def _acquire_participant_session(user: User, password_hash: str, db: Session) ->
     )
     return {"access_token": access_token, "token_type": "bearer"}, replaced_stale_session
 
+
+def _lookup_login_candidate(session_factory, login_id: str) -> tuple[int, str, str] | None:
+    with session_factory() as db:
+        candidate = db.query(User).filter(func.lower(User.email) == login_id).first()
+        if not candidate or not candidate.credentials_active:
+            return None
+        return candidate.id, candidate.role, candidate.password_hash
+
+
+def _complete_login_claim(
+    session_factory,
+    *,
+    candidate_id: int,
+    password_hash: str,
+) -> tuple[dict, bool, int, str]:
+    """Re-read mutable account state and atomically claim the authenticated session."""
+    with session_factory() as db:
+        user = (
+            db.query(User)
+            .filter(
+                User.id == candidate_id,
+                User.credentials_active.is_(True),
+                User.password_hash == password_hash,
+            )
+            .first()
+        )
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if user.role == "display":
+            raise HTTPException(status_code=403, detail="Use the dedicated leaderboard display login.")
+
+        participant = user.role in PARTICIPANT_ROLES
+        if participant:
+            if user.team_id:
+                team = db.query(Team).filter(Team.id == user.team_id).first()
+            else:
+                team = db.query(Team).filter(Team.leader_id == user.id).first()
+            if not team or not team.is_approved:
+                raise HTTPException(status_code=403, detail="Team is not approved by admin yet.")
+
+        user_id = user.id
+        user_role = user.role
+        if participant:
+            token, replaced_stale_session = _acquire_participant_session(user, password_hash, db)
+        else:
+            token = _issue_session(user, db)
+            replaced_stale_session = False
+        return token, replaced_stale_session, user_id, user_role
+
 @router.post("/register")
 def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends(get_db)):
     # Check if user exists
@@ -259,16 +314,16 @@ async def login(
 
     try:
         login_id = form_data.username.strip().lower()
-        lookup_started_at = perf_counter()
-        candidate = db.query(User).filter(func.lower(User.email) == login_id).first()
-        lookup_ms = (perf_counter() - lookup_started_at) * 1000
-        candidate_id = candidate.id if candidate and candidate.credentials_active else None
-        candidate_role = candidate.role if candidate_id else None
-        password_hash = candidate.password_hash if candidate_id else ""
-
-        # Release the request connection before queueing or doing CPU-bound
-        # bcrypt work. The session reopens only for the short final claim.
+        bound_factory = sessionmaker(autocommit=False, autoflush=False, bind=db.get_bind())
+        session_factory = getattr(request.app.state, "session_factory", bound_factory)
         db.close()
+        lookup_started_at = perf_counter()
+        candidate = await run_in_threadpool(_lookup_login_candidate, session_factory, login_id)
+        lookup_ms = (perf_counter() - lookup_started_at) * 1000
+        candidate_id = candidate[0] if candidate else None
+        candidate_role = candidate[1] if candidate else None
+        password_hash = candidate[2] if candidate else ""
+
         verification = PasswordVerificationResult(False, 0.0, 0.0)
         if candidate_id:
             try:
@@ -296,48 +351,16 @@ async def login(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        user = db.query(User).filter(User.id == candidate_id, User.credentials_active.is_(True)).first()
-        if not user:
-            outcome = "account_changed"
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect username or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-        candidate_role = user.role
-        if user.role == "display":
-            outcome = "display_route_required"
-            raise HTTPException(
-                status_code=403,
-                detail="Use the dedicated leaderboard display login.",
-            )
-
-        participant = user.role in PARTICIPANT_ROLES
-        if participant:
-            if user.team_id:
-                team = db.query(Team).filter(Team.id == user.team_id).first()
-            else:
-                team = db.query(Team).filter(Team.leader_id == user.id).first()
-
-            if not team or not team.is_approved:
-                outcome = "team_not_approved"
-                raise HTTPException(
-                    status_code=403,
-                    detail="Team is not approved by admin yet.",
-                )
-
-        user_id = user.id
         acquisition_started_at = perf_counter()
         try:
-            if participant:
-                token, replaced_stale_session = _acquire_participant_session(user, password_hash, db)
-            else:
-                token = _issue_session(user, db)
-                replaced_stale_session = False
+            token, replaced_stale_session, user_id, candidate_role = await run_in_threadpool(
+                _complete_login_claim,
+                session_factory,
+                candidate_id=candidate_id,
+                password_hash=password_hash,
+            )
         finally:
             acquisition_ms = (perf_counter() - acquisition_started_at) * 1000
-        db.close()
 
         if replaced_stale_session:
             await manager.disconnect_users(
