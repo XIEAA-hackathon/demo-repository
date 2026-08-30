@@ -246,6 +246,12 @@ async def place_wildcard_bid(
 async def close_wildcard_slot_bidding(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
     sync_expired_event_state(db)
     control = get_or_create_round_control(db, "WILDCARD")
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.id == control.id)
+        .with_for_update()
+        .one()
+    )
     if control.status in {"PROBLEM_SELECTION", "COMPLETE"}:
         logger.info(
             "Duplicate Wildcard bidding close ignored user_id=%s status=%s",

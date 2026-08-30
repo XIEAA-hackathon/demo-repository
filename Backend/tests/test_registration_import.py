@@ -1,15 +1,19 @@
 """Registration import: teams/members/leaders, idempotency, credentials."""
 import csv
 import io
+import logging
+import re
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
+import pandas as pd
 import pytest
+from sqlalchemy import event
 
 from app.core.config import settings
 from app.core.security import get_password_hash, verify_password
-from app.models.models import Bid, GameConfig, Member, ProblemStatement, RegistrationImportRow, RoundControl, Submission, Team, User, WalletTransaction, Wildcard, WildcardBid
+from app.models.models import Bid, GameConfig, Member, ProblemStatement, RegistrationImport, RegistrationImportRow, RoundControl, Submission, Team, User, WalletTransaction, Wildcard, WildcardBid
 from app.services.demo_seed import provision_demo_accounts
 
 
@@ -263,6 +267,362 @@ def test_registration_import_reports_duplicate_rows_and_requires_admin(client, a
         files={"file": ("registrations.csv", csv_content, "text/csv")},
     )
     assert unauthorized.status_code == 401
+
+
+def test_direct_registration_import_reuses_preloaded_records_and_commits_once(
+    client, admin_headers, db, engine, caplog
+):
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    initial_source = (
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password,Member 2 Name,Member 2 Email,Member 2 Password\n"
+        "Team Alpha,Leader Alpha,alpha@example.com,Alpha@123,Member Alpha,member.alpha@example.com,MemberAlpha@123,Member Without Email,,\n"
+        "Team Beta,Leader Beta,beta@example.com,Beta@123,Member Beta,member.beta@example.com,MemberBeta@123,,,\n"
+    ).encode()
+    initial = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("initial.csv", initial_source, "text/csv")},
+    )
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["teams_created"] == 2, initial.json()
+    alpha_hash = db.query(User).filter(User.email == "alpha@example.com").one().password_hash
+
+    repeated_source = (
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password,Member 2 Name,Member 2 Email,Member 2 Password\n"
+        "Team Alpha,Leader Alpha Updated,alpha@example.com,,Member Alpha Updated,member.alpha@example.com,,Member Without Email Updated,,,\n"
+        "Team Beta,Leader Beta,beta@example.com,,Member Beta,member.beta@example.com,,,,\n"
+        "Team Gamma,Leader Gamma,gamma@example.com,Gamma@123,Member Gamma,member.gamma@example.com,MemberGamma@123,,,\n"
+    ).encode()
+
+    selected_tables = {"teams": 0, "users": 0, "members": 0}
+    commit_count = 0
+
+    def count_selects(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if not statement.lstrip().upper().startswith("SELECT"):
+            return
+        for table_name in selected_tables:
+            if re.search(rf"\bFROM\s+{table_name}\b", statement, re.IGNORECASE):
+                selected_tables[table_name] += 1
+
+    def count_commits(_conn):
+        nonlocal commit_count
+        commit_count += 1
+
+    event.listen(engine, "before_cursor_execute", count_selects)
+    event.listen(engine, "commit", count_commits)
+    try:
+        repeated = client.post(
+            "/admin/registration/import",
+            headers=admin_headers,
+            files={"file": ("repeated.csv", repeated_source, "text/csv")},
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", count_selects)
+        event.remove(engine, "commit", count_commits)
+
+    assert repeated.status_code == 200, repeated.text
+    summary = repeated.json()
+    assert summary["teams_created"] == 1
+    assert summary["teams_updated"] == 2
+    assert summary["leaders_created"] == 1
+    assert summary["existing_leaders"] == 2
+    assert summary["members_imported"] == 4
+    assert summary["rows_failed"] == 0
+    assert selected_tables == {"teams": 1, "users": 2, "members": 1}
+    assert commit_count == 1
+
+    assert db.query(Team).count() == 3
+    assert db.query(User).filter(User.role == "leader").count() == 3
+    assert db.query(User).filter(User.role == "member").count() == 4
+    assert db.query(Member).count() == 4
+    alpha = db.query(User).filter(User.email == "alpha@example.com").one()
+    assert alpha.name == "Leader Alpha Updated"
+    assert alpha.password_hash == alpha_hash
+    assert db.query(User).filter(User.email == "member.alpha@example.com").count() == 1
+    assert db.query(User).filter(User.email.like("BTB-T%-M02%")).count() == 1
+    assert db.query(RegistrationImport).count() == 2
+    assert db.query(RegistrationImportRow).count() == 5
+
+    credentials = client.get(
+        f"/admin/registration/import/download/{summary['download_token']}",
+        headers=admin_headers,
+    )
+    assert credentials.status_code == 200
+    assert credentials.headers["content-type"].startswith("text/csv")
+
+    duplicate_source = (
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password\n"
+        "Team Delta,Leader Delta,delta@example.com,Delta@123,Wrong Team Member,member.alpha@example.com,\n"
+    ).encode()
+    duplicate = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("duplicate.csv", duplicate_source, "text/csv")},
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json()["teams_processed"] == 0
+    assert any(
+        "belongs to another account or team" in error["message"]
+        for error in duplicate.json()["errors"]
+    )
+    assert db.query(User).filter(User.email == "delta@example.com").count() == 0
+
+    password_update_source = (
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password\n"
+        "Team Alpha,Leader Alpha Updated,alpha@example.com,AlphaNew@123,Member Alpha Updated,member.alpha@example.com,\n"
+    ).encode()
+    password_update = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("password-update.csv", password_update_source, "text/csv")},
+    )
+    assert password_update.status_code == 200, password_update.text
+    db.expire_all()
+    updated_alpha = db.query(User).filter(User.email == "alpha@example.com").one()
+    assert updated_alpha.password_hash != alpha_hash
+    assert verify_password("AlphaNew@123", updated_alpha.password_hash)
+
+    timing_messages = [record.getMessage() for record in caplog.records if "Registration import" in record.getMessage()]
+    for stage in (
+        "file_read", "parse_total", "pandas_parse", "column_normalization",
+        "validation", "db_preload", "server_password_hashing", "db_processing",
+        "credential_export", "commit", "total",
+    ):
+        assert any(f"stage={stage}" in message for message in timing_messages)
+    assert any("rows=3 valid=3" in message for message in timing_messages)
+
+
+def _registration_frame_bytes(frame: pd.DataFrame, suffix: str) -> bytes:
+    if suffix == ".csv":
+        return frame.to_csv(index=False).encode("utf-8")
+    output = BytesIO()
+    frame.to_excel(output, index=False, engine="openpyxl")
+    return output.getvalue()
+
+
+@pytest.mark.parametrize("suffix", [".csv", ".xlsx"])
+def test_pandas_registration_imports_plaintext_csv_and_xlsx(
+    suffix, client, admin_headers, db
+):
+    frame = pd.DataFrame([{
+        "Team Name": f"Pandas Team {suffix}",
+        "Leader Name": "Pandas Leader",
+        "Leader Email": f"leader-{suffix[1:]}@pandas.test",
+        "Leader Password": "LeaderPlain@123",
+        "Member 1 Name": "Pandas Member",
+        "Member 1 Email": f"member-{suffix[1:]}@pandas.test",
+        "Member 1 Password": "MemberPlain@123",
+    }])
+    response = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": (f"registration{suffix}", _registration_frame_bytes(frame, suffix))},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["teams_created"] == 1
+    assert response.json()["leaders_created"] == 1
+    assert response.json()["members_imported"] == 1
+    leader = db.query(User).filter(User.email == f"leader-{suffix[1:]}@pandas.test").one()
+    member = db.query(User).filter(User.email == f"member-{suffix[1:]}@pandas.test").one()
+    assert verify_password("LeaderPlain@123", leader.password_hash)
+    assert verify_password("MemberPlain@123", member.password_hash)
+    assert leader.team_id == member.team_id
+
+
+def test_hash_columns_take_priority_and_never_export_hashes(client, admin_headers, db, caplog):
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    passwords = {
+        "hash_only_leader": "HashOnlyLeader@123",
+        "hash_only_member": "HashOnlyMember@123",
+        "priority_leader": "PriorityLeader@123",
+        "priority_member": "PriorityMember@123",
+        "mixed_member": "MixedMember@123",
+    }
+    hashes = {name: get_password_hash(password) for name, password in passwords.items()}
+    frame = pd.DataFrame([
+        {
+            "Team Name": "Hash Only Team",
+            "Leader Name": "Hash Only Leader",
+            "Leader Email": "hash-only-leader@test.com",
+            "Leader Password Hash": hashes["hash_only_leader"],
+            "Member 1 Name": "Hash Only Member",
+            "Member 1 Email": "hash-only-member@test.com",
+            "Member 1 Password Hash": hashes["hash_only_member"],
+        },
+        {
+            "Team Name": "Hash Priority Team",
+            "Leader Name": "Hash Priority Leader",
+            "Leader Email": "hash-priority-leader@test.com",
+            "Leader Password": "WrongLeaderPlaintext@123",
+            "Leader Password Hash": hashes["priority_leader"],
+            "Member 1 Name": "Hash Priority Member",
+            "Member 1 Email": "hash-priority-member@test.com",
+            "Member 1 Password": "WrongMemberPlaintext@123",
+            "Member 1 Password Hash": hashes["priority_member"],
+        },
+        {
+            "Team Name": "Mixed Credential Team",
+            "Leader Name": "Mixed Leader",
+            "Leader Email": "mixed-leader@test.com",
+            "Leader Password": "MixedLeaderPlain@123",
+            "Leader Password Hash": "",
+            "Member 1 Name": "Mixed Member",
+            "Member 1 Email": "mixed-member@test.com",
+            "Member 1 Password Hash": hashes["mixed_member"],
+        },
+    ])
+    source = _registration_frame_bytes(frame, ".xlsx")
+    imported = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("hashes.xlsx", source, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert imported.status_code == 200, imported.text
+    assert imported.json()["teams_created"] == 3
+    assert imported.json()["participant_accounts_created"] == 3
+
+    expected_passwords = {
+        "hash-only-leader@test.com": passwords["hash_only_leader"],
+        "hash-only-member@test.com": passwords["hash_only_member"],
+        "hash-priority-leader@test.com": passwords["priority_leader"],
+        "hash-priority-member@test.com": passwords["priority_member"],
+        "mixed-leader@test.com": "MixedLeaderPlain@123",
+        "mixed-member@test.com": passwords["mixed_member"],
+    }
+    for email, password in expected_passwords.items():
+        account = db.query(User).filter(User.email == email).one()
+        assert account.credentials_active is True
+        assert verify_password(password, account.password_hash)
+    assert not verify_password(
+        "WrongLeaderPlaintext@123",
+        db.query(User).filter(User.email == "hash-priority-leader@test.com").one().password_hash,
+    )
+    assert not verify_password(
+        "WrongMemberPlaintext@123",
+        db.query(User).filter(User.email == "hash-priority-member@test.com").one().password_hash,
+    )
+    assert client.post(
+        "/login",
+        data={"username": "hash-only-leader@test.com", "password": passwords["hash_only_leader"]},
+    ).status_code == 200
+    assert client.post(
+        "/login",
+        data={"username": "hash-only-member@test.com", "password": passwords["hash_only_member"]},
+    ).status_code == 200
+
+    completion_messages = [
+        record.getMessage() for record in caplog.records
+        if record.getMessage().startswith("Registration import completed")
+    ]
+    assert any("supplied_hashes=5 server_hashes=1" in message for message in completion_messages)
+    stored_rows = db.query(RegistrationImportRow).all()
+    assert all("password_hash" not in row.members_json for row in stored_rows)
+    assert all("$2" not in row.source_values_json for row in stored_rows)
+
+    credentials = client.get(
+        f"/admin/registration/import/download/{imported.json()['download_token']}",
+        headers=admin_headers,
+    )
+    workbook = load_workbook(BytesIO(credentials.content), data_only=True)
+    sheet = workbook.active
+    headers = [cell.value for cell in sheet[1]]
+    hash_columns = [index + 1 for index, header in enumerate(headers) if "Password Hash" in str(header)]
+    assert hash_columns
+    assert all(
+        sheet.cell(row=row, column=column).value in (None, "NOT EXPORTED")
+        for row in range(2, sheet.max_row + 1)
+        for column in hash_columns
+    )
+    workbook.close()
+
+    assignment = client.get("/admin/registration/assignments", headers=admin_headers)
+    assert assignment.status_code == 200, assignment.text
+    workbook = load_workbook(BytesIO(assignment.content), data_only=True)
+    sheet = workbook.active
+    headers = [cell.value for cell in sheet[1]]
+    hash_columns = [index + 1 for index, header in enumerate(headers) if "Password Hash" in str(header)]
+    assert all(
+        sheet.cell(row=row, column=column).value in (None, "NOT EXPORTED")
+        for row in range(2, sheet.max_row + 1)
+        for column in hash_columns
+    )
+    workbook.close()
+
+
+def test_invalid_bcrypt_hash_is_rejected_without_fallback(client, admin_headers):
+    frame = pd.DataFrame([{
+        "Team Name": "Invalid Hash Team",
+        "Leader Name": "Invalid Hash Leader",
+        "Leader Email": "invalid-hash@test.com",
+        "Leader Password": "ValidPlaintext@123",
+        "Leader Password Hash": "$2b$12$not-a-valid-bcrypt-hash",
+    }])
+    response = client.post(
+        "/admin/registration/import",
+        headers=admin_headers,
+        files={"file": ("invalid-hash.csv", _registration_frame_bytes(frame, ".csv"), "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["teams_processed"] == 0
+    assert any("structurally valid bcrypt hash" in error["message"] for error in response.json()["errors"])
+
+
+def test_eighty_team_hash_import_avoids_server_hashing_and_repeated_selects(
+    client, admin_headers, engine, caplog
+):
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    shared_hash = get_password_hash("BenchmarkHash@123")
+    rows = []
+    for number in range(1, 81):
+        rows.append({
+            "Team Name": f"Benchmark Team {number:02d}",
+            "Leader Name": f"Benchmark Leader {number:02d}",
+            "Leader Email": f"leader{number:02d}@benchmark.test",
+            "Leader Password Hash": shared_hash,
+            "Member 1 Name": f"Benchmark Member A {number:02d}",
+            "Member 1 Email": f"member-a-{number:02d}@benchmark.test",
+            "Member 1 Password Hash": shared_hash,
+            "Member 2 Name": f"Benchmark Member B {number:02d}",
+            "Member 2 Email": f"member-b-{number:02d}@benchmark.test",
+            "Member 2 Password Hash": shared_hash,
+        })
+
+    selected_tables = {"teams": 0, "users": 0, "members": 0}
+
+    def count_selects(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if not statement.lstrip().upper().startswith("SELECT"):
+            return
+        for table_name in selected_tables:
+            if re.search(rf"\bFROM\s+{table_name}\b", statement, re.IGNORECASE):
+                selected_tables[table_name] += 1
+
+    event.listen(engine, "before_cursor_execute", count_selects)
+    try:
+        imported = client.post(
+            "/admin/registration/import",
+            headers=admin_headers,
+            files={
+                "file": (
+                    "benchmark.csv",
+                    _registration_frame_bytes(pd.DataFrame(rows), ".csv"),
+                    "text/csv",
+                )
+            },
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", count_selects)
+
+    assert imported.status_code == 200, imported.text
+    assert imported.json()["teams_created"] == 80
+    assert imported.json()["leaders_created"] == 80
+    assert imported.json()["participant_accounts_created"] == 160
+    assert selected_tables == {"teams": 1, "users": 2, "members": 1}
+    completion_messages = [
+        record.getMessage() for record in caplog.records
+        if record.getMessage().startswith("Registration import completed")
+    ]
+    assert any("rows=80 valid=80" in message for message in completion_messages)
+    assert any("supplied_hashes=240 server_hashes=0" in message for message in completion_messages)
 
 
 def test_demo_csv_is_importer_compatible_and_returns_csv_credentials(client, admin_headers, db):

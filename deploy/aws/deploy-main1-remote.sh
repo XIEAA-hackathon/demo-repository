@@ -4,7 +4,7 @@ set -Eeuo pipefail
 REPO_ROOT=/home/ec2-user/demo-repository
 BACKEND_ROOT="$REPO_ROOT/Backend"
 VENV_ROOT="$BACKEND_ROOT/venv"
-DATABASE_PATH="$BACKEND_ROOT/casino_hackathon.db"
+BACKEND_ENV=/etc/casino-hackathon/backend.env
 STATIC_ROOT=/opt/casino_hackathon/current/static
 STAGING_ROOT=/home/ec2-user/deploy-staging
 BACKUP_ROOT=/opt/casino_hackathon/main1-backups
@@ -199,40 +199,44 @@ rsync -a \
   "$BACKEND_ROOT/" "$backup/backend/"
 rsync -a "$STATIC_ROOT/" "$backup/static/"
 printf '%s\n' "$previous_sha" > "$backup/deployed-sha"
-if [[ -f $DATABASE_PATH ]]; then
-  database_backup="$backup/database/casino_hackathon.db"
-  install -d -m 0750 "$(dirname "$database_backup")"
-  log "Creating and validating SQLite backup before startup schema upgrades"
-  "$VENV_ROOT/bin/python" - "$DATABASE_PATH" "$database_backup" <<'PY'
-import sqlite3
-import sys
-
-source_path, backup_path = sys.argv[1:]
-with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as source:
-    with sqlite3.connect(backup_path) as target:
-        source.backup(target)
-        result = target.execute("PRAGMA quick_check").fetchone()
-if result != ("ok",):
-    raise SystemExit(f"SQLite backup validation failed: {result!r}")
-PY
-  test -s "$database_backup"
-fi
-
 stage="BACKEND DEPENDENCIES"
 backend_changed=1
 log "Installing Backend requirements with $($VENV_ROOT/bin/python --version 2>&1)"
 "$VENV_ROOT/bin/python" -m pip install --disable-pip-version-check -r "$source_root/Backend/requirements.txt"
 
 stage="BACKEND VALIDATION"
-log "Importing app.main:app before promotion"
+log "Validating PostgreSQL configuration and importing app.main:app before promotion"
 (
   cd "$source_root/Backend"
-  DATABASE_URL="sqlite:////home/ec2-user/demo-repository/Backend/casino_hackathon.db" \
-    "$VENV_ROOT/bin/python" -c 'from app.main import app; assert app is not None'
+  "$VENV_ROOT/bin/python" - "$BACKEND_ENV" <<'PY'
+import os
+import subprocess
+import sys
+from pathlib import Path
+from sqlalchemy.engine import make_url
+
+environment_file = Path(sys.argv[1])
+if not environment_file.is_file():
+    raise SystemExit(f"Missing service environment file: {environment_file}")
+database_url = None
+for raw_line in environment_file.read_text(encoding="utf-8").splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    if key.strip() == "DATABASE_URL":
+        database_url = value.strip().strip("'\"")
+        break
+if not database_url or make_url(database_url).get_backend_name() != "postgresql":
+    raise SystemExit("The service DATABASE_URL must point to PostgreSQL before deployment.")
+environment = {**os.environ, "DATABASE_URL": database_url}
+subprocess.run([sys.executable, "-c", "from app.main import app; assert app is not None"], env=environment, check=True)
+subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], env=environment, check=True)
+PY
 )
 
 stage="BACKEND PROMOTION"
-log "Promoting tested Backend source while preserving venv, environment, and SQLite data"
+log "Promoting tested Backend source while preserving venv and environment"
 rsync -a --delete \
   --exclude '.env' --exclude 'venv/' --exclude '.venv/' \
   --exclude '*.db' --exclude '*.sqlite' --exclude '*.sqlite3' \

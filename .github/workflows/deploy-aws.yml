@@ -18,6 +18,23 @@ concurrency:
 jobs:
   test-build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: casino_test
+          POSTGRES_USER: casino_test
+          POSTGRES_PASSWORD: casino_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U casino_test -d casino_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://casino_test:casino_test@127.0.0.1:5432/casino_test
+      TEST_DATABASE_URL: postgresql+psycopg://casino_test:casino_test@127.0.0.1:5432/casino_test
     outputs:
       sha: ${{ steps.version.outputs.sha }}
     steps:
@@ -56,6 +73,7 @@ jobs:
           set -Eeuo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
+          alembic upgrade head
           pytest -q
 
       - name: Set up Node.js

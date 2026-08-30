@@ -2,10 +2,6 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 
 from openpyxl import load_workbook
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from app.core.database import Base
 from app.core.security import get_password_hash
 from app.models.models import Bid, ProblemStatement, RoundControl, Team, User, WalletTransaction
 from app.services.round1_assignment import Round1AssignmentError, change_round1_problem_assignment
@@ -255,13 +251,8 @@ def test_change_remains_available_after_round_one_completion(client, admin_heade
     assert control.ended is True and control.status == "CLOSED"
 
 
-def test_two_admin_tabs_cannot_overfill_the_final_slot(tmp_path):
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'change-problem-race.db'}",
-        connect_args={"check_same_thread": False, "timeout": 10},
-    )
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def test_two_admin_tabs_cannot_overfill_the_final_slot(session_factory):
+    factory = session_factory
     with factory() as db:
         target = _problem(db, 9)
         for index in range(4):
@@ -287,4 +278,3 @@ def test_two_admin_tabs_cannot_overfill_the_final_slot(tmp_path):
     assert sum("full (5/5)" in outcome for outcome in outcomes) == 1
     with factory() as db:
         assert db.query(Team).filter(Team.round1_problem_id == target_id).count() == 5
-    engine.dispose()

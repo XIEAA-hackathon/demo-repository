@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 from math import ceil
-from threading import RLock
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -13,7 +12,6 @@ from app.schemas.schemas import EVENT_STATES
 from app.services.activity_log import record_event
 
 logger = logging.getLogger("uvicorn.error")
-EVENT_EXPIRY_LOCK = RLock()
 
 STATE_TRANSITIONS = {
     state: ({EVENT_STATES[index + 1]} if index + 1 < len(EVENT_STATES) else set())
@@ -159,15 +157,12 @@ def sync_expired_event_state(db: Session) -> list[str]:
     This function is safe to call from requests and the background expiry worker.
     It closes mutation windows but never performs a rule-sensitive winner assignment.
     """
-    with EVENT_EXPIRY_LOCK:
-        return _sync_expired_event_state(db)
+    return _sync_expired_event_state(db)
 
 
 def _sync_expired_event_state(db: Session) -> list[str]:
     config = get_or_create_game_config(db)
-    # Serialize expiry decisions across server processes in production. SQLite
-    # ignores FOR UPDATE, so EVENT_EXPIRY_LOCK provides the equivalent guard in
-    # local/test runs.
+    # Serialize expiry decisions across every Uvicorn worker through PostgreSQL.
     config = db.query(GameConfig).filter(GameConfig.id == config.id).with_for_update().one()
     if config.timer_paused or _remaining_seconds(config) != 0:
         return []

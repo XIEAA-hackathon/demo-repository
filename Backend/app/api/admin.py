@@ -105,6 +105,21 @@ def _participant_id(db: Session, team_id: int, position: int) -> str:
     return candidate
 
 
+def _participant_id_from_users(existing_users: dict[str, User], team_id: int, position: int) -> str:
+    """Resolve an imported participant ID from the preloaded user cache."""
+    base = f"BTB-T{team_id:03d}-M{position:02d}"
+    candidate = base
+    suffix = 2
+    existing = existing_users.get(candidate.lower())
+    if existing and existing.team_id == team_id:
+        return candidate
+    while existing:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+        existing = existing_users.get(candidate.lower())
+    return candidate
+
+
 def _credential(user: User, team: Team, password: str, supplied_email: str = "") -> CredentialRow:
     return CredentialRow(
         user_id=user.id,
@@ -596,15 +611,35 @@ async def import_registrations(
     current_user: User = Depends(get_current_active_admin),
 ):
     """Import participant identities and hash passwords supplied by the Admin."""
+    total_started_at = time.perf_counter()
     filename = file.filename or "registrations.xlsx"
     _validate_registration_filename(filename)
+    file_read_started_at = time.perf_counter()
     content = await file.read()
+    logger.info(
+        "Registration import timing stage=%s duration=%.3fs",
+        "file_read",
+        time.perf_counter() - file_read_started_at,
+    )
     if not content:
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large (max 10 MB).")
 
+    parse_started_at = time.perf_counter()
     parsed = parse_registration_file(filename, content)
+    parser_timings = parsed.get("timings") or {}
+    logger.info(
+        "Registration import timing stage=%s duration=%.3fs",
+        "parse_total",
+        time.perf_counter() - parse_started_at,
+    )
+    for stage in ("pandas_parse", "column_normalization"):
+        logger.info(
+            "Registration import timing stage=%s duration=%.3fs",
+            stage,
+            parser_timings.get(stage, 0.0),
+        )
     if not parsed["rows"] and not parsed.get("row_errors"):
         raise HTTPException(status_code=400, detail="; ".join(parsed["errors"]) or "No registration rows were found.")
 
@@ -612,10 +647,36 @@ async def import_registrations(
     valid_rows = []
     errors = list(parsed.get("row_errors") or [])
 
+    preload_started_at = time.perf_counter()
+    existing_teams = {
+        team.team_name.strip().lower(): team
+        for team in db.query(Team).all()
+    }
+    existing_users = {
+        user.email.strip().lower(): user
+        for user in db.query(User).all()
+        if user.email
+    }
+    loaded_members = db.query(Member).all()
+    existing_members = {
+        member.email.strip().lower(): member
+        for member in loaded_members
+        if member.email
+    }
+    existing_members_by_team: dict[int, list[Member]] = {}
+    for member in loaded_members:
+        existing_members_by_team.setdefault(member.team_id, []).append(member)
+    logger.info(
+        "Registration import timing stage=%s duration=%.3fs",
+        "db_preload",
+        time.perf_counter() - preload_started_at,
+    )
+
+    validation_started_at = time.perf_counter()
     for row in parsed["rows"]:
         row_messages: list[str] = []
-        team = db.query(Team).filter(func.lower(Team.team_name) == row["team_name"].lower()).first()
-        leader = _user_by_login(db, row["leader_email"])
+        team = existing_teams.get(row["team_name"].strip().lower())
+        leader = existing_users.get(row["leader_email"].strip().lower())
         if leader and leader.role != "leader":
             row_messages.append(f"Leader email '{row['leader_email']}' belongs to a non-leader account.")
         if leader and leader.team_id not in (None, team.id if team else None):
@@ -623,9 +684,10 @@ async def import_registrations(
         if team and team.leader_id and (not leader or team.leader_id != leader.id):
             row_messages.append(f"Team '{row['team_name']}' already has a different leader account.")
         leader_password = row.get("leader_password") or ""
-        if not leader and not leader_password:
+        leader_password_hash = row.get("leader_password_hash") or ""
+        if not leader and not leader_password_hash and not leader_password:
             row_messages.append("Leader Password is required for a new participant account.")
-        elif leader_password:
+        elif not leader_password_hash and leader_password:
             password_error = _participant_password_error(leader_password)
             if password_error:
                 row_messages.append(f"Leader Password: {password_error}")
@@ -634,20 +696,21 @@ async def import_registrations(
             member_email = (member.get("email") or "").strip().lower()
             if not member_email:
                 continue
-            member_user = _user_by_login(db, member_email)
+            member_user = existing_users.get(member_email)
             member_password = member.get("password") or ""
+            member_password_hash = member.get("password_hash") or ""
             member_number = member.get("number") or ""
-            if not member_user and not member_password:
+            if not member_user and not member_password_hash and not member_password:
                 row_messages.append(
                     f"Member {member_number} Password is required for a new participant account."
                 )
-            elif member_password:
+            elif not member_password_hash and member_password:
                 password_error = _participant_password_error(member_password)
                 if password_error:
                     row_messages.append(f"Member {member_number} Password: {password_error}")
             if member_user and (not team or member_user.team_id != team.id):
                 row_messages.append(f"Member email '{member_email}' belongs to another account or team.")
-            member_record = db.query(Member).filter(func.lower(Member.email) == member_email).first()
+            member_record = existing_members.get(member_email)
             if member_record and (not team or member_record.team_id != team.id):
                 row_messages.append(f"Member email '{member_email}' is already assigned to another team.")
 
@@ -655,6 +718,11 @@ async def import_registrations(
             errors.extend({"row_number": row["row_number"], "message": message} for message in row_messages)
         else:
             valid_rows.append(row)
+    logger.info(
+        "Registration import timing stage=%s duration=%.3fs",
+        "validation",
+        parser_timings.get("validation", 0.0) + time.perf_counter() - validation_started_at,
+    )
 
     teams_created = 0
     teams_updated = 0
@@ -664,8 +732,21 @@ async def import_registrations(
     leader_credentials: dict[int, dict[str, str]] = {}
     participant_accounts_created = 0
     invalidated_account_ids: set[int] = set()
+    supplied_hashes_used = 0
+    server_hashes_generated = 0
+    accounts_without_credentials = 0
+    server_hashing_duration = 0.0
+
+    def hash_on_server(value: str) -> str:
+        nonlocal server_hashes_generated, server_hashing_duration
+        hashing_started_at = time.perf_counter()
+        result = get_password_hash(value)
+        server_hashing_duration += time.perf_counter() - hashing_started_at
+        server_hashes_generated += 1
+        return result
 
     try:
+        object_creation_started_at = time.perf_counter()
         import_record = RegistrationImport(
             filename=filename,
             status="committed",
@@ -676,7 +757,8 @@ async def import_registrations(
         db.add(import_record)
         db.flush()
         for row in valid_rows:
-            team = db.query(Team).filter(func.lower(Team.team_name) == row["team_name"].lower()).first()
+            team_key = row["team_name"].strip().lower()
+            team = existing_teams.get(team_key)
             if team:
                 teams_updated += 1
             else:
@@ -687,6 +769,7 @@ async def import_registrations(
                 )
                 db.add(team)
                 db.flush()
+                existing_teams[team_key] = team
                 teams_created += 1
                 db.add(WalletTransaction(
                     team_id=team.id,
@@ -697,19 +780,29 @@ async def import_registrations(
 
             leader_email = row["leader_email"].strip().lower()
             leader_password = row.get("leader_password") or ""
-            leader = _user_by_login(db, leader_email)
+            leader_password_hash = row.get("leader_password_hash") or ""
+            leader = existing_users.get(leader_email)
             if leader:
                 existing_leaders += 1
-                if leader_password:
-                    leader.password_hash = get_password_hash(leader_password)
+                if leader_password_hash or leader_password:
+                    if leader_password_hash:
+                        leader.password_hash = leader_password_hash
+                        supplied_hashes_used += 1
+                    else:
+                        leader.password_hash = hash_on_server(leader_password)
                     leader.credentials_active = True
                     clear_user_session(leader)
                     invalidated_account_ids.add(leader.id)
             else:
+                if leader_password_hash:
+                    resulting_leader_hash = leader_password_hash
+                    supplied_hashes_used += 1
+                else:
+                    resulting_leader_hash = hash_on_server(leader_password)
                 leader = User(
                     name=row["leader_name"],
                     email=leader_email,
-                    password_hash=get_password_hash(leader_password),
+                    password_hash=resulting_leader_hash,
                     role="leader",
                     team_id=team.id,
                     account_source="IMPORTED",
@@ -717,6 +810,7 @@ async def import_registrations(
                 )
                 db.add(leader)
                 db.flush()
+                existing_users[leader_email] = leader
                 leaders_created += 1
 
             leader.name = row["leader_name"]
@@ -724,8 +818,14 @@ async def import_registrations(
             leader.team_id = team.id
             team.leader_id = leader.id
             team.is_approved = True
+            if not leader.credentials_active:
+                accounts_without_credentials += 1
 
-            for existing_member in list(team.members):
+            for existing_member in existing_members_by_team.pop(team.id, []):
+                if existing_member.email:
+                    member_key = existing_member.email.strip().lower()
+                    if existing_members.get(member_key) is existing_member:
+                        existing_members.pop(member_key, None)
                 db.delete(existing_member)
             for position, member in enumerate(row["members"], start=1):
                 member_name = (member.get("name") or "").strip()
@@ -733,34 +833,58 @@ async def import_registrations(
                     continue
                 member_email = (member.get("email") or "").strip().lower() or None
                 member_password = member.get("password") or ""
-                login_id = member_email if member_email and _is_valid_email(member_email) else _participant_id(db, team.id, position)
-                member_user = _user_by_login(db, login_id)
+                member_password_hash = member.get("password_hash") or ""
+                login_id = (
+                    member_email
+                    if member_email and _is_valid_email(member_email)
+                    else _participant_id_from_users(existing_users, team.id, position)
+                )
+                login_key = login_id.strip().lower()
+                member_user = existing_users.get(login_key)
                 if not member_user:
+                    if member_password_hash:
+                        resulting_member_hash = member_password_hash
+                        supplied_hashes_used += 1
+                    elif member_password:
+                        resulting_member_hash = hash_on_server(member_password)
+                    else:
+                        resulting_member_hash = hash_on_server(secrets.token_urlsafe(48))
                     member_user = User(
                         name=member_name,
                         email=login_id,
-                        password_hash=(
-                            get_password_hash(member_password)
-                            if member_password else _disabled_password_hash()
-                        ),
+                        password_hash=resulting_member_hash,
                         role="member",
                         team_id=team.id,
                         account_source="IMPORTED",
-                        credentials_active=bool(member_password),
+                        credentials_active=bool(member_password_hash or member_password),
                     )
                     db.add(member_user)
                     db.flush()
+                    existing_users[login_key] = member_user
                     participant_accounts_created += 1
                 else:
                     member_user.name = member_name
                     member_user.role = "member"
                     member_user.team_id = team.id
-                    if member_password:
-                        member_user.password_hash = get_password_hash(member_password)
+                    if member_password_hash or member_password:
+                        if member_password_hash:
+                            member_user.password_hash = member_password_hash
+                            supplied_hashes_used += 1
+                        else:
+                            member_user.password_hash = hash_on_server(member_password)
                         member_user.credentials_active = True
                         clear_user_session(member_user)
                         invalidated_account_ids.add(member_user.id)
-                db.add(Member(team_id=team.id, member_name=member_name, email=login_id))
+                if not member_user.credentials_active:
+                    accounts_without_credentials += 1
+                new_member_record = Member(
+                    team_id=team.id,
+                    member_name=member_name,
+                    email=login_id,
+                )
+                db.add(new_member_record)
+                existing_members[login_key] = new_member_record
+                existing_members_by_team.setdefault(team.id, []).append(new_member_record)
                 members_imported += 1
 
             leader_credentials[row["row_number"]] = {
@@ -774,7 +898,11 @@ async def import_registrations(
                 leader_name=row["leader_name"],
                 leader_email=leader_email,
                 members_json=json.dumps([
-                    {key: value for key, value in member.items() if key != "password"}
+                    {
+                        key: value
+                        for key, value in member.items()
+                        if key not in {"password", "password_hash"}
+                    }
                     for member in row["members"]
                 ]),
                 status="committed",
@@ -783,10 +911,26 @@ async def import_registrations(
                 team_id=team.id,
             ))
 
+        logger.info(
+            "Registration import timing stage=%s duration=%.3fs",
+            "server_password_hashing",
+            server_hashing_duration,
+        )
+        logger.info(
+            "Registration import timing stage=%s duration=%.3fs",
+            "db_processing",
+            max(0.0, time.perf_counter() - object_creation_started_at - server_hashing_duration),
+        )
+        export_started_at = time.perf_counter()
         is_csv = filename.lower().endswith(".csv")
         output_bytes = (
             build_registration_credential_csv(content, leader_credentials)
             if is_csv else build_registration_credential_workbook(filename, content, leader_credentials)
+        )
+        logger.info(
+            "Registration import timing stage=%s duration=%.3fs",
+            "credential_export",
+            time.perf_counter() - export_started_at,
         )
         record_event(
             db,
@@ -800,7 +944,13 @@ async def import_registrations(
                 "rows_failed": len({error["row_number"] for error in errors}),
             },
         )
+        commit_started_at = time.perf_counter()
         db.commit()
+        logger.info(
+            "Registration import timing stage=%s duration=%.3fs",
+            "commit",
+            time.perf_counter() - commit_started_at,
+        )
     except Exception:
         db.rollback()
         raise
@@ -834,6 +984,23 @@ async def import_registrations(
         "leaders_created": leaders_created,
         "members_imported": members_imported,
     })
+    logger.info(
+        "Registration import completed rows=%d valid=%d teams_created=%d teams_updated=%d leaders_created=%d member_users_created=%d supplied_hashes=%d server_hashes=%d accounts_without_credentials=%d",
+        len(parsed["rows"]),
+        len(valid_rows),
+        teams_created,
+        teams_updated,
+        leaders_created,
+        participant_accounts_created,
+        supplied_hashes_used,
+        server_hashes_generated,
+        accounts_without_credentials,
+    )
+    logger.info(
+        "Registration import timing stage=%s duration=%.3fs",
+        "total",
+        time.perf_counter() - total_started_at,
+    )
     return summary
 
 
@@ -1049,6 +1216,8 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[object]],
         index for index, normalized in enumerate(normalized_headers)
         if normalized in {"leaderpassword", "leaderloginpassword", "temporarypassword"}
         or normalized.endswith("password")
+        or normalized in {"leaderhash", "passwordhash"}
+        or normalized.endswith("passwordhash")
     ]
 
     output_rows: list[list[object]] = []

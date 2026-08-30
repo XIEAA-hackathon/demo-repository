@@ -7,23 +7,21 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 
 from app.api import auth, participant, websockets
-from app.core.database import Base, get_db
+from app.core.database import get_db
 from app.core.security import get_password_hash
 from app.models.models import EventConfig, GameConfig, Team, User
 
 
-def test_idle_websockets_do_not_exhaust_the_database_pool(tmp_path):
+def test_idle_websockets_do_not_exhaust_the_database_pool(engine):
     """More sockets than pool slots must not block ordinary HTTP requests."""
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'websocket-pool.db'}",
-        connect_args={"check_same_thread": False},
+    constrained_engine = create_engine(
+        engine.url,
         poolclass=QueuePool,
         pool_size=5,
         max_overflow=0,
         pool_timeout=0.2,
     )
-    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=constrained_engine)
 
     with session_factory() as db:
         user = User(
@@ -68,9 +66,9 @@ def test_idle_websockets_do_not_exhaust_the_database_pool(tmp_path):
                     socket = sockets.enter_context(client.websocket_connect(f"/ws/auction?token={token}"))
                     assert socket.receive_json()["type"] == "event_snapshot"
 
-                assert engine.pool.checkedout() == 0
+                assert constrained_engine.pool.checkedout() == 0
                 responses = [client.get("/participant/dashboard", headers=headers) for _ in range(25)]
                 assert all(response.status_code == 200 for response in responses)
-                assert engine.pool.checkedout() == 0
+                assert constrained_engine.pool.checkedout() == 0
     finally:
-        engine.dispose()
+        constrained_engine.dispose()

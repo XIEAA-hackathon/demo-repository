@@ -1,10 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.api.websockets import manager
-from app.core.database import Base
 from app.models.models import Bid, EventConfig, GameConfig, ProblemStatement, RoundControl, Team, WalletTransaction
 from app.services.round1_assignment import manually_assign_problem
 
@@ -232,13 +228,8 @@ def test_zero_aggregate_uses_configured_base_deduction(client, admin_headers, db
     assert remaining["suggested_deduction"] == 175
 
 
-def test_two_admin_sessions_cannot_apply_the_same_assignment_twice(tmp_path):
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'round1-manual-race.db'}",
-        connect_args={"check_same_thread": False, "timeout": 10},
-    )
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def test_two_admin_sessions_cannot_apply_the_same_assignment_twice(session_factory):
+    factory = session_factory
     with factory() as db:
         db.add_all([EventConfig(), GameConfig(state="ROUND1_RESULT")])
         problem = ProblemStatement(ps_number="R1-RACE", title="Race", round=1, status="no_bids")
@@ -270,4 +261,3 @@ def test_two_admin_sessions_cannot_apply_the_same_assignment_twice(tmp_path):
             WalletTransaction.transaction_type == "ROUND1_MANUAL_ASSIGN"
         ).count() == 1
     assert sorted(idempotent_results) == [False, True]
-    engine.dispose()

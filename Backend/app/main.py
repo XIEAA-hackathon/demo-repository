@@ -95,7 +95,7 @@ async def expiry_worker() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_startup_configuration()
-    # Verify the Alembic-managed schema (fresh local SQLite may bootstrap).
+    # Verify the Alembic-managed PostgreSQL schema. Startup never mutates it.
     initialize_database()
 
     db = SessionLocal()

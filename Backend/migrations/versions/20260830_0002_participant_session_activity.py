@@ -5,7 +5,7 @@ Revises: 20260829_0001
 """
 from typing import Sequence, Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -16,6 +16,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    if context.is_offline_mode():
+        op.add_column("users", sa.Column("session_created_at", sa.DateTime(timezone=True), nullable=True))
+        op.add_column("users", sa.Column("session_last_seen_at", sa.DateTime(timezone=True), nullable=True))
+        return
     columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("users")}
     if "session_created_at" not in columns:
         op.add_column("users", sa.Column("session_created_at", sa.DateTime(timezone=True), nullable=True))
@@ -24,6 +28,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if context.is_offline_mode():
+        op.drop_column("users", "session_last_seen_at")
+        op.drop_column("users", "session_created_at")
+        return
     columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("users")}
     if "session_last_seen_at" in columns:
         op.drop_column("users", "session_last_seen_at")

@@ -89,16 +89,16 @@ DATABASE_URL="$POSTGRES_URL" ./venv/bin/alembic upgrade head
 DATABASE_URL="$POSTGRES_URL" ./venv/bin/alembic current
 ```
 
-The expected revision is `20260829_0001 (head)`.
+The expected revision is `20260830_0002 (head)`.
 
 ## 5. Validate and transfer data
 
 ```bash
 SQLITE_URL='sqlite:////home/ec2-user/demo-repository/Backend/casino_hackathon.db'
 DATABASE_URL="$POSTGRES_URL" ./venv/bin/python scripts/migrate_sqlite_to_postgres.py \
-  --sqlite-url "$SQLITE_URL" --postgres-url "$POSTGRES_URL" --dry-run
+  --sqlite-url "$SQLITE_URL" --dry-run
 DATABASE_URL="$POSTGRES_URL" ./venv/bin/python scripts/migrate_sqlite_to_postgres.py \
-  --sqlite-url "$SQLITE_URL" --postgres-url "$POSTGRES_URL" \
+  --sqlite-url "$SQLITE_URL" \
   | tee /home/ec2-user/database-backups/postgres-migration-counts.txt
 ```
 
@@ -135,25 +135,17 @@ maintenance window. After acceptance, make a PostgreSQL backup:
 pg_dump --format=custom --file=/home/ec2-user/database-backups/casino_hackathon-post-cutover.dump "$POSTGRES_URL"
 ```
 
-## 7. Roll back to SQLite
+## 7. Emergency rollback during cutover
 
-Rollback does not merge writes made after PostgreSQL cutover. If rollback is
-needed, stop traffic promptly, restore the old SQLite URL, and restart:
+Rollback does not merge writes made after PostgreSQL cutover. The current
+application intentionally rejects SQLite URLs, so an emergency rollback also
+requires restoring the last SQLite-capable application release. If rollback is
+needed, stop traffic promptly and restore that release plus its matching source
+database:
 
 ```bash
 sudo systemctl stop casino-backend.service
-sudoedit /etc/casino-hackathon/backend.env
-```
-
-Set:
-
-```dotenv
-DATABASE_URL=sqlite:////home/ec2-user/demo-repository/Backend/casino_hackathon.db
-```
-
-Then:
-
-```bash
+# Restore the pre-cutover application release and its environment configuration.
 sudo systemctl restart casino-backend.service
 curl --fail --silent --show-error http://127.0.0.1:8000/health
 curl --fail --silent --show-error http://127.0.0.1:8000/health/ready

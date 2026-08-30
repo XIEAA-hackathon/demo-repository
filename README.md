@@ -95,11 +95,9 @@ git commit -m "Describe the production change"
 git push origin main1
 ```
 
-The `main1` push runs the complete Backend test suite and builds the umbrella frontend on a GitHub-hosted runner. The repository-scoped `casino-production` runner then downloads the tested artifact on EC2, fetches the exact `origin/main1` commit, preserves the existing SQLite database, environment files, and venv, restarts `casino-backend.service`, validates `/health`, promotes the frontend into the existing `static/public`, `static/admin`, and `static/participant` layout, validates Nginx, and verifies the public routes. This outbound runner path avoids opening EC2 SSH to GitHub-hosted runner addresses.
+The `main1` push starts a disposable PostgreSQL 16 service, applies every Alembic migration, runs the complete Backend test suite, and builds the umbrella frontend on a GitHub-hosted runner. The repository-scoped `casino-production` runner then downloads the tested artifact on EC2, fetches the exact `origin/main1` commit, preserves environment files and the venv, applies PostgreSQL migrations, restarts `casino-backend.service`, validates `/health`, promotes the frontend into the existing `static/public`, `static/admin`, and `static/participant` layout, validates Nginx, and verifies the public routes. This outbound runner path avoids opening EC2 SSH to GitHub-hosted runner addresses.
 
-The current persistent database remains at:
-
-- `/home/ec2-user/demo-repository/Backend/casino_hackathon.db`
+The PostgreSQL connection is supplied only through `DATABASE_URL` in `/etc/casino-hackathon/backend.env`. No database credentials or database files are stored in a release.
 
 The deployed main1 SHA is recorded at:
 
@@ -107,7 +105,7 @@ The deployed main1 SHA is recorded at:
 cat /home/ec2-user/deploy-state/main1-deployed-sha
 ```
 
-If a post-promotion check fails, `deploy/aws/deploy-main1-remote.sh` restores the previous Backend/static snapshot and restarts/reloads the same services. The server retains the latest five rollback snapshots under `/opt/casino_hackathon/main1-backups` and never copies or reverses SQLite data during source rollback.
+If a post-promotion check fails, `deploy/aws/deploy-main1-remote.sh` restores the previous Backend/static snapshot and restarts/reloads the same services. The server retains the latest five rollback snapshots under `/opt/casino_hackathon/main1-backups`; database migrations require an application-specific forward fix or a separately managed PostgreSQL backup restore.
 
 For a deliberate rollback, revert the bad commit and push the revert through the same pipeline:
 

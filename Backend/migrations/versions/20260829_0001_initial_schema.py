@@ -5,7 +5,7 @@ Revises: None
 """
 from typing import Sequence, Union
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 revision: str = "20260829_0001"
@@ -169,7 +169,7 @@ def _reconcile_legacy_schema() -> bool:
 
 
 def upgrade() -> None:
-    if _reconcile_legacy_schema():
+    if not context.is_offline_mode() and _reconcile_legacy_schema():
         return
 
     op.create_table(
@@ -223,24 +223,14 @@ def upgrade() -> None:
     )
     op.create_index("ix_teams_id", "teams", ["id"])
     op.create_index("ix_teams_team_name", "teams", ["team_name"], unique=True)
-    if op.get_bind().dialect.name == "sqlite":
-        with op.batch_alter_table("users", recreate="always") as batch_op:
-            batch_op.create_foreign_key(
-                "fk_users_team_id_teams",
-                "teams",
-                ["team_id"],
-                ["id"],
-                ondelete="SET NULL",
-            )
-    else:
-        op.create_foreign_key(
-            "fk_users_team_id_teams",
-            "users",
-            "teams",
-            ["team_id"],
-            ["id"],
-            ondelete="SET NULL",
-        )
+    op.create_foreign_key(
+        "fk_users_team_id_teams",
+        "users",
+        "teams",
+        ["team_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
 
     op.create_table(
         "round_controls", _id_column(),

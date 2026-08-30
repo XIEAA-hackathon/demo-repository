@@ -51,9 +51,9 @@ def acquire_participant_session(
 ) -> bool:
     """Atomically acquire a free or stale participant session.
 
-    The conditional UPDATE is intentionally the first write after bcrypt. On
-    SQLite, concurrent writers serialize and re-evaluate this predicate, so no
-    check-then-update window can create two successful sessions.
+    The conditional UPDATE is intentionally the first write after bcrypt.
+    PostgreSQL evaluates the predicate atomically, so no check-then-update
+    window can create two successful sessions.
     """
     current_time = now or utc_now()
     stale_before = current_time - timedelta(

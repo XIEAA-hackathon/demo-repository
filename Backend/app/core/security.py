@@ -1,10 +1,17 @@
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from app.core.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+BCRYPT_HASH_RE = re.compile(r"^\$2[aby]\$(?:0[4-9]|[12]\d|3[01])\$[./A-Za-z0-9]{53}$")
+
+
+def is_valid_password_hash(value: str) -> bool:
+    """Cheaply validate an imported bcrypt hash without running verification."""
+    return bool(BCRYPT_HASH_RE.fullmatch(value.strip()))
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)

@@ -18,9 +18,13 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     ENABLE_EVENT_RESET: bool = False
 
-    # SQLite is the zero-configuration local default. Production uses a
-    # postgresql+psycopg URL supplied through the service environment.
-    DATABASE_URL: str = "sqlite:///./casino_hackathon.db"
+    # Required in every environment. Credentials belong in the process/service
+    # environment and are never committed to source control.
+    DATABASE_URL: str
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT_SECONDS: int = 10
+    DB_POOL_RECYCLE_SECONDS: int = 1800
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175"
 
     # Default admin account created at startup (for admin provisioning)

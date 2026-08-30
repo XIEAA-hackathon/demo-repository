@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from threading import RLock
 
-from sqlalchemy import func, text
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import ProblemStatement, RoundControl, Team, User, WalletTransaction
@@ -125,15 +125,6 @@ def change_round1_problem_assignment(
     with ROUND1_FINALIZATION_LOCK:
         try:
             control = get_or_create_round_control(db, "ROUND1")
-            if db.get_bind().dialect.name == "sqlite":
-                # SQLite ignores SELECT FOR UPDATE. A harmless write against the
-                # singleton Round 1 row acquires its database write reservation
-                # before capacity is read, serializing competing Admin tabs.
-                db.execute(
-                    text("UPDATE round_controls SET status = status WHERE id = :control_id"),
-                    {"control_id": control.id},
-                )
-
             control = (
                 db.query(RoundControl)
                 .filter(RoundControl.id == control.id)

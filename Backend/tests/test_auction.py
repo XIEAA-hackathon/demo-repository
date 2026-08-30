@@ -1,4 +1,7 @@
 """Round 1 auction: leader-only bidding, EventConfig rules, finalization."""
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 from app.models.models import Team, User, Bid, WalletTransaction, Member, RoundControl
 
 
@@ -177,6 +180,52 @@ def test_finalize_assigns_all_bidders_when_fewer_than_five_and_charges_once(clie
     assert response2.status_code == 200
     assert response2.json()["message"].startswith("Problem Statement already finalized")
     assert db.query(WalletTransaction).filter(WalletTransaction.transaction_type == "ROUND1_WIN").count() == 3
+
+
+def test_simultaneous_bids_are_serialized_against_one_highest_price(
+    client, admin_headers, csv_bytes, db,
+):
+    creds = _import_and_get_client_state(client, admin_headers, csv_bytes, db)
+    from app.models.models import EventConfig, GameConfig, ProblemStatement
+
+    problem = ProblemStatement(ps_number="PS-RACE", title="Race", description="d", round=1)
+    db.add(problem)
+    db.flush()
+    game = db.query(GameConfig).one()
+    game.state = "ROUND1_BIDDING"
+    game.current_round = 1
+    event = db.query(EventConfig).one()
+    event.round1_minimum_bid = 25
+    event.bid_cooldown_seconds = 0
+    db.commit()
+    _activate_problem(db, problem)
+
+    headers = []
+    for email in ("alice@test.com", "bob@test.com"):
+        login = client.post("/login", data={"username": email, "password": creds[email]})
+        assert login.status_code == 200, login.text
+        headers.append({"Authorization": f"Bearer {login.json()['access_token']}"})
+
+    barrier = Barrier(3)
+
+    def bid_once(request_headers):
+        barrier.wait(timeout=10)
+        return client.post(
+            "/bid",
+            json={"ps_id": problem.id, "increment": 5},
+            headers=request_headers,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(bid_once, request_headers) for request_headers in headers]
+        barrier.wait(timeout=10)
+        responses = [future.result(timeout=15) for future in futures]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    db.expire_all()
+    amounts = sorted(row.amount for row in db.query(Bid).filter(Bid.ps_id == problem.id).all())
+    assert amounts == [30, 35]
+    assert all(team.coins == 1000 for team in db.query(Team).filter(Team.team_name.in_(("Team Alpha", "Team Beta"))))
 
 
 def test_dashboard_shows_imported_leader(client, admin_headers, csv_bytes, db):

@@ -108,8 +108,8 @@ def reset_imported_participant_credentials(db: Session, *, actor: User) -> dict:
         team_member_query = db.query(Member).filter(Member.team_id.in_(imported_team_ids))
         deleted["member_records"] += team_member_query.delete(synchronize_session=False)
 
-        # User.team_id uses SET NULL at the database layer, but clearing it
-        # explicitly keeps SQLite and PostgreSQL behavior identical.
+        # User.team_id uses SET NULL at the database layer; clear it explicitly
+        # so the ORM state and deletion order remain deterministic.
         db.query(User).filter(User.team_id.in_(imported_team_ids)).update(
             {User.team_id: None},
             synchronize_session=False,
@@ -159,6 +159,13 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
     """Stage an event-only reset without touching account credentials or identities."""
     event = get_or_create_event_config(db)
     game = get_or_create_game_config(db)
+    # Match the mutation lock order used by bidding: game, round controls,
+    # event configuration, then teams. This prevents a reset from racing a bid,
+    # winner charge, assignment, or timer transition in another worker.
+    game = db.query(GameConfig).filter(GameConfig.id == game.id).with_for_update().one()
+    db.query(RoundControl).order_by(RoundControl.id.asc()).with_for_update().all()
+    event = db.query(EventConfig).filter(EventConfig.id == event.id).with_for_update().one()
+    locked_teams = db.query(Team).order_by(Team.id.asc()).with_for_update().all()
 
     deleted = {
         "teams": 0,
@@ -194,7 +201,7 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
         db.query(model).delete(synchronize_session=False)
     db.query(EventActivityLog).delete(synchronize_session=False)
 
-    for team in db.query(Team).all():
+    for team in locked_teams:
         team.coins = event.starting_coins
         team.ps_id = None
         team.round1_problem_id = None

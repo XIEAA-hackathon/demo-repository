@@ -8,23 +8,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 
 from app.api import auth, participant
-from app.core.database import Base, get_db
+from app.core.database import get_db
 from app.core.security import get_password_hash
 from app.models.models import EventActivityLog, EventConfig, GameConfig, Team, User
 from app.services.auth_password_verifier import BoundedPasswordVerifier
 
 
-def _concurrent_login_app(tmp_path, leader_count: int):
-    engine = create_engine(
-        f"sqlite:///{tmp_path / f'login-{leader_count}.db'}",
-        connect_args={"check_same_thread": False, "timeout": 30},
-        poolclass=QueuePool,
-        pool_size=10,
-        max_overflow=10,
-        pool_timeout=10,
-    )
-    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
+def _concurrent_login_app(session_factory, leader_count: int):
     with session_factory() as db:
         for index in range(leader_count):
             user = User(
@@ -51,20 +41,18 @@ def _concurrent_login_app(tmp_path, leader_count: int):
             yield db
 
     app.dependency_overrides[get_db] = override_get_db
-    return engine, session_factory, app
+    return app
 
 
-def test_login_releases_database_connection_before_password_verification(tmp_path, monkeypatch):
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'login-connection.db'}",
-        connect_args={"check_same_thread": False},
+def test_login_releases_database_connection_before_password_verification(engine, monkeypatch):
+    constrained_engine = create_engine(
+        engine.url,
         poolclass=QueuePool,
         pool_size=1,
         max_overflow=0,
         pool_timeout=0.2,
     )
-    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=constrained_engine)
     with session_factory() as db:
         user = User(
             name="Concurrent Leader",
@@ -84,7 +72,7 @@ def test_login_releases_database_connection_before_password_verification(tmp_pat
     checked_out_during_verify = []
 
     def observe_verify(_plain_password, _password_hash):
-        checked_out_during_verify.append(engine.pool.checkedout())
+        checked_out_during_verify.append(constrained_engine.pool.checkedout())
         return True
 
     monkeypatch.setattr(auth, "verify_password", observe_verify)
@@ -111,13 +99,13 @@ def test_login_releases_database_connection_before_password_verification(tmp_pat
             assert dashboard.status_code == 200, dashboard.text
 
         assert checked_out_during_verify == [0]
-        assert engine.pool.checkedout() == 0
+        assert constrained_engine.pool.checkedout() == 0
     finally:
-        engine.dispose()
+        constrained_engine.dispose()
 
 
-def test_ten_simultaneous_logins_acquire_exactly_one_leader_session(tmp_path, monkeypatch):
-    engine, session_factory, app = _concurrent_login_app(tmp_path, 1)
+def test_ten_simultaneous_logins_acquire_exactly_one_leader_session(session_factory, monkeypatch):
+    app = _concurrent_login_app(session_factory, 1)
     barrier = Barrier(10)
     test_password_verifier = BoundedPasswordVerifier(
         concurrency=10,
@@ -162,26 +150,22 @@ def test_ten_simultaneous_logins_acquire_exactly_one_leader_session(tmp_path, mo
             ).count() == 9
     finally:
         test_password_verifier.shutdown()
-        engine.dispose()
 
 
-def test_fifty_distinct_leaders_can_login_concurrently(tmp_path, monkeypatch):
-    engine, session_factory, app = _concurrent_login_app(tmp_path, 50)
+def test_fifty_distinct_leaders_can_login_concurrently(session_factory, monkeypatch):
+    app = _concurrent_login_app(session_factory, 50)
     monkeypatch.setattr(auth, "verify_password", lambda _plain, _hashed: True)
-    try:
-        with TestClient(app) as client:
-            def login_leader(index: int):
-                return client.post(
-                    "/login",
-                    data={"username": f"leader-{index}@concurrency.test", "password": "correct-password"},
-                )
+    with TestClient(app) as client:
+        def login_leader(index: int):
+            return client.post(
+                "/login",
+                data={"username": f"leader-{index}@concurrency.test", "password": "correct-password"},
+            )
 
-            with ThreadPoolExecutor(max_workers=25) as executor:
-                responses = list(executor.map(login_leader, range(50)))
+        with ThreadPoolExecutor(max_workers=25) as executor:
+            responses = list(executor.map(login_leader, range(50)))
 
-        assert [response.status_code for response in responses] == [200] * 50
-        with session_factory() as db:
-            assert db.query(User).filter(User.session_id.is_not(None)).count() == 50
-            assert db.query(User).filter(User.session_last_seen_at.is_not(None)).count() == 50
-    finally:
-        engine.dispose()
+    assert [response.status_code for response in responses] == [200] * 50
+    with session_factory() as db:
+        assert db.query(User).filter(User.session_id.is_not(None)).count() == 50
+        assert db.query(User).filter(User.session_last_seen_at.is_not(None)).count() == 50

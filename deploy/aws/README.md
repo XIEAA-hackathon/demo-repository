@@ -5,7 +5,7 @@ The legacy immutable-release path is `.github/workflows/deploy-aws.yml`. It is m
 Persistent state is outside releases:
 
 - Environment: `/etc/casino-hackathon/backend.env`
-- SQLite database: `/opt/casino_hackathon/data/casino_hackathon.db`
+- PostgreSQL URL: `DATABASE_URL` in `/etc/casino-hackathon/backend.env`
 - Immutable releases: `/opt/casino_hackathon/releases/<git-sha>`
 - Active release: `/opt/casino_hackathon/current`
 
@@ -39,7 +39,7 @@ First-time provisioning on Amazon Linux 2023 uses `sudo bash deploy/aws/setup-se
 
 `.github/workflows/deploy-main1.yml` is a separate deployment path for the existing EC2 checkout at `/home/ec2-user/demo-repository`. It triggers only for pushes to `main1`, runs the complete Backend test suite, builds the umbrella Vite frontend on a GitHub-hosted runner, then downloads only the tested frontend artifact plus deployment script through the repository-scoped `casino-production` runner on EC2. Inbound SSH from hosted runners is not required and no security-group change is needed.
 
-The EC2 script fetches the exact pushed commit from `origin/main1` into an isolated staging tree. It does not use `git reset --hard`, and it does not require the EC2 checkout's frontend worktree to be clean. Backend promotion preserves `Backend/.env`, `Backend/venv`, SQLite files, logs, and caches. The existing SQLite database remains at `/home/ec2-user/demo-repository/Backend/casino_hackathon.db`; moving it is a separate maintenance operation and is not performed by deployment.
+The EC2 script fetches the exact pushed commit from `origin/main1` into an isolated staging tree. It does not use `git reset --hard`, and it does not require the EC2 checkout's frontend worktree to be clean. Backend promotion preserves `Backend/.env`, `Backend/venv`, logs, and caches. It validates the service's PostgreSQL `DATABASE_URL` and applies `alembic upgrade head` before restarting the systemd-managed service.
 
 The single frontend build is materialized according to the live Nginx layout:
 
@@ -99,4 +99,4 @@ git revert <bad-deployment-commit-sha>
 git push origin main1
 ```
 
-Database schema changes require an application-specific forward fix; do not copy or reverse the SQLite database as part of a source rollback.
+Database schema changes require an application-specific forward fix or a separately managed PostgreSQL backup restore; source rollback does not reverse migrations automatically.

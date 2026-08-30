@@ -5,7 +5,7 @@ This repository contains the backend service for the **Casino Hackathon Auction 
 ## 🛠️ Technology Stack & Architecture
 
 - **Framework**: **FastAPI** (ASGI web framework) ensuring high-throughput, low-latency API endpoints through asynchronous event loop (`asyncio`) processing.
-- **ORM & Data Persistence**: **SQLAlchemy 2.0** mapped to a relational database (PostgreSQL/SQLite), ensuring ACID compliance, transaction safety, and schema migrations.
+- **ORM & Data Persistence**: **SQLAlchemy 2.0** backed by PostgreSQL, with ACID transactions, row locking, connection pooling, and Alembic schema migrations. SQLite is used only as the read-only source during the one-time legacy data transfer.
 - **Server Gateway**: **Uvicorn**, a lightning-fast ASGI implementation leveraging `uvloop` and `httptools`.
 - **Authentication**: Stateless authentication using **JSON Web Tokens (JWT)** secured via HMAC-SHA256 (`HS256`) signature algorithms. Password persistence utilizes `passlib` with `bcrypt` salting and hashing.
 - **Real-time Engine**: **WebSockets** protocol (RFC 6455) for asynchronous, full-duplex communication enabling sub-second event broadcasts.

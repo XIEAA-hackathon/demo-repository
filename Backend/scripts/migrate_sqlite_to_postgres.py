@@ -14,15 +14,25 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy import Boolean, DateTime, MetaData, Table, create_engine, func, inspect, select, text
 from sqlalchemy.engine import Connection, Engine, make_url
+from sqlalchemy.pool import NullPool
 
+from app.core.config import settings
 from app.core.database import Base
 from app.models import models  # noqa: F401 - registers every mapped table
+
+LEGACY_OPTIONAL_SOURCE_COLUMNS = {
+    "users": {"session_created_at", "session_last_seen_at"},
+}
 
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sqlite-url", required=True, help="Source URL, e.g. sqlite:////absolute/casino_hackathon.db")
-    parser.add_argument("--postgres-url", required=True, help="Destination postgresql+psycopg URL")
+    parser.add_argument(
+        "--postgres-url",
+        default=settings.DATABASE_URL,
+        help="Destination URL; defaults to DATABASE_URL",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate schemas and print counts without writing")
     return parser.parse_args()
 
@@ -30,8 +40,9 @@ def _arguments() -> argparse.Namespace:
 def _validate_backends(sqlite_url: str, postgres_url: str) -> None:
     if make_url(sqlite_url).get_backend_name() != "sqlite":
         raise ValueError("--sqlite-url must use the SQLite backend")
-    if make_url(postgres_url).get_backend_name() != "postgresql":
-        raise ValueError("--postgres-url must use the PostgreSQL backend")
+    destination = make_url(postgres_url)
+    if destination.get_backend_name() != "postgresql" or destination.drivername != "postgresql+psycopg":
+        raise ValueError("--postgres-url must use postgresql+psycopg")
 
 
 def _model_tables() -> dict[str, Table]:
@@ -39,7 +50,13 @@ def _model_tables() -> dict[str, Table]:
     return {table.name: table for table in Base.metadata.tables.values()}
 
 
-def _validate_schema(engine: Engine, table_names: set[str], label: str) -> None:
+def _validate_schema(
+    engine: Engine,
+    table_names: set[str],
+    label: str,
+    *,
+    optional_columns: dict[str, set[str]] | None = None,
+) -> None:
     inspector = inspect(engine)
     existing = set(inspector.get_table_names())
     missing_tables = table_names - existing
@@ -48,7 +65,7 @@ def _validate_schema(engine: Engine, table_names: set[str], label: str) -> None:
     for table_name in sorted(table_names):
         actual = {column["name"] for column in inspector.get_columns(table_name)}
         expected = {column.name for column in Base.metadata.tables[table_name].columns}
-        missing_columns = expected - actual
+        missing_columns = expected - actual - (optional_columns or {}).get(table_name, set())
         if missing_columns:
             raise RuntimeError(f"{label}.{table_name} is missing columns: {sorted(missing_columns)}")
 
@@ -171,6 +188,15 @@ def _source_tables(engine: Engine, names: set[str]) -> dict[str, Table]:
     return {name: metadata.tables[name] for name in names}
 
 
+def _validate_source_integrity(engine: Engine) -> None:
+    with engine.connect() as connection:
+        violations = connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise RuntimeError(
+            f"SQLite source has {len(violations)} foreign-key violation(s); refusing to migrate."
+        )
+
+
 def _reset_postgres_sequences(connection: Connection, tables: dict[str, Table]) -> None:
     for table in tables.values():
         for column in table.primary_key.columns:
@@ -195,12 +221,18 @@ def _reset_postgres_sequences(connection: Connection, tables: dict[str, Table]) 
 
 def migrate(sqlite_url: str, postgres_url: str, *, dry_run: bool = False) -> None:
     _validate_backends(sqlite_url, postgres_url)
-    source_engine = create_engine(sqlite_url)
-    destination_engine = create_engine(postgres_url, pool_pre_ping=True)
+    source_engine = create_engine(sqlite_url, poolclass=NullPool)
+    destination_engine = create_engine(postgres_url, pool_pre_ping=True, poolclass=NullPool)
     destination_tables = _model_tables()
     table_names = set(destination_tables)
 
-    _validate_schema(source_engine, table_names, "SQLite source")
+    _validate_schema(
+        source_engine,
+        table_names,
+        "SQLite source",
+        optional_columns=LEGACY_OPTIONAL_SOURCE_COLUMNS,
+    )
+    _validate_source_integrity(source_engine)
     _validate_schema(destination_engine, table_names, "PostgreSQL destination")
     source_tables = _source_tables(source_engine, table_names)
 
@@ -228,7 +260,7 @@ def migrate(sqlite_url: str, postgres_url: str, *, dry_run: bool = False) -> Non
             converted_rows: list[dict[str, Any]] = []
             for source_row in rows:
                 converted = {
-                    column.name: _coerce_value(source_row[column.name], column)
+                    column.name: _coerce_value(source_row.get(column.name), column)
                     for column in destination_table.columns
                 }
                 deferred_values = {

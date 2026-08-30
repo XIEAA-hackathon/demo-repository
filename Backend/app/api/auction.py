@@ -70,9 +70,18 @@ async def place_bid(bid: BidCreate, db: Session = Depends(get_db), current_user 
             detail="Your team already has a Round 1 problem and cannot participate in another Round 1 auction.",
         )
 
+    control = get_or_create_round_control(db, "ROUND1")
+    # Use the same lock order as finalization: round control, problem, team,
+    # then bids. Locking the singleton control serializes the price decision so
+    # concurrent requests cannot calculate from the same stale highest bid.
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.id == control.id)
+        .with_for_update()
+        .one()
+    )
     ps = db.query(ProblemStatement).filter(ProblemStatement.id == bid.ps_id).with_for_update().first()
     team = db.query(Team).filter(Team.id == team.id).with_for_update().first()
-    control = get_or_create_round_control(db, "ROUND1")
     if not ps or ps.id != control.current_problem_id or ps.status != "current":
         raise HTTPException(status_code=400, detail="Invalid or unavailable Problem Statement")
     auction_bids = db.query(Bid).filter(

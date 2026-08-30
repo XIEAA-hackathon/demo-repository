@@ -7,11 +7,8 @@ from threading import Barrier
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.api import auth, participant, rounds, wildcard
-from app.core.database import Base, get_db
+from app.core.database import get_db
 
 from app.core.security import get_password_hash
 from app.models.models import (
@@ -421,13 +418,8 @@ def test_equal_slot_bids_use_earlier_final_bid_timestamp(client, admin_headers, 
     assert db.query(WildcardBid).count() == 2
 
 
-def test_simultaneous_wildcard_choices_allow_exactly_one_claim(tmp_path):
-    race_engine = create_engine(
-        f"sqlite:///{tmp_path / 'wildcard-race.db'}",
-        connect_args={"check_same_thread": False, "timeout": 10},
-    )
-    Base.metadata.create_all(race_engine)
-    race_sessions = sessionmaker(autocommit=False, autoflush=False, bind=race_engine)
+def test_simultaneous_wildcard_choices_allow_exactly_one_claim(session_factory):
+    race_sessions = session_factory
     app = FastAPI()
     app.include_router(auth.router)
     app.include_router(wildcard.router)
@@ -491,4 +483,3 @@ def test_simultaneous_wildcard_choices_allow_exactly_one_claim(tmp_path):
     assert db.query(WildcardSelectionPool).filter(WildcardSelectionPool.selected_by_team_id == team1.id).count() == 1
     assert db.query(ProblemStatement).filter(ProblemStatement.round == 2, ProblemStatement.status == "allocated").count() == 1
     db.close()
-    race_engine.dispose()
