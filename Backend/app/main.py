@@ -27,16 +27,6 @@ install_sensitive_query_redaction()
 def validate_startup_configuration() -> None:
     if not settings.DATABASE_URL.strip():
         raise RuntimeError("DATABASE_URL is required.")
-    if settings.AUTH_BCRYPT_CONCURRENCY < 1:
-        raise RuntimeError("AUTH_BCRYPT_CONCURRENCY must be at least 1.")
-    if settings.AUTH_LOGIN_QUEUE_LIMIT < settings.AUTH_BCRYPT_CONCURRENCY:
-        raise RuntimeError(
-            "AUTH_LOGIN_QUEUE_LIMIT must be at least AUTH_BCRYPT_CONCURRENCY."
-        )
-    if settings.AUTH_LOGIN_QUEUE_TIMEOUT_SECONDS <= 0:
-        raise RuntimeError("AUTH_LOGIN_QUEUE_TIMEOUT_SECONDS must be greater than 0.")
-    if settings.AUTH_LOGIN_RETRY_AFTER_SECONDS < 1:
-        raise RuntimeError("AUTH_LOGIN_RETRY_AFTER_SECONDS must be at least 1.")
     if settings.SESSION_HEARTBEAT_SECONDS < 1:
         raise RuntimeError("SESSION_HEARTBEAT_SECONDS must be at least 1.")
     if settings.SESSION_STALE_SECONDS <= settings.SESSION_HEARTBEAT_SECONDS:

@@ -7,16 +7,21 @@ import Leaderboard from '../components/Leaderboard'
 import WaitingState from '../components/WaitingState'
 import { Button, Card, CoinBalance, PageHeading, Stat } from '../components/ui'
 import { useBidCooldown } from '../useBidCooldown'
+import { ApiError } from '../services/apiClient'
+import { applyBidDelta, jitterMilliseconds, parseBidDelta } from '../services/bidRealtime'
 
 const BID_INCREMENTS: BidIncrement[] = [5, 10, 25]
 
 export default function WildcardBiddingPage() {
-  const { dashboard, service, refresh } = useParticipant()
+  const { dashboard, service, recordAcceptedBid, realtimeEvent, socketStatus } = useParticipant()
   const [entries, setEntries] = useState<LeaderboardEntry[]>([])
   const [working, setWorking] = useState(false)
   const [highSpendConfirmed, setHighSpendConfirmed] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-  const cooldownRemaining = useBidCooldown(dashboard?.bidCooldownRemainingSeconds ?? 0)
+  const cooldownRemaining = useBidCooldown(
+    dashboard?.bidCooldownRemainingSeconds ?? 0,
+    dashboard?.wildcardBidAmount,
+  )
   const leaderboardInFlight = useRef<Promise<void> | null>(null)
   const loadLeaderboard = useCallback(() => {
     if (leaderboardInFlight.current) return leaderboardInFlight.current
@@ -36,18 +41,30 @@ export default function WildcardBiddingPage() {
       timer = window.setTimeout(async () => {
         if (stopped) return
         try { await loadLeaderboard() } catch { /* The next fallback poll retries. */ }
-        schedule(document.hidden ? 30_000 : 2_000)
+        const connected = ['connected', 'reconnected'].includes(socketStatus)
+        schedule(document.hidden
+          ? jitterMilliseconds(60_000, 90_000)
+          : connected ? jitterMilliseconds(45_000, 60_000) : jitterMilliseconds(10_000, 15_000))
       }, delay)
     }
     const onVisibility = () => { if (!document.hidden) schedule(0) }
+    const onResync = () => schedule(0)
     schedule(0)
     document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('participant:leaderboard-resync', onResync)
     return () => {
       stopped = true
       if (timer !== undefined) window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('participant:leaderboard-resync', onResync)
     }
-  }, [loadLeaderboard])
+  }, [loadLeaderboard, socketStatus])
+  useEffect(() => {
+    if (!realtimeEvent || realtimeEvent.type !== 'wildcard_bid_updated') return
+    const delta = parseBidDelta(realtimeEvent.payload)
+    if (!delta || delta.round !== 'WILDCARD') return
+    setEntries((current) => applyBidDelta(current, delta))
+  }, [realtimeEvent])
 
   if (!dashboard) return null
   const applied = Boolean(dashboard.wildcardApplication) && dashboard.wildcard?.status === 'applied'
@@ -69,10 +86,22 @@ export default function WildcardBiddingPage() {
     setMessage(null)
     try {
       const accepted = await service.placeWildcardBid(increment)
-      await Promise.allSettled([refresh(), loadLeaderboard()])
-      setMessage({ type: 'success', text: `Your slot bid was accepted at ${accepted} coins.` })
+      recordAcceptedBid(accepted)
+      setEntries((current) => applyBidDelta(current, {
+        bidId: accepted.bidId,
+        teamId: dashboard.team.id,
+        teamName: dashboard.team.name,
+        problemId: null,
+        amount: accepted.amount,
+        increment: accepted.increment,
+        round: accepted.round,
+        placedAt: accepted.placedAt,
+        cooldownSeconds: accepted.cooldownSeconds,
+      }))
+      if (!['connected', 'reconnected'].includes(socketStatus)) await loadLeaderboard()
+      setMessage({ type: 'success', text: `Your slot bid was accepted at ${accepted.amount} coins.` })
     } catch (cause) {
-      await Promise.allSettled([refresh(), loadLeaderboard()])
+      if (cause instanceof ApiError && cause.status === 409) await loadLeaderboard().catch(() => undefined)
       setMessage({ type: 'error', text: cause instanceof Error ? cause.message : 'Bid could not be placed.' })
     } finally {
       setWorking(false)

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export function useBidCooldown(remainingSeconds: number): number {
+export function useBidCooldown(remainingSeconds: number, resetKey?: unknown): number {
   const [remaining, setRemaining] = useState(Math.ceil(Math.max(0, remainingSeconds)))
 
   useEffect(() => {
@@ -10,7 +10,7 @@ export function useBidCooldown(remainingSeconds: number): number {
     if (remainingSeconds <= 0) return
     const timer = window.setInterval(update, 200)
     return () => window.clearInterval(timer)
-  }, [remainingSeconds])
+  }, [remainingSeconds, resetKey])
 
   return remaining
 }

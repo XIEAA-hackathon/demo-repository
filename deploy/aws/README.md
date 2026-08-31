@@ -41,6 +41,32 @@ First-time provisioning on Amazon Linux 2023 uses `sudo bash deploy/aws/setup-se
 
 The EC2 script fetches the exact pushed commit from `origin/main1` into an isolated staging tree. It does not use `git reset --hard`, and it does not require the EC2 checkout's frontend worktree to be clean. Backend promotion preserves `Backend/.env`, `Backend/venv`, logs, and caches. It validates the service's PostgreSQL `DATABASE_URL` and applies `alembic upgrade head` before restarting the systemd-managed service.
 
+The live `casino-backend.service` must use the same canonical environment file
+that deployment validates. The tracked drop-in clears legacy environment-file
+entries before loading it. Install the drop-in once on an existing server, then
+confirm the PostgreSQL URL and schema before restarting:
+
+```bash
+cd /home/ec2-user/demo-repository
+sudo install -D -m 0644 deploy/aws/casino-backend-postgresql.conf \
+  /etc/systemd/system/casino-backend.service.d/postgresql.conf
+sudo chown root:ec2-user /etc/casino-hackathon/backend.env
+sudo chmod 0640 /etc/casino-hackathon/backend.env
+sudo systemctl daemon-reload
+sudo systemctl show casino-backend.service --property=EnvironmentFiles --no-pager
+sudo systemd-run --quiet --wait --pipe --collect \
+  --uid=ec2-user --gid=ec2-user \
+  -p WorkingDirectory=/home/ec2-user/demo-repository/Backend \
+  -p EnvironmentFile=/etc/casino-hackathon/backend.env \
+  /home/ec2-user/demo-repository/Backend/venv/bin/python -m alembic upgrade head
+sudo systemctl restart casino-backend.service
+sudo systemctl is-active casino-backend.service
+curl --fail http://127.0.0.1:8000/health/ready
+```
+
+Do not print `DATABASE_URL` or commit `backend.env`. If it still points to the
+legacy database, complete `Backend/POSTGRESQL_MIGRATION.md` before restarting.
+
 The single frontend build is materialized according to the live Nginx layout:
 
 - the complete bundle is deployed to `/opt/casino_hackathon/current/static/public`;

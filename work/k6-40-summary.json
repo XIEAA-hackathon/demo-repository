@@ -1,0 +1,295 @@
+{
+    "metrics": {
+        "checks": {
+            "passes": 410,
+            "fails": 0,
+            "value": 1
+        },
+        "http_req_tls_handshaking": {
+            "p(90)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0
+        },
+        "websocket_failures": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+                "count==0": false
+            }
+        },
+        "vus_max": {
+            "value": 50,
+            "min": 50,
+            "max": 50
+        },
+        "http_req_sending": {
+            "p(90)": 0.50582,
+            "p(95)": 0.51413,
+            "p(99)": 0.7168519999999999,
+            "avg": 0.06604120000000001,
+            "min": 0,
+            "med": 0,
+            "max": 0.7886
+        },
+        "bid_5xx": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+                "count==0": false
+            }
+        },
+        "login_success": {
+            "passes": 50,
+            "fails": 0,
+            "thresholds": {
+                "rate>0.99": false
+            },
+            "value": 1
+        },
+        "bid_success": {
+            "passes": 400,
+            "fails": 0,
+            "value": 1
+        },
+        "http_req_connecting": {
+            "min": 0,
+            "med": 0,
+            "max": 1.5087,
+            "p(90)": 0.5316,
+            "p(95)": 0.6061149999999992,
+            "p(99)": 0.7957,
+            "avg": 0.14920540000000007
+        },
+        "ws_session_duration": {
+            "min": 75028.778,
+            "med": 75083.58755,
+            "max": 75101.0797,
+            "p(90)": 75098.31382,
+            "p(95)": 75099.69676,
+            "p(99)": 75100.80311200001,
+            "avg": 75074.45547
+        },
+        "bid_attempts": {
+            "count": 400,
+            "rate": 5.157931198257746
+        },
+        "login_successful_duration": {
+            "p(99)": 2864.735601,
+            "avg": 1538.429042,
+            "min": 215.9092,
+            "med": 1819.6696000000002,
+            "max": 2866.7814,
+            "p(90)": 2653.77054,
+            "p(95)": 2666.640255,
+            "thresholds": {
+                "p(95)<30000": false
+            }
+        },
+        "data_sent": {
+            "count": 207900,
+            "rate": 2680.8347402944632
+        },
+        "vus": {
+            "value": 10,
+            "min": 0,
+            "max": 50
+        },
+        "http_reqs": {
+            "count": 500,
+            "rate": 6.447413997822182
+        },
+        "http_req_failed": {
+            "passes": 0,
+            "fails": 500,
+            "value": 0
+        },
+        "login_5xx": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+                "count==0": false
+            }
+        },
+        "http_req_receiving": {
+            "min": 0,
+            "med": 0.51035,
+            "max": 42.4998,
+            "p(90)": 4.092180000000003,
+            "p(95)": 5.838104999999999,
+            "p(99)": 12.015625999999989,
+            "avg": 1.3049958000000013
+        },
+        "ws_msgs_received": {
+            "count": 4040,
+            "rate": 52.09510510240323
+        },
+        "ws_sessions": {
+            "count": 10,
+            "rate": 0.12894827995644365
+        },
+        "websocket_bid_latency": {
+            "min": 0,
+            "med": 2,
+            "max": 16,
+            "p(90)": 4,
+            "p(95)": 5,
+            "p(99)": 8,
+            "avg": 2.10675
+        },
+        "http_req_blocked": {
+            "p(90)": 0.5418999999999999,
+            "p(95)": 0.6267,
+            "p(99)": 0.7957,
+            "avg": 0.1777624000000001,
+            "min": 0,
+            "med": 0,
+            "max": 1.5087
+        },
+        "data_received": {
+            "rate": 150474.1579123486,
+            "count": 11669342
+        },
+        "http_req_duration": {
+            "p(99)": 2653.2210539999996,
+            "avg": 218.48997000000006,
+            "min": 7.6036,
+            "med": 30.27965,
+            "max": 2866.7814,
+            "p(90)": 441.43050000000017,
+            "p(95)": 1819.6416100000001
+        },
+        "bid_db_transaction_duration": {
+            "p(99)": 127.55239999999999,
+            "avg": 20.451700000000017,
+            "min": 4.43,
+            "med": 8.235,
+            "max": 173.22,
+            "p(90)": 52.809,
+            "p(95)": 106.9689999999997
+        },
+        "bid_unexpected_4xx": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+                "count==0": false
+            }
+        },
+        "bid_auction_lock_wait_duration": {
+            "avg": 11.221825,
+            "min": 0.4,
+            "med": 0.77,
+            "max": 118.62,
+            "p(90)": 37.646000000000036,
+            "p(95)": 82.65599999999998,
+            "p(99)": 112.44979999999998
+        },
+        "request_timeouts": {
+            "count": 0,
+            "rate": 0,
+            "thresholds": {
+                "count==0": false
+            }
+        },
+        "ws_connecting": {
+            "max": 100.8717,
+            "p(90)": 98.05973999999999,
+            "p(95)": 99.46571999999999,
+            "p(99)": 100.59050400000001,
+            "avg": 74.03943000000001,
+            "min": 28.6544,
+            "med": 82.97355
+        },
+        "http_req_waiting": {
+            "min": 6.6188,
+            "med": 29.76375,
+            "max": 2866.4671,
+            "p(90)": 440.8367100000001,
+            "p(95)": 1818.638755,
+            "p(99)": 2652.573693,
+            "avg": 217.1189330000001
+        },
+        "iterations": {
+            "count": 50,
+            "rate": 0.6447413997822182
+        },
+        "ws_msgs_sent": {
+            "count": 30,
+            "rate": 0.38684483986933094
+        },
+        "http_req_duration{expected_response:true}": {
+            "p(99)": 2653.2210539999996,
+            "avg": 218.48997000000006,
+            "min": 7.6036,
+            "med": 30.27965,
+            "max": 2866.7814,
+            "p(90)": 441.43050000000017,
+            "p(95)": 1819.6416100000001
+        },
+        "iteration_duration": {
+            "max": 75101.0797,
+            "p(90)": 75079.52063,
+            "p(95)": 75093.815915,
+            "p(99)": 75099.57383200001,
+            "avg": 67663.405678,
+            "min": 65353.4674,
+            "med": 65936.3402
+        },
+        "bid_successful_duration": {
+            "avg": 74.20598049999995,
+            "min": 10.2225,
+            "med": 25.12945,
+            "max": 532.2436,
+            "p(90)": 153.87558000000072,
+            "p(95)": 368.68842999999976,
+            "p(99)": 484.65816599999994,
+            "thresholds": {
+                "p(95)<2000": false
+            }
+        },
+        "websocket_bid_messages": {
+            "rate": 51.57931198257746,
+            "count": 4000
+        }
+    },
+    "setup_data": {
+        "bidAt": 1788123886088,
+        "websocketTokens": [
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsb2FkLWxlYWRlci0xMDFAbG9jYWwudGVzdCIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiNzlmOTljMmIyYzYyNDk2MGI3ZjVhZWMzODAxMDdmMDQiLCJleHAiOjE3ODgyMTAyNjN9.PHdAACJEb0cBb7Yenop33FxZHsf93UkdyEGw2Xpt5oA",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsb2FkLWxlYWRlci0xMDJAbG9jYWwudGVzdCIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiYTM5NjI5ODY1ODQ5NGM5MjkxOTVkNjE5OGI5MWI0YTEiLCJleHAiOjE3ODgyMTAyNjR9.UxBMUGfg2adZALhmDfCGaGZby_pAJZPL-_ee9YZpnV4",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsb2FkLWxlYWRlci0xMDNAbG9jYWwudGVzdCIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiODRmNzI5MDc3YjgzNDcwYmIyNzUyY2U4YWM3MjlmNTgiLCJleHAiOjE3ODgyMTAyNjR9.ta7FfGMJ16IerXgxdjfcpEzS_ah5LItEMQb3b61Jsyc",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsb2FkLWxlYWRlci0xMDRAbG9jYWwudGVzdCIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiYTFmNDI1M2NiNTExNGE4N2JmMGZhNTNjYjI0OTZmNWIiLCJleHAiOjE3ODgyMTAyNjR9.svean2Tuy9pbpJw69jXmtRXmN0Td63j9W4r5OLfLRM4",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsb2FkLWxlYWRlci0xMDVAbG9jYWwudGVzdCIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMTY5ZTY1MzE1ZTc3NDU5Y2E3NDFjMzI4MGE5YjdjYTUiLCJleHAiOjE3ODgyMTAyNjR9.OInIk06lTv91CFD1SfnqusjQR24N0O01zb8Fovv4mmY",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsb2FkLWxlYWRlci0xMDZAbG9jYWwudGVzdCIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiOWY1MWJiNmQwMjAyNDgyMmFlMmRiZmFhMmZhMjQzZjYiLCJleHAiOjE3ODgyMTAyNjV9.B6Npfv9cMQ4C3LRUBYaL4XVKmQLyNPNCxixFAGrmq3s",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsb2FkLWxlYWRlci0xMDdAbG9jYWwudGVzdCIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMmQwOTU1YmIwZmNiNGJhYmFjODNmZWI1ZmU3NzU3YWUiLCJleHAiOjE3ODgyMTAyNjV9.bZptkKdAl1gSV4Du-Qm4v2YrTJRyU28ecftV008nHJw",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsb2FkLWxlYWRlci0xMDhAbG9jYWwudGVzdCIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMzcyNWU1YWExY2ViNDU3ZmFhZDIyYzY2NWJmMTY5ZWEiLCJleHAiOjE3ODgyMTAyNjV9.2cNoW6OKNM5GMk8KUmMUVcasZSlQS5Vx4jduh4G_CME",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsb2FkLWxlYWRlci0xMDlAbG9jYWwudGVzdCIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMzBlZGQ2YjhmYzVlNGM1OTg3MTg2MTVlNjUyZGIzZGYiLCJleHAiOjE3ODgyMTAyNjV9.OnMNx10DZEAF1zKr2nwJ-bWh6OBOUEUh4ubTaQ7wZK8",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsb2FkLWxlYWRlci0xMTBAbG9jYWwudGVzdCIsInJvbGUiOiJsZWFkZXIiLCJzZXNzaW9uX2lkIjoiMzE2ZDIxMDAyYzBiNDM4YWI0MmNkYWUwNjhhMjEzYTgiLCJleHAiOjE3ODgyMTAyNjZ9.JWRQ9HFy99Z49u8Svh5U2xxKDTx2tvE34741vdvmkXM"
+        ]
+    },
+    "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {
+                "bid returned a classified response": {
+                    "name": "bid returned a classified response",
+                    "path": "::bid returned a classified response",
+                    "id": "0aae992c071f033d8aba752f562db43f",
+                    "passes": 400,
+                    "fails": 0
+                },
+                "WebSocket handshake succeeds": {
+                    "passes": 10,
+                    "fails": 0,
+                    "name": "WebSocket handshake succeeds",
+                    "path": "::WebSocket handshake succeeds",
+                    "id": "d863f791fd144d97367b964249ed70b0"
+                }
+            }
+    }
+}

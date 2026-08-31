@@ -5,6 +5,8 @@ import Countdown from './Countdown'
 import Leaderboard from './Leaderboard'
 import { Button, Card, CoinBalance, PageHeading, Stat } from './ui'
 import { useBidCooldown } from '../useBidCooldown'
+import { ApiError } from '../services/apiClient'
+import { applyBidDelta, jitterMilliseconds, parseBidDelta } from '../services/bidRealtime'
 
 const BID_INCREMENTS: BidIncrement[] = [5, 10, 25]
 
@@ -17,12 +19,15 @@ export default function BiddingPanel({
   round: Bid['round']
   qualificationSlots?: number
 }) {
-  const { dashboard, service, refresh, realtimeEvent, socketStatus } = useParticipant()
+  const { dashboard, service, recordAcceptedBid, realtimeEvent, socketStatus } = useParticipant()
   const [entries, setEntries] = useState<LeaderboardEntry[]>([])
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [highSpendConfirmed, setHighSpendConfirmed] = useState(false)
-  const cooldownRemaining = useBidCooldown(dashboard?.bidCooldownRemainingSeconds ?? 0)
+  const cooldownResetKey = round === 'WILDCARD'
+    ? dashboard?.wildcardBidAmount
+    : dashboard?.latestBid?.round === round ? dashboard.latestBid.amount : null
+  const cooldownRemaining = useBidCooldown(dashboard?.bidCooldownRemainingSeconds ?? 0, cooldownResetKey)
   const leaderboardInFlight = useRef<Promise<void> | null>(null)
   const loadLeaderboard = useCallback(() => {
     if (leaderboardInFlight.current) return leaderboardInFlight.current
@@ -43,33 +48,31 @@ export default function BiddingPanel({
       timer = window.setTimeout(async () => {
         if (stopped) return
         try { await loadLeaderboard() } catch { /* The next fallback poll retries. */ }
-        schedule(document.hidden ? 60_000 : 30_000)
+        const connected = ['connected', 'reconnected'].includes(socketStatus)
+        schedule(document.hidden
+          ? jitterMilliseconds(60_000, 90_000)
+          : connected ? jitterMilliseconds(45_000, 60_000) : jitterMilliseconds(10_000, 15_000))
       }, delay)
     }
     const onVisibility = () => { if (!document.hidden) schedule(0) }
+    const onResync = () => schedule(0)
     schedule(0)
     document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('participant:leaderboard-resync', onResync)
     return () => {
       stopped = true
       if (timer !== undefined) window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('participant:leaderboard-resync', onResync)
     }
-  }, [loadLeaderboard])
+  }, [loadLeaderboard, socketStatus])
   useEffect(() => {
     if (!realtimeEvent || !['bid_updated', 'wildcard_bid_updated'].includes(realtimeEvent.type)) return
-    if (realtimeEvent.payload.round !== round) return
-    const rows = realtimeEvent.payload.leaderboard
-    if (!Array.isArray(rows)) return
-    setEntries(rows.map((row) => {
-      const entry = row as Record<string, unknown>
-      return {
-        rank: Number(entry.rank),
-        teamId: String(entry.team_id),
-        teamName: String(entry.team_name),
-        amount: Number(entry.amount),
-      }
-    }))
-  }, [realtimeEvent, round])
+    const delta = parseBidDelta(realtimeEvent.payload)
+    if (!delta || delta.round !== round) return
+    if (delta.problemId !== null && delta.problemId !== String(problem.id)) return
+    setEntries((current) => applyBidDelta(current, delta))
+  }, [problem.id, realtimeEvent, round])
   useEffect(() => setHighSpendConfirmed(false), [problem.id])
 
   if (!dashboard) return null
@@ -96,11 +99,22 @@ export default function BiddingPanel({
       const accepted = isWildcard
         ? await service.placeWildcardBid(increment)
         : await service.placeBid(problem.id, increment)
+      recordAcceptedBid(accepted)
+      setEntries((current) => applyBidDelta(current, {
+        bidId: accepted.bidId,
+        teamId: dashboard.team.id,
+        teamName: dashboard.team.name,
+        problemId: accepted.problemId,
+        amount: accepted.amount,
+        increment: accepted.increment,
+        round: accepted.round,
+        placedAt: accepted.placedAt,
+        cooldownSeconds: accepted.cooldownSeconds,
+      }))
       if (!['connected', 'reconnected'].includes(socketStatus)) await loadLeaderboard()
-      await refresh()
-      setMessage({ type: 'success', text: `Bid accepted at ${accepted} coins. Coins are not deducted until finalization.` })
+      setMessage({ type: 'success', text: `Bid accepted at ${accepted.amount} coins. Coins are not deducted until finalization.` })
     } catch (cause) {
-      await Promise.allSettled([refresh(), loadLeaderboard()])
+      if (cause instanceof ApiError && cause.status === 409) await loadLeaderboard().catch(() => undefined)
       const text = cause instanceof Error ? cause.message : 'Bid could not be placed.'
       setMessage({ type: 'error', text })
     } finally {

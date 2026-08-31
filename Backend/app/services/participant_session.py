@@ -41,6 +41,19 @@ def participant_session_is_stale(
     )
 
 
+def participant_session_needs_touch(
+    last_seen_at: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    previous_seen = _as_utc(last_seen_at)
+    if previous_seen is None:
+        return True
+    return (now or utc_now()) - previous_seen >= timedelta(
+        seconds=settings.SESSION_TOUCH_INTERVAL_SECONDS,
+    )
+
+
 def acquire_participant_session(
     db: Session,
     *,
@@ -51,7 +64,8 @@ def acquire_participant_session(
 ) -> bool:
     """Atomically acquire a free or stale participant session.
 
-    The conditional UPDATE is intentionally the first write after bcrypt.
+    The conditional UPDATE is intentionally the first write after password
+    verification.
     PostgreSQL evaluates the predicate atomically, so no check-then-update
     window can create two successful sessions.
     """
@@ -94,13 +108,8 @@ def touch_participant_session(
 ) -> bool:
     """Refresh activity for the matching session without excessive writes."""
     current_time = now or utc_now()
-    previous_seen = _as_utc(last_seen_at)
-    if not force and previous_seen is not None:
-        write_after = timedelta(
-            seconds=settings.SESSION_TOUCH_INTERVAL_SECONDS,
-        )
-        if current_time - previous_seen < write_after:
-            return True
+    if not force and not participant_session_needs_touch(last_seen_at, now=current_time):
+        return True
 
     matching_session = (
         User.id == user_id,

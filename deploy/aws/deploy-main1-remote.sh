@@ -206,6 +206,15 @@ log "Installing Backend requirements with $($VENV_ROOT/bin/python --version 2>&1
 
 stage="BACKEND VALIDATION"
 log "Validating PostgreSQL configuration and importing app.main:app before promotion"
+service_environment_files=$(/usr/bin/systemctl show "$SERVICE_NAME" --property=EnvironmentFiles --value)
+if [[ $service_environment_files != *"$BACKEND_ENV"* ]]; then
+  echo "$SERVICE_NAME does not load $BACKEND_ENV. Install a systemd drop-in that appends the canonical EnvironmentFile before deploying." >&2
+  exit 1
+fi
+if [[ ! -r $BACKEND_ENV ]]; then
+  echo "$BACKEND_ENV is not readable by $(id -un). Set it to root:$(id -gn) mode 0640 so deployment validation can use the same configuration as systemd." >&2
+  exit 1
+fi
 (
   cd "$source_root/Backend"
   "$VENV_ROOT/bin/python" - "$BACKEND_ENV" <<'PY'
@@ -227,7 +236,18 @@ for raw_line in environment_file.read_text(encoding="utf-8").splitlines():
     if key.strip() == "DATABASE_URL":
         database_url = value.strip().strip("'\"")
         break
-if not database_url or make_url(database_url).get_backend_name() != "postgresql":
+if database_url:
+    lowered = database_url.lower()
+    if lowered.startswith("postgres://"):
+        database_url = "postgresql+psycopg://" + database_url[len("postgres://"):]
+    elif lowered.startswith("postgresql://"):
+        database_url = "postgresql+psycopg://" + database_url[len("postgresql://"):]
+parsed_url = make_url(database_url) if database_url else None
+if (
+    parsed_url is None
+    or parsed_url.get_backend_name() != "postgresql"
+    or parsed_url.drivername != "postgresql+psycopg"
+):
     raise SystemExit("The service DATABASE_URL must point to PostgreSQL before deployment.")
 environment = {**os.environ, "DATABASE_URL": database_url}
 subprocess.run([sys.executable, "-c", "from app.main import app; assert app is not None"], env=environment, check=True)

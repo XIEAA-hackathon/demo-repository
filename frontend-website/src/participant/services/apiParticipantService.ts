@@ -1,6 +1,6 @@
 import { apiRequest } from './apiClient'
 import type {
-  Bid, BidIncrement, LeaderboardEntry, ParticipantDashboard, ParticipantEventState, Problem,
+  AcceptedBid, Bid, BidIncrement, LeaderboardEntry, ParticipantDashboard, ParticipantEventState, Problem,
   Submission, WildcardApplication, WildcardProblem,
 } from '../types'
 import type { ParticipantService } from './participantService'
@@ -39,6 +39,30 @@ interface RawWinner {
   team_id: number
   team_name: string
 }
+
+interface RawBidAcceptance {
+  bid_id: number
+  amount: number
+  increment: BidIncrement
+  cooldown_seconds: number
+  timestamp: string
+  server_time: string
+}
+
+const mapBidAcceptance = (
+  raw: RawBidAcceptance,
+  round: Bid['round'],
+  problemId: string | null,
+): AcceptedBid => ({
+  bidId: String(raw.bid_id),
+  problemId,
+  amount: raw.amount,
+  increment: raw.increment,
+  round,
+  placedAt: raw.timestamp,
+  cooldownSeconds: raw.cooldown_seconds,
+  serverTime: raw.server_time,
+})
 
 interface RawProblem {
   id: number
@@ -149,12 +173,22 @@ class ApiParticipantService implements ParticipantService {
     return raw.map((problem) => ({ ...mapProblem(problem), available: problem.available ?? true }))
   }
   async placeBid(problemId: string, increment: BidIncrement) {
-    const result = await apiRequest<{ amount: number }>('/bid', { method: 'POST', body: JSON.stringify({ ps_id: Number(problemId), increment }) })
-    return result.amount
+    const result = await apiRequest<RawBidAcceptance>('/bid', {
+      method: 'POST',
+      body: JSON.stringify({ ps_id: Number(problemId), increment }),
+      resyncOnConflict: false,
+    })
+    return mapBidAcceptance(result, 'ROUND1', problemId)
   }
   async getLeaderboard() {
-    const rows = await apiRequest<Array<{ rank: number; team_id: number; team_name: string; bid_amount: number | null }>>('/participant/leaderboard')
-    return rows.map<LeaderboardEntry>((row) => ({ rank: row.rank, teamId: String(row.team_id), teamName: row.team_name, amount: row.bid_amount ?? 0 }))
+    const rows = await apiRequest<Array<{ rank: number; team_id: number; team_name: string; bid_amount: number | null; bid_timestamp: string | null }>>('/participant/leaderboard')
+    return rows.map<LeaderboardEntry>((row) => ({
+      rank: row.rank,
+      teamId: String(row.team_id),
+      teamName: row.team_name,
+      amount: row.bid_amount ?? 0,
+      placedAt: row.bid_timestamp,
+    }))
   }
   async applyForWildcard() {
     await apiRequest('/wildcard/apply', { method: 'POST' })
@@ -164,8 +198,12 @@ class ApiParticipantService implements ParticipantService {
   async declineWildcard() { await apiRequest('/wildcard/decline', { method: 'POST' }) }
   async getWildcardProblems() { return (await this.getProblems(2)) as WildcardProblem[] }
   async placeWildcardBid(increment: BidIncrement) {
-    const result = await apiRequest<{ amount: number }>('/wildcard/bid', { method: 'POST', body: JSON.stringify({ increment }) })
-    return result.amount
+    const result = await apiRequest<RawBidAcceptance>('/wildcard/bid', {
+      method: 'POST',
+      body: JSON.stringify({ increment }),
+      resyncOnConflict: false,
+    })
+    return mapBidAcceptance(result, 'WILDCARD', null)
   }
   async selectWildcardProblem(problemId: string) {
     await apiRequest(`/wildcard/select/${encodeURIComponent(problemId)}`, { method: 'POST' })

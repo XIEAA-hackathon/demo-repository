@@ -243,3 +243,6 @@ def test_teammate_websocket_receives_leaders_live_bid(client, admin_headers, db)
         assert update["type"] == "bid_updated"
         assert update["payload"]["team_id"] == result["team_id"]
         assert update["payload"]["amount"] == 50
+        assert "bid_id" in update["payload"]
+        assert "timestamp" in update["payload"]
+        assert "leaderboard" not in update["payload"]

@@ -6,21 +6,27 @@ from app.models.models import Bid, EventConfig, GameConfig, ProblemStatement, Ro
 
 
 def _leader_headers(client, admin_headers, csv_bytes):
-    preview = client.post(
-        "/admin/registration/import/preview",
+    credentialed_csv = (
+        "Team Name,Leader Name,Leader Email,Leader Password\n"
+        "Team Alpha,Alice,alice@test.com,Alice@123\n"
+        "Team Beta,Bob,bob@test.com,Bob@1234\n"
+        "Team Gamma,Carol,carol@test.com,Carol@123\n"
+    ).encode()
+    imported = client.post(
+        "/admin/registration/import",
         headers=admin_headers,
-        files={"file": ("registrations.csv", csv_bytes, "text/csv")},
-    ).json()
-    confirmed = client.post(
-        "/admin/registration/import/confirm",
-        headers=admin_headers,
-        json={"import_id": preview["import_id"]},
-    ).json()
+        files={"file": ("registrations.csv", credentialed_csv, "text/csv")},
+    )
+    assert imported.status_code == 200, imported.text
     headers = {}
-    for row in confirmed["credentials"]:
-        login = client.post("/login", data={"username": row["username"], "password": row["temporary_password"]})
+    for username, password in {
+        "alice@test.com": "Alice@123",
+        "bob@test.com": "Bob@1234",
+        "carol@test.com": "Carol@123",
+    }.items():
+        login = client.post("/login", data={"username": username, "password": password})
         assert login.status_code == 200, login.text
-        headers[row["username"]] = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        headers[username] = {"Authorization": f"Bearer {login.json()['access_token']}"}
     return headers
 
 

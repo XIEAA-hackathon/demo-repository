@@ -1,5 +1,6 @@
 import logging
 import uuid
+from dataclasses import dataclass
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -11,15 +12,15 @@ from starlette.concurrency import run_in_threadpool
 from app.core.database import SessionLocal, get_db
 from app.models.models import User, Team, Member
 from app.schemas.schemas import UserCreate, UserResponse, Token, TeamCreate
-from app.core.security import get_password_hash, verify_password, create_access_token
+from app.core.security import (
+    create_access_token,
+    get_password_hash,
+    is_sha256_password_hash,
+    verify_password,
+)
 from jose import JWTError, jwt
 from app.core.config import settings
 from app.services.activity_log import record_event
-from app.services.auth_password_verifier import (
-    AuthenticationCapacityUnavailable,
-    PasswordVerificationResult,
-    password_verifier,
-)
 from app.services.participant_session import (
     PARTICIPANT_ROLES,
     acquire_participant_session,
@@ -38,6 +39,49 @@ ALREADY_LOGGED_IN_MESSAGE = (
     "This leader account is already logged in on another device. "
     "Please log out from the existing session before logging in again."
 )
+
+
+@dataclass(frozen=True)
+class BidAuthClaims:
+    """Signed identity claims; bidding transactions revalidate them in PostgreSQL."""
+
+    email: str
+    session_id: str
+    role: str
+
+
+def decode_bid_auth_claims(token: str) -> BidAuthClaims:
+    """Validate a bidding JWT without opening a database session."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        email = payload.get("sub")
+        session_id = payload.get("session_id")
+        role = payload.get("role")
+        if (
+            not isinstance(email, str)
+            or not email.strip()
+            or not isinstance(session_id, str)
+            or not session_id
+            or not isinstance(role, str)
+            or not role
+        ):
+            raise credentials_exception
+        return BidAuthClaims(email=email, session_id=session_id, role=role)
+    except JWTError as exc:
+        logger.info("Rejected invalid bid token reason=jwt_validation")
+        raise credentials_exception from exc
+
+
+async def get_bid_auth_claims(token: str = Depends(oauth2_scheme)) -> BidAuthClaims:
+    claims = decode_bid_auth_claims(token)
+    if claims.role != "leader":
+        raise HTTPException(status_code=403, detail="Only the imported team leader can perform this action.")
+    return claims
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
@@ -143,7 +187,11 @@ def _issue_session(user: User, db: Session) -> dict:
     }
 
 
-def _acquire_participant_session(user: User, password_hash: str, db: Session) -> tuple[dict, bool]:
+def _acquire_participant_session(
+    user: User,
+    password_hash: str,
+    db: Session,
+) -> tuple[dict, bool]:
     """Atomically claim a free or stale participant credential."""
     new_session_id = uuid.uuid4().hex
     now = utc_now()
@@ -235,6 +283,8 @@ def _complete_login_claim(
                 User.credentials_active.is_(True),
                 User.password_hash == password_hash,
             )
+            .with_for_update()
+            .populate_existing()
             .first()
         )
         if not user:
@@ -305,12 +355,12 @@ async def login(
 ):
     total_started_at = perf_counter()
     lookup_ms = 0.0
-    queue_wait_ms = 0.0
-    bcrypt_ms = 0.0
+    password_verify_ms = 0.0
     acquisition_ms = 0.0
     outcome = "internal_error"
     candidate_id: int | None = None
     candidate_role: str | None = None
+    password_scheme = "unknown"
 
     try:
         login_id = form_data.username.strip().lower()
@@ -324,26 +374,14 @@ async def login(
         candidate_role = candidate[1] if candidate else None
         password_hash = candidate[2] if candidate else ""
 
-        verification = PasswordVerificationResult(False, 0.0, 0.0)
+        password_scheme = "sha256" if is_sha256_password_hash(password_hash) else "unknown"
+        verification_valid = False
         if candidate_id:
-            try:
-                verification = await password_verifier.verify(
-                    form_data.password,
-                    password_hash,
-                    verify_password,
-                )
-            except AuthenticationCapacityUnavailable as exc:
-                queue_wait_ms = exc.queue_wait_ms
-                outcome = f"auth_busy_{exc.reason}"
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Authentication service is busy. Please retry shortly.",
-                    headers={"Retry-After": str(settings.AUTH_LOGIN_RETRY_AFTER_SECONDS)},
-                ) from exc
-        queue_wait_ms = verification.queue_wait_ms
-        bcrypt_ms = verification.bcrypt_ms
+            verify_started_at = perf_counter()
+            verification_valid = verify_password(form_data.password, password_hash)
+            password_verify_ms = (perf_counter() - verify_started_at) * 1000
 
-        if not verification.valid:
+        if not verification_valid:
             outcome = "invalid_credentials"
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -379,14 +417,14 @@ async def login(
         db.close()
         logger.info(
             "Participant login timing outcome=%s user_id=%s role=%s "
-            "lookup_ms=%.2f queue_wait_ms=%.2f bcrypt_ms=%.2f "
+            "password_scheme=%s lookup_ms=%.2f password_verify_ms=%.2f "
             "session_acquisition_ms=%.2f total_ms=%.2f",
             outcome,
             candidate_id,
             candidate_role,
+            password_scheme,
             lookup_ms,
-            queue_wait_ms,
-            bcrypt_ms,
+            password_verify_ms,
             acquisition_ms,
             (perf_counter() - total_started_at) * 1000,
         )

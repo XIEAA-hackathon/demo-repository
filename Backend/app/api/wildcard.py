@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app.api.auth import get_current_active_admin, get_current_user
+from app.api.auth import BidAuthClaims, get_bid_auth_claims, get_current_active_admin, get_current_user
 from app.api.websockets import manager
 from app.core.database import SessionLocal, get_db
 from app.models.models import EventConfig, GameConfig, RoundControl, Team, User, Wildcard, WildcardBid
@@ -29,6 +29,7 @@ from app.services.event_service import (
 )
 from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_rejection
+from app.services.participant_session import participant_session_needs_touch
 from app.services.wildcard_service import (
     WildcardSelectionConflict,
     assign_wildcard_selection,
@@ -48,10 +49,12 @@ logger = logging.getLogger("uvicorn.error")
 
 @dataclass(frozen=True)
 class WildcardBidResult:
+    bid_id: int
     team_id: int
     team_name: str
     amount: int
     timestamp: datetime
+    cooldown_seconds: int
     transaction_ms: float
 
 
@@ -61,36 +64,29 @@ class WildcardBidCooldownActive(RuntimeError):
         self.remaining_seconds = remaining_seconds
 
 
-def _wildcard_leaderboard_from_factory(session_factory) -> list[dict]:
-    with session_factory() as db:
-        return [
-            {
-                "rank": rank,
-                "team_id": ranked_team.id,
-                "team_name": ranked_team.team_name,
-                "amount": ranked_bid.amount,
-            }
-            for rank, (ranked_bid, ranked_team, _application) in enumerate(
-                ranked_wildcard_bids(db),
-                start=1,
-            )
-        ]
-
-
 def _place_wildcard_bid_transaction(
     session_factory,
     *,
-    user_id: int,
+    email: str,
     session_id: str,
     increment: int,
 ) -> WildcardBidResult:
     started_at = perf_counter()
+    user_id: int | None = None
     with session_factory() as db:
         try:
+            control = (
+                db.query(RoundControl)
+                .filter(RoundControl.round_type == "WILDCARD")
+                .with_for_update()
+                .one_or_none()
+            )
+            if control is None:
+                raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
             user = (
                 db.query(User)
                 .filter(
-                    User.id == user_id,
+                    User.email == email,
                     User.credentials_active.is_(True),
                     User.session_id == session_id,
                 )
@@ -100,20 +96,12 @@ def _place_wildcard_bid_transaction(
                 raise HTTPException(status_code=401, detail="Session expired or was revoked. Please log in again.")
             if user.role != "leader":
                 raise HTTPException(status_code=403, detail="Only the imported team leader can perform this action.")
+            user_id = user.id
             team_id = user.team_id
             if team_id is None:
                 team_id = db.query(Team.id).filter(Team.leader_id == user.id).scalar()
             if team_id is None:
                 raise HTTPException(status_code=403, detail="No team is linked to your account.")
-
-            control = (
-                db.query(RoundControl)
-                .filter(RoundControl.round_type == "WILDCARD")
-                .with_for_update()
-                .one_or_none()
-            )
-            if control is None:
-                raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
             game = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
             event_config = db.query(EventConfig).order_by(EventConfig.id.asc()).first()
             if not game or not event_config:
@@ -165,7 +153,8 @@ def _place_wildcard_bid_transaction(
 
             now = datetime.now(timezone.utc)
             if bid_row is None:
-                db.add(WildcardBid(team_id=team.id, amount=next_amount, timestamp=now))
+                bid_row = WildcardBid(team_id=team.id, amount=next_amount, timestamp=now)
+                db.add(bid_row)
             else:
                 bid_row.amount = next_amount
                 bid_row.timestamp = now
@@ -177,11 +166,16 @@ def _place_wildcard_bid_transaction(
                 entity_id=team.id,
                 metadata={"increment": increment, "amount": next_amount},
             )
+            if participant_session_needs_touch(user.session_last_seen_at, now=now):
+                user.session_last_seen_at = now
+            db.flush()
             result_values = {
+                "bid_id": bid_row.id,
                 "team_id": team.id,
                 "team_name": team.team_name,
                 "amount": next_amount,
                 "timestamp": now,
+                "cooldown_seconds": cooldown,
             }
             db.commit()
             return WildcardBidResult(
@@ -344,35 +338,29 @@ async def start_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
 async def place_wildcard_bid(
     http_request: Request,
     request: BidIncrementRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    identity: BidAuthClaims = Depends(get_bid_auth_claims),
 ):
     request_started_at = perf_counter()
-    user_id = int(current_user.id)
-    session_id = str(current_user.session_id)
-    db.close()
     session_factory = getattr(http_request.app.state, "session_factory", SessionLocal)
     try:
         result = await run_in_threadpool(
             _place_wildcard_bid_transaction,
             session_factory,
-            user_id=user_id,
-            session_id=session_id,
+            email=identity.email,
+            session_id=identity.session_id,
             increment=request.increment,
         )
     except WildcardBidCooldownActive as exc:
         return bid_cooldown_rejection(exc.remaining_seconds)
-    try:
-        leaderboard = await run_in_threadpool(_wildcard_leaderboard_from_factory, session_factory)
-    except Exception:
-        logger.exception("Post-commit Wildcard leaderboard refresh failed team_id=%s", result.team_id)
-        leaderboard = []
     payload = {
         "team_name": result.team_name,
         "team_id": result.team_id,
         "amount": result.amount,
+        "increment": request.increment,
         "round": "WILDCARD",
-        "leaderboard": leaderboard,
+        "bid_id": result.bid_id,
+        "timestamp": result.timestamp.isoformat(),
+        "cooldown_seconds": result.cooldown_seconds,
     }
     queued = manager.publish_event("wildcard_bid_updated", payload)
     logger.info(
@@ -384,8 +372,12 @@ async def place_wildcard_bid(
     )
     return {
         "message": "Wildcard slot bid placed. Coins are deducted only if the team qualifies.",
+        "bid_id": result.bid_id,
         "increment": request.increment,
         "amount": result.amount,
+        "cooldown_seconds": result.cooldown_seconds,
+        "timestamp": result.timestamp.isoformat(),
+        "server_time": datetime.now(timezone.utc).isoformat(),
     }
 
 

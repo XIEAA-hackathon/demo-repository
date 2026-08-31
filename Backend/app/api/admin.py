@@ -575,20 +575,11 @@ def _disabled_password_hash() -> str:
     return get_password_hash(secrets.token_urlsafe(48))
 
 
-def _participant_password_error(password: str) -> str | None:
-    if len(password.encode("utf-8")) > 72:
-        return "Password must be 72 bytes or fewer."
-    return None
-
-
 def _validate_participant_password(password: str, confirmation: str) -> None:
     if not password:
         raise HTTPException(status_code=422, detail="Password is required.")
     if password != confirmation:
         raise HTTPException(status_code=422, detail="Password confirmation does not match.")
-    password_error = _participant_password_error(password)
-    if password_error:
-        raise HTTPException(status_code=422, detail=password_error)
 
 
 def _participant_account_payload(db: Session, account: User) -> dict:
@@ -687,10 +678,6 @@ async def import_registrations(
         leader_password_hash = row.get("leader_password_hash") or ""
         if not leader and not leader_password_hash and not leader_password:
             row_messages.append("Leader Password is required for a new participant account.")
-        elif not leader_password_hash and leader_password:
-            password_error = _participant_password_error(leader_password)
-            if password_error:
-                row_messages.append(f"Leader Password: {password_error}")
 
         for member in row["members"]:
             member_email = (member.get("email") or "").strip().lower()
@@ -704,10 +691,6 @@ async def import_registrations(
                 row_messages.append(
                     f"Member {member_number} Password is required for a new participant account."
                 )
-            elif not member_password_hash and member_password:
-                password_error = _participant_password_error(member_password)
-                if password_error:
-                    row_messages.append(f"Member {member_number} Password: {password_error}")
             if member_user and (not team or member_user.team_id != team.id):
                 row_messages.append(f"Member email '{member_email}' belongs to another account or team.")
             member_record = existing_members.get(member_email)

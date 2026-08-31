@@ -325,7 +325,7 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
                 f"Leader email '{leader_email}' already appears at row {first_leader_rows[leader_email]}."
             )
         if leader_hash_mask.iat[position] and not is_valid_password_hash(leader_password_hash):
-            messages.append("Leader Password Hash is not a structurally valid bcrypt hash.")
+            messages.append("Leader Password Hash is not a structurally valid sha256$salt$digest hash.")
 
         members: List[Dict[str, Any]] = []
         for number in member_numbers:
@@ -344,7 +344,9 @@ def parse_registration_file(filename: str, content: bytes, simple_mode: bool = F
             if member_email and not _is_valid_email(member_email):
                 messages.append(f"Member {number} email '{member_email}' is not a valid email.")
             if member_hash_masks[number].iat[position] and not is_valid_password_hash(member_password_hash):
-                messages.append(f"Member {number} Password Hash is not a structurally valid bcrypt hash.")
+                messages.append(
+                    f"Member {number} Password Hash is not a structurally valid sha256$salt$digest hash."
+                )
             members.append({
                 "number": number,
                 "name": member_name,

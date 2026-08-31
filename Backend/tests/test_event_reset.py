@@ -299,8 +299,8 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
     assert _display_login(client)
 
     registration = (
-        "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email,Member 2 Name,Member 2 Email\n"
-        "Real Event Team,Real Leader,real.leader@event.test,Member One,one@event.test,Member Two,two@event.test\n"
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password,Member 2 Name,Member 2 Email,Member 2 Password\n"
+        "Real Event Team,Real Leader,real.leader@event.test,LeaderPassword@123,Member One,one@event.test,MemberOnePassword@123,Member Two,two@event.test,MemberTwoPassword@123\n"
     ).encode()
     imported = client.post(
         "/admin/registration/import",
@@ -308,20 +308,10 @@ def test_event_data_reset_preserves_system_access_and_supports_fresh_import(clie
         files={"file": ("real-event.csv", registration, "text/csv")},
     )
     assert imported.status_code == 200, imported.text
-    assert imported.json()["teams_created"] == 1
+    assert imported.json()["teams_created"] == 1, imported.json()
     account = db.query(User).filter(User.email == "real.leader@event.test").one()
-    assert account.credentials_active is False
+    assert account.credentials_active is True
     assert client.post(
         "/login",
-        data={"username": account.email, "password": "NoGeneratedPassword@123"},
-    ).status_code == 401
-    assigned = client.put(
-        f"/admin/registration/participant-accounts/{account.id}/password",
-        headers=_login(client, settings.DEMO_ADMIN_EMAIL, settings.DEMO_ADMIN_PASSWORD),
-        json={"new_password": "ManualPassword@123", "confirm_password": "ManualPassword@123"},
-    )
-    assert assigned.status_code == 200
-    assert client.post(
-        "/login",
-        data={"username": account.email, "password": "ManualPassword@123"},
+        data={"username": account.email, "password": "LeaderPassword@123"},
     ).status_code == 200

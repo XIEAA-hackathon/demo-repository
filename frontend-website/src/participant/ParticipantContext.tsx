@@ -4,9 +4,10 @@ import { participantService } from './services/apiParticipantService'
 import type { ParticipantService } from './services/participantService'
 import { connectEventSocket } from './services/eventSocket'
 import type { EventMessage } from './services/eventSocket'
-import { participantEventStates, type ParticipantDashboard, type ParticipantEventState } from './types'
+import { participantEventStates, type AcceptedBid, type ParticipantDashboard, type ParticipantEventState } from './types'
 import { getStageRoute } from './routeConfig'
 import { shouldApplyHttpSnapshot, type ApiStatus } from '../services/realtime/timerReconciliation'
+import { jitterMilliseconds, parseBidDelta } from './services/bidRealtime'
 
 interface ParticipantContextValue {
   dashboard: ParticipantDashboard | null
@@ -20,6 +21,7 @@ interface ParticipantContextValue {
   realtimeEvent: EventMessage | null
   service: ParticipantService
   refresh: () => Promise<ParticipantDashboard | null>
+  recordAcceptedBid: (bid: AcceptedBid) => void
 }
 
 const ParticipantContext = createContext<ParticipantContextValue | null>(null)
@@ -75,6 +77,35 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     return request
   }, [])
 
+  const applyOwnBid = useCallback((bid: AcceptedBid) => {
+    realtimeRevision.current += 1
+    setDashboard((current) => {
+      if (!current) return current
+      const next = bid.round === 'ROUND1'
+        ? {
+            ...current,
+            latestBid: {
+              id: bid.bidId,
+              teamId: current.team.id,
+              teamName: current.team.name,
+              problemId: bid.problemId ?? String(current.currentProblem?.id ?? ''),
+              amount: bid.amount,
+              placedAt: bid.placedAt,
+              round: 'ROUND1' as const,
+            },
+            bidCooldownRemainingSeconds: bid.cooldownSeconds,
+          }
+        : {
+            ...current,
+            wildcardBidAmount: bid.amount,
+            bidCooldownRemainingSeconds: bid.cooldownSeconds,
+          }
+      dashboardRef.current = next
+      return next
+    })
+    setLastSyncAt(Date.now())
+  }, [])
+
   useEffect(() => {
     let stopped = false
     let timer: number | undefined
@@ -109,23 +140,34 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         const next = await refresh()
         failures = next ? 0 : failures + 1
         const connected = ['connected', 'reconnected'].includes(socketStatusRef.current)
-        schedule(document.hidden && connected ? 60_000 : connected && next ? 30_000 : next ? 12_000 : Math.min(30_000, 1_000 * 2 ** failures))
+        schedule(
+          connected && next
+            ? jitterMilliseconds(60_000, 90_000)
+            : next
+              ? jitterMilliseconds(12_000, 20_000)
+              : Math.min(30_000, 1_000 * 2 ** failures),
+        )
       }, delay)
     }
     const onVisibility = () => {
       setDocumentHidden(document.hidden)
       if (timer !== undefined) window.clearTimeout(timer)
       if (document.hidden) {
-        schedule(['connected', 'reconnected'].includes(socketStatusRef.current) ? 60_000 : 15_000)
+        schedule(['connected', 'reconnected'].includes(socketStatusRef.current)
+          ? jitterMilliseconds(60_000, 90_000)
+          : jitterMilliseconds(15_000, 25_000))
         return
       }
       void (async () => {
         const next = await refresh()
         failures = next ? 0 : failures + 1
-        schedule(next ? 30_000 : Math.min(30_000, 1_000 * 2 ** failures))
+        const connected = ['connected', 'reconnected'].includes(socketStatusRef.current)
+        schedule(next && connected
+          ? jitterMilliseconds(60_000, 90_000)
+          : next ? jitterMilliseconds(12_000, 20_000) : Math.min(30_000, 1_000 * 2 ** failures))
       })()
     }
-    schedule(30_000)
+    schedule(jitterMilliseconds(12_000, 20_000))
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
       stopped = true
@@ -159,7 +201,10 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       const previousVersion = lastEventVersion.current
       if (message.version > 0 && previousVersion > 0 && message.version < previousVersion) return
       if (message.version > 0) lastEventVersion.current = message.version
-      if (previousVersion > 0 && message.version > previousVersion + 1) queueRefresh()
+      if (previousVersion > 0 && message.version > previousVersion + 1) {
+        queueRefresh()
+        window.dispatchEvent(new Event('participant:leaderboard-resync'))
+      }
       setRealtimeEvent(message)
 
       if (message.type === 'event_snapshot' || message.type === 'event_state_changed' || message.type === 'timer_sync') {
@@ -194,7 +239,22 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      if (message.type === 'bid_updated' || message.type === 'wildcard_bid_updated') return
+      if (message.type === 'bid_updated' || message.type === 'wildcard_bid_updated') {
+        const delta = parseBidDelta(message.payload)
+        if (delta && delta.teamId === dashboardRef.current?.team.id) {
+          applyOwnBid({
+            bidId: delta.bidId,
+            problemId: delta.problemId,
+            amount: delta.amount,
+            increment: delta.increment,
+            round: delta.round,
+            placedAt: delta.placedAt,
+            cooldownSeconds: delta.cooldownSeconds,
+            serverTime: message.server_time,
+          })
+        }
+        return
+      }
       if (message.type === 'participant_presence_changed') return
       if (message.type === 'round_updated' && message.payload.action === 'winners_assigned') {
         realtimeRevision.current += 1
@@ -243,17 +303,18 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       if (status === 'reconnected') {
         lastEventVersion.current = 0
         queueRefresh()
+        window.dispatchEvent(new Event('participant:leaderboard-resync'))
       }
     })
     return () => {
       if (timer !== undefined) window.clearTimeout(timer)
       disconnect()
     }
-  }, [navigate, refresh])
+  }, [applyOwnBid, navigate, refresh])
 
   const value = useMemo(
-    () => ({ dashboard, loading, error, socketStatus, apiStatus, lastSyncAt, documentHidden, refreshPending, realtimeEvent, service: participantService, refresh }),
-    [apiStatus, dashboard, documentHidden, error, lastSyncAt, loading, realtimeEvent, refresh, refreshPending, socketStatus],
+    () => ({ dashboard, loading, error, socketStatus, apiStatus, lastSyncAt, documentHidden, refreshPending, realtimeEvent, service: participantService, refresh, recordAcceptedBid: applyOwnBid }),
+    [apiStatus, applyOwnBid, dashboard, documentHidden, error, lastSyncAt, loading, realtimeEvent, refresh, refreshPending, socketStatus],
   )
   return <ParticipantContext.Provider value={value}>{children}</ParticipantContext.Provider>
 }

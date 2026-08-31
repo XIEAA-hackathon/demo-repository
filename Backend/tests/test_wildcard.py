@@ -119,6 +119,10 @@ def _run_slot_flow(client, admin_headers, db, *, applicants: int, slots: int, pr
     for team_headers in reversed(headers):
         response = client.post("/wildcard/bid", json={"increment": 5}, headers=team_headers)
         assert response.status_code == 200, response.text
+        assert set(response.json()) == {
+            "message", "bid_id", "increment", "amount", "cooldown_seconds", "timestamp", "server_time",
+        }
+        assert "leaderboard" not in response.json()
 
     closed = client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers)
     assert closed.status_code == 200, closed.text

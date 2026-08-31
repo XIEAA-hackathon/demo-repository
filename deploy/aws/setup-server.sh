@@ -35,11 +35,12 @@ if [[ ! -f $ENV_FILE ]]; then
     'ADMIN_EMAIL=admin@example.com' \
     "ADMIN_PASSWORD=$admin_password" \
     'ADMIN_NAME=Event Admin' > "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
   echo "Created the production environment with generated secrets; set its PostgreSQL DATABASE_URL before deployment."
 else
   echo "Preserved existing $ENV_FILE."
 fi
+chown root:"$app_group" "$ENV_FILE"
+chmod 0640 "$ENV_FILE"
 
 systemctl enable nginx
 echo "Amazon Linux server prerequisites are ready."

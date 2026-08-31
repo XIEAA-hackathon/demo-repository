@@ -8,10 +8,6 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "supersecretkey_please_change_in_production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440 # 24 hours
-    AUTH_BCRYPT_CONCURRENCY: int = 4
-    AUTH_LOGIN_QUEUE_LIMIT: int = 120
-    AUTH_LOGIN_QUEUE_TIMEOUT_SECONDS: float = 20
-    AUTH_LOGIN_RETRY_AFTER_SECONDS: int = 2
     SESSION_HEARTBEAT_SECONDS: int = 20
     SESSION_STALE_SECONDS: int = 90
     SESSION_TOUCH_INTERVAL_SECONDS: int = 15

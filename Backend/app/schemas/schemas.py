@@ -325,6 +325,7 @@ class LeaderboardEntry(BaseModel):
     coins: int
     ps_title: Optional[str] = None
     bid_amount: Optional[int] = None
+    bid_timestamp: Optional[datetime] = None
 
 # --- Admin Config / State Schemas ---
 class EventStateUpdate(BaseModel):

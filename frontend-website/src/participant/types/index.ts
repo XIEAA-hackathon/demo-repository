@@ -100,6 +100,18 @@ export interface LeaderboardEntry {
   teamId: Id
   teamName: string
   amount: number
+  placedAt: string | null
+}
+
+export interface AcceptedBid {
+  bidId: Id
+  problemId: Id | null
+  amount: number
+  increment: BidIncrement
+  round: Bid['round']
+  placedAt: string
+  cooldownSeconds: number
+  serverTime: string
 }
 
 export interface RoundOneSettlement {

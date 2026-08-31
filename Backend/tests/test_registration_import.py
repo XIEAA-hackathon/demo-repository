@@ -17,6 +17,21 @@ from app.models.models import Bid, GameConfig, Member, ProblemStatement, Registr
 from app.services.demo_seed import provision_demo_accounts
 
 
+@pytest.fixture
+def registration_log_capture(caplog):
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    previous_propagate = uvicorn_logger.propagate
+    previous_disabled = uvicorn_logger.disabled
+    uvicorn_logger.disabled = False
+    uvicorn_logger.propagate = True
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    try:
+        yield caplog
+    finally:
+        uvicorn_logger.propagate = previous_propagate
+        uvicorn_logger.disabled = previous_disabled
+
+
 def test_import_preview_detects_teams_and_leaders(client, admin_headers, csv_bytes):
     response = client.post(
         "/admin/registration/import/preview",
@@ -125,17 +140,30 @@ def test_import_rejects_unsupported_file(client, admin_headers):
 
 
 def test_import_credential_export(client, admin_headers, csv_bytes):
-    preview = client.post(
-        "/admin/registration/import/preview",
+    credentialed_csv = (
+        "Team Name,Leader Name,Leader Email,Leader Password\n"
+        "Team Alpha,Alice,alice@test.com,Alice@123\n"
+        "Team Beta,Bob,bob@test.com,Bob@1234\n"
+        "Team Gamma,Carol,carol@test.com,Carol@123\n"
+    ).encode()
+    imported = client.post(
+        "/admin/registration/import",
         headers=admin_headers,
-        files={"file": ("registrations.csv", csv_bytes, "text/csv")},
-    ).json()
-    confirm = client.post("/admin/registration/import/confirm", headers=admin_headers, json={"import_id": preview["import_id"]}).json()
-    assert len(confirm["credentials"]) == 7  # 3 leaders + every teammate
-    assert all(c["temporary_password"] for c in confirm["credentials"])
-    assert all(c["participant_id"] == c["username"] for c in confirm["credentials"])
-    assert all(c["username"] == c["email"] for c in confirm["credentials"] if c["email"])
-    assert any(c["username"].startswith("BTB-T") for c in confirm["credentials"] if not c["email"])
+        files={"file": ("registrations.csv", credentialed_csv, "text/csv")},
+    )
+    assert imported.status_code == 200, imported.text
+    exported = client.get(
+        f"/admin/registration/import/download/{imported.json()['download_token']}",
+        headers=admin_headers,
+    )
+    assert exported.status_code == 200
+    rows = list(csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig"))))
+    assert len(rows) == 3
+    assert {row["Leader Login Email"] for row in rows} == {
+        "alice@test.com", "bob@test.com", "carol@test.com",
+    }
+    assert all(row["Leader Password"] for row in rows)
+    assert all(row["Credential Status"] == "PASSWORD SET" for row in rows)
 
 
 def test_import_requires_admin(client, csv_bytes):
@@ -151,11 +179,12 @@ def _registration_xlsx() -> bytes:
     sheet = workbook.active
     sheet.title = "Registrations"
     sheet.append([
-        "Team Name", "Leader Name", "Leader Email", "Member 1 Name",
-        "Member 1 Email", "Member 2 Name", "Member 2 Email", "Organizer Notes",
+        "Team Name", "Leader Name", "Leader Email", "Leader Password",
+        "Member 1 Name", "Member 1 Email", "Member 1 Password",
+        "Member 2 Name", "Member 2 Email", "Member 2 Password", "Organizer Notes",
     ])
-    sheet.append(["Team Alpha", "Leader Alpha", "alpha@example.com", "A One", "a.one@example.com", "A Two", "a.two@example.com", "Keep alpha note"])
-    sheet.append(["Team Beta", "Leader Beta", "beta@example.com", "B One", "b.one@example.com", "B Two", "b.two@example.com", "Keep beta note"])
+    sheet.append(["Team Alpha", "Leader Alpha", "alpha@example.com", "AlphaLeader@123", "A One", "a.one@example.com", "AlphaMember1@123", "A Two", "a.two@example.com", "AlphaMember2@123", "Keep alpha note"])
+    sheet.append(["Team Beta", "Leader Beta", "beta@example.com", "BetaLeader@123", "B One", "b.one@example.com", "BetaMember1@123", "B Two", "b.two@example.com", "BetaMember2@123", "Keep beta note"])
     sheet["A1"].font = sheet["A1"].font.copy(bold=True)
     output = BytesIO()
     workbook.save(output)
@@ -163,7 +192,7 @@ def _registration_xlsx() -> bytes:
     return output.getvalue()
 
 
-def test_xlsx_import_returns_preserved_one_time_leader_credentials(client, admin_headers, db):
+def test_xlsx_import_preserves_supplied_credentials(client, admin_headers, db):
     source = _registration_xlsx()
     response = client.post(
         "/admin/registration/import",
@@ -194,17 +223,18 @@ def test_xlsx_import_returns_preserved_one_time_leader_credentials(client, admin
     sheet = workbook.active
     headers = [cell.value for cell in sheet[1]]
     assert headers == [
-        "Team Name", "Leader Name", "Leader Email", "Member 1 Name",
-        "Member 1 Email", "Member 2 Name", "Member 2 Email", "Organizer Notes",
-        "Leader Login Email", "Leader Password",
+        "Team Name", "Leader Name", "Leader Email", "Leader Password",
+        "Member 1 Name", "Member 1 Email", "Member 1 Password",
+        "Member 2 Name", "Member 2 Email", "Member 2 Password", "Organizer Notes",
+        "Leader Login Email", "Credential Status",
     ]
-    assert sheet["H2"].value == "Keep alpha note"
-    assert sheet["H3"].value == "Keep beta note"
-    assert sheet["I2"].value == "alpha@example.com"
-    assert sheet["I3"].value == "beta@example.com"
-    assert sheet["J2"].value and sheet["J2"].value != "EXISTING ACCOUNT"
-    assert sheet["J3"].value and sheet["J3"].value != "EXISTING ACCOUNT"
-    alpha_password = sheet["J2"].value
+    assert sheet["K2"].value == "Keep alpha note"
+    assert sheet["K3"].value == "Keep beta note"
+    assert sheet["L2"].value == "alpha@example.com"
+    assert sheet["L3"].value == "beta@example.com"
+    assert sheet["M2"].value == "PASSWORD SET"
+    assert sheet["M3"].value == "PASSWORD SET"
+    alpha_password = sheet["D2"].value
     workbook.close()
 
     alpha = db.query(User).filter(User.email == "alpha@example.com").one()
@@ -213,13 +243,12 @@ def test_xlsx_import_returns_preserved_one_time_leader_credentials(client, admin
     assert alpha.password_hash != alpha_password
     assert client.post("/login", data={"username": alpha.email, "password": alpha_password}).status_code == 200
     assert db.query(Member).count() == 4
-    assert db.query(User).filter(User.role == "member").count() == 0
+    assert db.query(User).filter(User.role == "member").count() == 4
     assert client.get(
         f"/admin/registration/import/download/{summary['download_token']}",
         headers=admin_headers,
     ).status_code == 404
 
-    original_hash = alpha.password_hash
     second = client.post(
         "/admin/registration/import",
         headers=admin_headers,
@@ -231,24 +260,27 @@ def test_xlsx_import_returns_preserved_one_time_leader_credentials(client, admin
     assert second["existing_leaders"] == 2
     assert db.query(Team).count() == 2
     assert db.query(User).filter(User.role == "leader").count() == 2
-    assert db.query(User).filter(User.email == "alpha@example.com").one().password_hash == original_hash
+    assert verify_password(
+        alpha_password,
+        db.query(User).filter(User.email == "alpha@example.com").one().password_hash,
+    )
 
     second_download = client.get(
         f"/admin/registration/import/download/{second['download_token']}",
         headers=admin_headers,
     )
     workbook = load_workbook(BytesIO(second_download.content), data_only=True)
-    assert workbook.active["J2"].value == "EXISTING ACCOUNT"
-    assert workbook.active["J3"].value == "EXISTING ACCOUNT"
+    assert workbook.active["M2"].value == "PASSWORD SET"
+    assert workbook.active["M3"].value == "PASSWORD SET"
     workbook.close()
 
 
 def test_registration_import_reports_duplicate_rows_and_requires_admin(client, admin_headers):
     csv_content = (
-        "Team Name,Leader Name,Leader Email,Member 1 Name,Member 1 Email\n"
-        "Team Alpha,Alpha,alpha@example.com,Member A,member@example.com\n"
-        "Team Alpha,Beta,beta@example.com,Member B,other@example.com\n"
-        "Team Gamma,Gamma,gamma@example.com,Member C,member@example.com\n"
+        "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password\n"
+        "Team Alpha,Alpha,alpha@example.com,Alpha@123,Member A,member@example.com,MemberA@123\n"
+        "Team Alpha,Beta,beta@example.com,Beta@123,Member B,other@example.com,MemberB@123\n"
+        "Team Gamma,Gamma,gamma@example.com,Gamma@123,Member C,member@example.com,MemberC@123\n"
     ).encode()
     response = client.post(
         "/admin/registration/import",
@@ -270,9 +302,9 @@ def test_registration_import_reports_duplicate_rows_and_requires_admin(client, a
 
 
 def test_direct_registration_import_reuses_preloaded_records_and_commits_once(
-    client, admin_headers, db, engine, caplog
+    client, admin_headers, db, engine, registration_log_capture
 ):
-    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    caplog = registration_log_capture
     initial_source = (
         "Team Name,Leader Name,Leader Email,Leader Password,Member 1 Name,Member 1 Email,Member 1 Password,Member 2 Name,Member 2 Email,Member 2 Password\n"
         "Team Alpha,Leader Alpha,alpha@example.com,Alpha@123,Member Alpha,member.alpha@example.com,MemberAlpha@123,Member Without Email,,\n"
@@ -429,8 +461,8 @@ def test_pandas_registration_imports_plaintext_csv_and_xlsx(
     assert leader.team_id == member.team_id
 
 
-def test_hash_columns_take_priority_and_never_export_hashes(client, admin_headers, db, caplog):
-    caplog.set_level(logging.INFO, logger="uvicorn.error")
+def test_hash_columns_take_priority_and_never_export_hashes(client, admin_headers, db, registration_log_capture):
+    caplog = registration_log_capture
     passwords = {
         "hash_only_leader": "HashOnlyLeader@123",
         "hash_only_member": "HashOnlyMember@123",
@@ -549,7 +581,7 @@ def test_hash_columns_take_priority_and_never_export_hashes(client, admin_header
     workbook.close()
 
 
-def test_invalid_bcrypt_hash_is_rejected_without_fallback(client, admin_headers):
+def test_non_sha256_hash_is_rejected_without_fallback(client, admin_headers):
     frame = pd.DataFrame([{
         "Team Name": "Invalid Hash Team",
         "Leader Name": "Invalid Hash Leader",
@@ -564,13 +596,13 @@ def test_invalid_bcrypt_hash_is_rejected_without_fallback(client, admin_headers)
     )
     assert response.status_code == 200, response.text
     assert response.json()["teams_processed"] == 0
-    assert any("structurally valid bcrypt hash" in error["message"] for error in response.json()["errors"])
+    assert any("structurally valid sha256$salt$digest hash" in error["message"] for error in response.json()["errors"])
 
 
 def test_eighty_team_hash_import_avoids_server_hashing_and_repeated_selects(
-    client, admin_headers, engine, caplog
+    client, admin_headers, engine, registration_log_capture
 ):
-    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    caplog = registration_log_capture
     shared_hash = get_password_hash("BenchmarkHash@123")
     rows = []
     for number in range(1, 81):
@@ -630,8 +662,9 @@ def test_demo_csv_is_importer_compatible_and_returns_csv_credentials(client, adm
     assert demo.status_code == 200
     source_rows = list(csv.reader(io.StringIO(demo.content.decode("utf-8-sig"))))
     assert source_rows[0] == [
-        "Team Name", "Leader Name", "Leader Email", "Member 1 Name",
-        "Member 1 Email", "Member 2 Name", "Member 2 Email",
+        "Team Name", "Leader Name", "Leader Email", "Leader Password",
+        "Member 1 Name", "Member 1 Email", "Member 1 Password",
+        "Member 2 Name", "Member 2 Email", "Member 2 Password",
     ]
 
     imported = client.post(
@@ -652,15 +685,13 @@ def test_demo_csv_is_importer_compatible_and_returns_csv_credentials(client, adm
     assert downloaded.status_code == 200
     assert downloaded.headers["content-type"].startswith("text/csv")
     output_rows = list(csv.reader(io.StringIO(downloaded.content.decode("utf-8-sig"))))
-    assert output_rows[0] == [*source_rows[0], "Leader Login Email", "Leader Password"]
-    assert [row[:7] for row in output_rows[1:]] == source_rows[1:]
+    assert output_rows[0] == [*source_rows[0], "Leader Login Email", "Credential Status"]
+    assert [row[:10] for row in output_rows[1:]] == source_rows[1:]
     assert output_rows[1][-2] == "alice@example.com"
-    assert output_rows[1][-1] and output_rows[1][-1] != "EXISTING ACCOUNT"
-    alice_password = output_rows[1][-1]
+    assert output_rows[1][-1] == "PASSWORD SET"
+    alice_password = source_rows[1][3]
     alice = db.query(User).filter(User.email == "alice@example.com").one()
     assert verify_password(alice_password, alice.password_hash)
-    original_hash = alice.password_hash
-
     repeated = client.post(
         "/admin/registration/import",
         headers=admin_headers,
@@ -668,13 +699,17 @@ def test_demo_csv_is_importer_compatible_and_returns_csv_credentials(client, adm
     ).json()
     assert repeated["teams_created"] == 0
     assert repeated["leaders_created"] == 0
-    assert db.query(User).filter(User.email == "alice@example.com").one().password_hash == original_hash
+    assert db.query(User).filter(User.email == "alice@example.com").count() == 1
+    assert verify_password(
+        alice_password,
+        db.query(User).filter(User.email == "alice@example.com").one().password_hash,
+    )
     repeated_download = client.get(
         f"/admin/registration/import/download/{repeated['download_token']}",
         headers=admin_headers,
     )
     repeated_rows = list(csv.reader(io.StringIO(repeated_download.content.decode("utf-8-sig"))))
-    assert repeated_rows[1][-1] == "EXISTING ACCOUNT"
+    assert repeated_rows[1][-1] == "PASSWORD SET"
 
 
 def test_registration_credential_reset_allows_fresh_passwords_and_preserves_system_accounts(client, admin_headers, db):
@@ -936,10 +971,10 @@ def test_assignment_export_preserves_xlsx_format_and_original_columns(client, ad
 
 def test_updated_registration_export_reflects_three_team_round_and_wildcard_assignments(client, admin_headers, db):
     source = (
-        "Team Name,Leader Name,Leader Email,Organizer Notes\n"
-        "Team A,Leader A,leader.a@example.com,Keep A\n"
-        "Team B,Leader B,leader.b@example.com,Keep B\n"
-        "Team C,Leader C,leader.c@example.com,Keep C\n"
+        "Team Name,Leader Name,Leader Email,Leader Password,Organizer Notes\n"
+        "Team A,Leader A,leader.a@example.com,LeaderA@123,Keep A\n"
+        "Team B,Leader B,leader.b@example.com,LeaderB@123,Keep B\n"
+        "Team C,Leader C,leader.c@example.com,LeaderC@123,Keep C\n"
     ).encode()
     imported = client.post(
         "/admin/registration/import",
@@ -969,7 +1004,7 @@ def test_updated_registration_export_reflects_three_team_round_and_wildcard_assi
     assert exported.status_code == 200, exported.text
     reader = csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig")))
     rows = {row["Team Name"]: row for row in reader}
-    assert reader.fieldnames[:4] == ["Team Name", "Leader Name", "Leader Email", "Organizer Notes"]
+    assert reader.fieldnames[:5] == ["Team Name", "Leader Name", "Leader Email", "Leader Password", "Organizer Notes"]
     assert [rows[name]["Organizer Notes"] for name in ("Team A", "Team B", "Team C")] == ["Keep A", "Keep B", "Keep C"]
 
     assert rows["Team A"]["Round 1 Problem Number"] == "R1-1"
@@ -1005,7 +1040,7 @@ def test_assignment_export_never_replays_uploaded_plaintext_password(client, adm
     assert imported.status_code == 200, imported.text
     exported = client.get("/admin/registration/assignments", headers=admin_headers)
     row = next(csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig"))))
-    assert row["Leader Password"] == "EXISTING ACCOUNT"
+    assert row["Leader Password"] == "NOT EXPORTED"
     assert "DoNotReplay123!" not in exported.text
 
 
@@ -1045,7 +1080,7 @@ def test_registration_credential_reset_preserves_active_event_data(client, admin
     ])
     game = db.query(GameConfig).first()
     game.state = active_state
-    timer_end = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=5)
+    timer_end = datetime.now(timezone.utc) + timedelta(minutes=5)
     game.auction_timer_end = timer_end
     round1_control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").first()
     if round1_control is None:

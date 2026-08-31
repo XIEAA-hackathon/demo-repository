@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.security import get_password_hash
 from app.models.models import EventActivityLog, EventConfig, GameConfig, ProblemStatement, RoundControl, Team, User
 from app.main import process_expiry_cycle
-from app.services.event_service import _remaining_seconds
+from app.services.event_service import _remaining_seconds, sync_expired_event_state
 
 
 def _leader(db, email="resilient@team.test"):
@@ -139,7 +139,7 @@ def test_repeated_manual_round_end_is_idempotent(client, admin_headers, db):
     ).count() == 1
 
 
-def test_expired_round_one_bidding_rejects_late_bid_and_marks_ready(client, db):
+def test_expired_round_one_bid_rejects_without_running_expiry_transition(client, db):
     user, team = _leader(db)
     problem = ProblemStatement(ps_number="R1-1", title="Expired", description="Expired", round=1, status="current")
     db.add(problem)
@@ -157,6 +157,11 @@ def test_expired_round_one_bidding_rejects_late_bid_and_marks_ready(client, db):
     headers = _login(client, user.email, "temp-pass")
     response = client.post("/bid", headers=headers, json={"ps_id": problem.id, "increment": 5})
     assert response.status_code == 409
+    db.expire_all()
+    assert db.query(GameConfig).first().state == "ROUND1_BIDDING"
+    assert db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one().status == "BIDDING"
+
+    assert sync_expired_event_state(db) == ["round1.bidding_expired"]
     db.expire_all()
     assert db.query(GameConfig).first().state == "ROUND1_RESULT"
     assert db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one().status == "READY"

@@ -37,8 +37,6 @@ def _validate_password(password: str, confirmation: str) -> None:
         raise HTTPException(status_code=422, detail="Password is required.")
     if password != confirmation:
         raise HTTPException(status_code=422, detail="Password confirmation does not match.")
-    if len(password.encode("utf-8")) > 72:
-        raise HTTPException(status_code=422, detail="Password must be 72 bytes or fewer.")
 
 
 def _user_payload(user: User) -> dict:

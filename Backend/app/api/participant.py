@@ -283,6 +283,7 @@ def get_leaderboard(db: Session = Depends(get_db), current_user: User = Depends(
                 coins=team.coins,
                 ps_title=None,
                 bid_amount=bid.amount,
+                bid_timestamp=bid.timestamp,
             )
             for index, (bid, team, _application) in enumerate(ranked_wildcard_bids(db), start=1)
         ]
@@ -300,6 +301,7 @@ def get_leaderboard(db: Session = Depends(get_db), current_user: User = Depends(
             coins=team.coins,
             ps_title=None,
             bid_amount=bid.amount,
+            bid_timestamp=bid.timestamp,
         )
         for index, (bid, team) in enumerate(rows, start=1)
     ]

@@ -74,16 +74,16 @@ def _active_round_one(db, *, team_count: int, cooldown_seconds: int = 0, expired
         db.add(team)
         db.flush()
         user.team_id = team.id
-        accounts.append((user.id, session_id, team.id))
+        accounts.append((user.email, session_id, team.id))
     db.commit()
     return problem.id, accounts
 
 
 def _bid_once(session_factory, problem_id: int, account, increment: int = 5):
-    user_id, session_id, _team_id = account
+    email, session_id, _team_id = account
     return _place_round1_bid_transaction(
         session_factory,
-        user_id=user_id,
+        email=email,
         session_id=session_id,
         problem_id=problem_id,
         increment=increment,
@@ -190,6 +190,36 @@ def test_bid_racing_expiry_cannot_enter_after_authoritative_deadline(db, session
     assert db.query(Bid).count() == 0
     assert db.query(GameConfig).one().state == "ROUND1_RESULT"
     assert db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one().status == "READY"
+
+
+def test_session_revoked_while_waiting_for_auction_lock_cannot_bid(db, session_factory):
+    problem_id, accounts = _active_round_one(db, team_count=1)
+    email, session_id, _team_id = accounts[0]
+
+    with session_factory() as lock_db:
+        lock_db.query(RoundControl).filter(
+            RoundControl.round_type == "ROUND1",
+        ).with_for_update().one()
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            bid_future = executor.submit(
+                _place_round1_bid_transaction,
+                session_factory,
+                email=email,
+                session_id=session_id,
+                problem_id=problem_id,
+                increment=5,
+            )
+            with session_factory() as revoke_db:
+                revoke_db.query(User).filter(User.email == email).update({User.session_id: None})
+                revoke_db.commit()
+            lock_db.commit()
+
+            with pytest.raises(HTTPException) as rejected:
+                bid_future.result(timeout=20)
+
+    assert rejected.value.status_code == 401
+    assert db.query(Bid).count() == 0
 
 
 def test_bid_racing_finalization_is_atomic_and_charges_at_most_once(

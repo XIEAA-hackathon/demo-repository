@@ -2,18 +2,20 @@ from app.api.websockets import make_event
 
 
 def _participant_headers(client, admin_headers, csv_bytes):
-    preview = client.post(
-        "/admin/registration/import/preview",
+    source = (
+        "Team Name,Leader Name,Leader Email,Leader Password\n"
+        "Team Alpha,Alice,alice@test.com,Alice@123\n"
+    ).encode()
+    imported = client.post(
+        "/admin/registration/import",
         headers=admin_headers,
-        files={"file": ("registrations.csv", csv_bytes, "text/csv")},
-    ).json()
-    confirmed = client.post(
-        "/admin/registration/import/confirm",
-        headers=admin_headers,
-        json={"import_id": preview["import_id"]},
-    ).json()
-    password = next(row["temporary_password"] for row in confirmed["credentials"] if row["email"] == "alice@test.com")
-    token = client.post("/login", data={"username": "alice@test.com", "password": password}).json()["access_token"]
+        files={"file": ("registrations.csv", source, "text/csv")},
+    )
+    assert imported.status_code == 200, imported.text
+    token = client.post(
+        "/login",
+        data={"username": "alice@test.com", "password": "Alice@123"},
+    ).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 

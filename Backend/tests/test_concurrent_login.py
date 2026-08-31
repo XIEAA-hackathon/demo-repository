@@ -1,5 +1,4 @@
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -11,7 +10,6 @@ from app.api import auth, participant
 from app.core.database import get_db
 from app.core.security import get_password_hash
 from app.models.models import EventActivityLog, EventConfig, GameConfig, Team, User
-from app.services.auth_password_verifier import BoundedPasswordVerifier
 
 
 def _concurrent_login_app(session_factory, leader_count: int):
@@ -20,7 +18,7 @@ def _concurrent_login_app(session_factory, leader_count: int):
             user = User(
                 name=f"Concurrent Leader {index}",
                 email=f"leader-{index}@concurrency.test",
-                password_hash="test-password-hash",
+                password_hash=get_password_hash("correct-password"),
                 role="leader",
             )
             db.add(user)
@@ -104,57 +102,40 @@ def test_login_releases_database_connection_before_password_verification(engine,
         constrained_engine.dispose()
 
 
-def test_ten_simultaneous_logins_acquire_exactly_one_leader_session(session_factory, monkeypatch):
+def test_ten_simultaneous_logins_acquire_exactly_one_leader_session(session_factory):
     app = _concurrent_login_app(session_factory, 1)
-    barrier = Barrier(10)
-    test_password_verifier = BoundedPasswordVerifier(
-        concurrency=10,
-        queue_limit=10,
-        queue_timeout_seconds=10,
-    )
+    with TestClient(app) as client:
+        def login_once(_index: int):
+            return client.post(
+                "/login",
+                data={"username": "leader-0@concurrency.test", "password": "correct-password"},
+            )
 
-    def synchronized_verify(_plain_password, _password_hash):
-        barrier.wait(timeout=10)
-        return True
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            responses = list(executor.map(login_once, range(10)))
 
-    monkeypatch.setattr(auth, "verify_password", synchronized_verify)
-    monkeypatch.setattr(auth, "password_verifier", test_password_verifier)
-    try:
-        with TestClient(app) as client:
-            def login_once(_index: int):
-                return client.post(
-                    "/login",
-                    data={"username": "leader-0@concurrency.test", "password": "correct-password"},
-                )
+        successes = [response for response in responses if response.status_code == 200]
+        rejected = [response for response in responses if response.status_code == 409]
+        assert len(successes) == 1
+        assert len(rejected) == 9
+        assert all("already logged in" in response.json()["detail"] for response in rejected)
 
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                responses = list(executor.map(login_once, range(10)))
+        active_headers = {"Authorization": f"Bearer {successes[0].json()['access_token']}"}
+        assert client.get("/participant/dashboard", headers=active_headers).status_code == 200
 
-            successes = [response for response in responses if response.status_code == 200]
-            rejected = [response for response in responses if response.status_code == 409]
-            assert len(successes) == 1
-            assert len(rejected) == 9
-            assert all("already logged in" in response.json()["detail"] for response in rejected)
-
-            active_headers = {"Authorization": f"Bearer {successes[0].json()['access_token']}"}
-            assert client.get("/participant/dashboard", headers=active_headers).status_code == 200
-
-        with session_factory() as db:
-            leader = db.query(User).filter(User.email == "leader-0@concurrency.test").one()
-            assert leader.session_id
-            assert leader.session_created_at is not None
-            assert leader.session_last_seen_at is not None
-            assert db.query(EventActivityLog).filter(EventActivityLog.action == "auth.login").count() == 1
-            assert db.query(EventActivityLog).filter(
-                EventActivityLog.action == "auth.login_rejected_duplicate"
-            ).count() == 9
-    finally:
-        test_password_verifier.shutdown()
+    with session_factory() as db:
+        leader = db.query(User).filter(User.email == "leader-0@concurrency.test").one()
+        assert leader.session_id
+        assert leader.session_created_at is not None
+        assert leader.session_last_seen_at is not None
+        assert db.query(EventActivityLog).filter(EventActivityLog.action == "auth.login").count() == 1
+        assert db.query(EventActivityLog).filter(
+            EventActivityLog.action == "auth.login_rejected_duplicate"
+        ).count() == 9
 
 
-def test_fifty_distinct_leaders_can_login_concurrently(session_factory, monkeypatch):
+def test_fifty_distinct_leaders_can_login_concurrently(session_factory):
     app = _concurrent_login_app(session_factory, 50)
-    monkeypatch.setattr(auth, "verify_password", lambda _plain, _hashed: True)
     with TestClient(app) as client:
         def login_leader(index: int):
             return client.post(

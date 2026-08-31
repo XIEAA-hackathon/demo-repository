@@ -7,7 +7,7 @@ This repository contains the backend service for the **Casino Hackathon Auction 
 - **Framework**: **FastAPI** (ASGI web framework) ensuring high-throughput, low-latency API endpoints through asynchronous event loop (`asyncio`) processing.
 - **ORM & Data Persistence**: **SQLAlchemy 2.0** backed by PostgreSQL, with ACID transactions, row locking, connection pooling, and Alembic schema migrations. SQLite is used only as the read-only source during the one-time legacy data transfer.
 - **Server Gateway**: **Uvicorn**, a lightning-fast ASGI implementation leveraging `uvloop` and `httptools`.
-- **Authentication**: Stateless authentication using **JSON Web Tokens (JWT)** secured via HMAC-SHA256 (`HS256`) signature algorithms. Password persistence utilizes `passlib` with `bcrypt` salting and hashing.
+- **Authentication**: Stateless authentication using **JSON Web Tokens (JWT)** secured via HMAC-SHA256 (`HS256`) signatures. Passwords use per-account salted SHA-256 records in `sha256$<salt>$<digest>` format.
 - **Real-time Engine**: **WebSockets** protocol (RFC 6455) for asynchronous, full-duplex communication enabling sub-second event broadcasts.
 
 ## 🧠 Core Domain Logic & Modules
@@ -16,7 +16,7 @@ This repository contains the backend service for the **Casino Hackathon Auction 
 - **Role-Based Access Control (RBAC)**: The system enforces strict segregation of duties between `admin` and `leader` roles using FastAPI dependency injection (`Depends()`).
 - **Authorization Flow**: 
   1. Client transmits credentials payload to `POST /login`.
-  2. Server validates bcrypt hash and issues a short-lived stateless JWT access token.
+  2. Server validates the salted SHA-256 password record and issues a short-lived stateless JWT access token.
   3. Subsequent protected route requests require the `Authorization: Bearer <token>` header, verified middleware-style before request processing.
 
 ### 2. Auction & Bidding Engine (Core Logic)
@@ -102,7 +102,7 @@ sequenceDiagram
 
     %% Authentication Phase
     Client->>API: POST /login (Credentials)
-    API->>DB: Query User & Verify bcrypt Hash
+    API->>DB: Query User & Verify Salted SHA-256 Hash
     API-->>Client: 200 OK (JWT Access Token)
 
     %% WebSocket Handshake

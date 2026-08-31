@@ -9,9 +9,14 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+interface ApiRequestOptions extends RequestInit {
+  resyncOnConflict?: boolean
+}
+
+export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const { resyncOnConflict = true, ...requestOptions } = options
   const token = getAccessToken()
-  const headers = new Headers(options.headers)
+  const headers = new Headers(requestOptions.headers)
   if (token) headers.set('Authorization', `Bearer ${token}`)
   if (options.body && !(options.body instanceof FormData) && !(options.body instanceof URLSearchParams)) {
     headers.set('Content-Type', 'application/json')
@@ -19,7 +24,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
 
   let response: Response
   try {
-    response = await fetch(`${API_URL}${path}`, { ...options, headers })
+    response = await fetch(`${API_URL}${path}`, { ...requestOptions, headers })
   } catch {
     throw new ApiError('Cannot reach the event server. Check your connection and try again.', 0)
   }
@@ -30,7 +35,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
       clearAccessToken()
       window.dispatchEvent(new Event('participant:unauthorized'))
     }
-    if (response.status === 409 || response.status === 429 || response.status === 503) {
+    if (resyncOnConflict && (response.status === 409 || response.status === 429 || response.status === 503)) {
       window.dispatchEvent(new Event('participant:resync'))
     }
     const retryAfterHeader = Number(response.headers.get('Retry-After'))
