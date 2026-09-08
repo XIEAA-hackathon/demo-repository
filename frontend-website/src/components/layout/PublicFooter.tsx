@@ -4,7 +4,7 @@ import { eventContent } from '../../config/eventContent'
 import { smoothScrollToTop } from '../../utils/scroll'
 
 const footerNav = [
-  { label: 'Home', to: '/' },
+  { label: 'Home', to: '/#hero' },
   { label: 'Event', to: '/event' },
   { label: 'Rules', to: '/#rules' },
 ]
