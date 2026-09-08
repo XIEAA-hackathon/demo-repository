@@ -4,11 +4,10 @@ import { Menu, X, LogIn } from 'lucide-react'
 import { smoothScrollToTop } from '../../utils/scroll'
 
 const navItems = [
-  { label: 'Home', to: '/' },
+  { label: 'Home', to: '/#hero' },
   { label: 'Event', to: '/event' },
   { label: 'Timeline', to: '/#timeline' },
   { label: 'Rules', to: '/#rules' },
-  { label: 'How It Works', to: '/event' },
 ]
 
 export default function PublicNavbar() {
