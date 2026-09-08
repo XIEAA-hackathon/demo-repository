@@ -6,7 +6,6 @@ import { smoothScrollToTop } from '../../utils/scroll'
 const footerNav = [
   { label: 'Home', to: '/' },
   { label: 'Event', to: '/event' },
-  { label: 'How It Works', to: '/event' },
   { label: 'Rules', to: '/#rules' },
 ]
 
