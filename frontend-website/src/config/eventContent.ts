@@ -12,7 +12,7 @@ export const eventContent = {
   presentedBy: 'XIE Alumni Committee',
   tagline: 'Bid to Build',
   heroLine: 'Choose your challenge. Bid on your confidence. Build to win.',
-  date: '29 August',
+  date: '2 October',
   time: '10:00 AM',
   venue: 'XIE\nSeminar Hall',
   teamSize: '2\u20134 Members',
