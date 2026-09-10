@@ -1,7 +1,5 @@
 # AWS production deployment
 
-The legacy immutable-release path is `.github/workflows/deploy-aws.yml`. It is manual-only; its former automatic `main` trigger is disabled so it cannot compete with the live `main1` SSH pipeline for port 8000 or the Nginx static tree.
-
 Persistent state is outside releases:
 
 - Environment: `/etc/casino-hackathon/backend.env`
@@ -17,13 +15,8 @@ Promotion uses an atomic temporary-symlink rename and immediately verifies `read
 
 If validation fails before promotion, the working `current` release is untouched. If a post-promotion check fails, the script restores the previous symlink and service configuration, restarts/reloads the services, and logs `ROLLBACK SUCCESS` or `ROLLBACK FAILED`. Failed release content is retained for diagnosis. After a successful deployment, retention keeps the active release plus five recent releases; `/opt/casino_hackathon/data` and `/etc/casino-hackathon` are never pruned.
 
-To roll back deliberately, run the workflow manually and enter a previous commit SHA from `main` in the `ref` input, or use the equivalent CLI command from an authenticated administrator workstation:
-
-```bash
-gh workflow run deploy-aws.yml --ref main -f ref=<full-main-commit-sha>
-```
-
-This is the preferred manual recovery process because it reuses the same tested artifact and deployment script as automatic pushes. If an administrator already has a trusted workflow artifact on EC2, the same lower-level script can be invoked as:
+If an administrator already has a trusted workflow artifact on EC2, the lower-level
+immutable-release script can be invoked manually as:
 
 ```bash
 bash /opt/casino_hackathon/current/deploy/aws/deploy-release.sh /path/to/casino-hackathon-<sha>.tar.gz <full-sha>
@@ -37,7 +30,7 @@ First-time provisioning on Amazon Linux 2023 uses `sudo bash deploy/aws/setup-se
 
 ## Automatic deployment from `main1`
 
-`.github/workflows/deploy-main1.yml` is a separate deployment path for the existing EC2 checkout at `/home/ec2-user/demo-repository`. It triggers only for pushes to `main1`, runs the complete Backend test suite, builds the umbrella Vite frontend on a GitHub-hosted runner, then downloads only the tested frontend artifact plus deployment script through the repository-scoped `casino-production` runner on EC2. Inbound SSH from hosted runners is not required and no security-group change is needed.
+`.github/workflows/deploy.yml` is the deployment path for the existing EC2 checkout at `/home/ec2-user/demo-repository`. It triggers only for pushes to `main1`, applies migrations, validates the FastAPI runtime, and builds the umbrella Vite frontend on a GitHub-hosted runner. The repository-scoped `casino-production` runner on EC2 then downloads the validated frontend artifact and deployment script. Inbound SSH from hosted runners is not required and no security-group change is needed.
 
 The EC2 script fetches the exact pushed commit from `origin/main1` into an isolated staging tree. It does not use `git reset --hard`, and it does not require the EC2 checkout's frontend worktree to be clean. Backend promotion preserves `Backend/.env`, `Backend/venv`, logs, and caches. It validates the service's PostgreSQL `DATABASE_URL` and applies `alembic upgrade head` before restarting the systemd-managed service.
 
@@ -75,7 +68,7 @@ The single frontend build is materialized according to the live Nginx layout:
 
 This works because the repository now contains one BrowserRouter application and the live Nginx configuration serves `/assets` from `static/public` while using the Admin and participant files as route entry points.
 
-Before either Backend or static content changes, `deploy-main1-remote.sh` saves a rollback snapshot under `/opt/casino_hackathon/main1-backups`. At most five snapshots are retained. A failed Backend health check or Nginx/frontend check restores the previous snapshot; database migrations are never rolled back automatically. The deployed SHA is recorded at `/home/ec2-user/deploy-state/main1-deployed-sha`. Both AWS workflows share the `production-aws` GitHub concurrency group and `/var/lock/casino-hackathon-deploy.lock`, so the existing `main` release pipeline and this `main1` pipeline cannot promote at the same time.
+Before either Backend or static content changes, `deploy-main1-remote.sh` saves a rollback snapshot under `/opt/casino_hackathon/main1-backups`. At most five snapshots are retained. A failed Backend health check or Nginx/frontend check restores the previous snapshot; database migrations are never rolled back automatically. The deployed SHA is recorded at `/home/ec2-user/deploy-state/main1-deployed-sha`. The workflow uses the `production-aws` GitHub concurrency group and `/var/lock/casino-hackathon-deploy.lock` so deployments cannot promote concurrently.
 
 The deployment itself requires no EC2 private key in GitHub because the repository-scoped runner is already installed on the server. `EC2_HOST`, `EC2_USER`, and `EC2_SSH_KEY` may remain configured for administrator-operated diagnostics, but the automatic deployment does not read or print them.
 

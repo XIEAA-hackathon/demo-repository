@@ -30,12 +30,17 @@ venv/
 node_modules/
 dist/
 dist-ssr/
+build/
+coverage/
 *.tsbuildinfo
 deploy/*.zip
 
 # Logs and local tooling
 graphify-out/
 work/
+logs/
+tmp/
+temp/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -47,3 +52,12 @@ pnpm-debug.log*
 *.suo
 *.swp
 *.exe
+
+# Historical/generated content excluded from the test branch
+outputs/
+.impeccable/
+frontend-admin/
+frontend-participant/
+TEST_AND_AUDIT_REPORT.md
+demo.example.txt
+websocket_test.html

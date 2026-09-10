@@ -1,4 +1,5 @@
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -25,6 +26,12 @@ if (
 ):
     raise RuntimeError("TEST_DATABASE_URL must use postgresql+psycopg.")
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+
+# Production leaves demo passwords unset. Tests generate process-local values before
+# importing settings so demo-account behavior remains covered without stored secrets.
+os.environ.setdefault("DEMO_ADMIN_PASSWORD", secrets.token_urlsafe(24))
+os.environ.setdefault("DEMO_LEADER_PASSWORD", secrets.token_urlsafe(24))
+os.environ.setdefault("LEADERBOARD_DISPLAY_PASSWORD", secrets.token_urlsafe(24))
 
 from app.core.database import Base, get_db
 from app.core.security import get_password_hash
