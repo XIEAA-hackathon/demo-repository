@@ -20,17 +20,6 @@ __pycache__/
 test_credentials.txt
 websocket_test.html
 
- Backend/.env.example
-        Backend/app/api/admin.py
-        Backend/app/api/participant.py
-        Backend/app/services/
-        Backend/requirements-dev.txt
-        Backend/run.py
-        Backend/tests/
-        README.md
-        demo.txt
-        deploy/
-        frontend-website/
-        frontend/.env.example
-        frontend/src/config.js
-        frontenend-particpant/
+# Development sources are preserved on the full-backup main branch.
+tests/
+requirements-dev.txt

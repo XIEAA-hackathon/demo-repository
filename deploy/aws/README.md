@@ -37,7 +37,7 @@ First-time provisioning on Amazon Linux 2023 uses `sudo bash deploy/aws/setup-se
 
 ## Automatic deployment from `main1`
 
-`.github/workflows/deploy-main1.yml` is a separate deployment path for the existing EC2 checkout at `/home/ec2-user/demo-repository`. It triggers only for pushes to `main1`, runs the complete Backend test suite, builds the umbrella Vite frontend on a GitHub-hosted runner, then downloads only the tested frontend artifact plus deployment script through the repository-scoped `casino-production` runner on EC2. Inbound SSH from hosted runners is not required and no security-group change is needed.
+`.github/workflows/deploy.yml` is the deployment path for the existing EC2 checkout at `/home/ec2-user/demo-repository`. It triggers only for pushes to `main1`, applies migrations, validates the FastAPI runtime, and builds the umbrella Vite frontend on a GitHub-hosted runner. The repository-scoped `casino-production` runner on EC2 then downloads the validated frontend artifact and deployment script. Inbound SSH from hosted runners is not required and no security-group change is needed.
 
 The EC2 script fetches the exact pushed commit from `origin/main1` into an isolated staging tree. It does not use `git reset --hard`, and it does not require the EC2 checkout's frontend worktree to be clean. Backend promotion preserves `Backend/.env`, `Backend/venv`, logs, and caches. It validates the service's PostgreSQL `DATABASE_URL` and applies `alembic upgrade head` before restarting the systemd-managed service.
 

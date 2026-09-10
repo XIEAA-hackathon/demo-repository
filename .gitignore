@@ -31,6 +31,19 @@ node_modules/
 dist/
 dist-ssr/
 *.tsbuildinfo
+deploy/*.zip
+
+# Development artifacts live on the full-backup main branch, not main1.
+Backend/tests/
+Backend/requirements-dev.txt
+frontend-website/src/**/*.test.*
+load_test/
+outputs/
+.impeccable/
+TEST_AND_AUDIT_REPORT.md
+demo.example.txt
+external-problems-demo.xlsx
+websocket_test.html
 
 # Logs and local tooling
 graphify-out/

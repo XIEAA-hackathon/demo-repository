@@ -27,7 +27,7 @@ def provision_demo_accounts(db: Session) -> dict[str, str]:
         display_email,
         settings.LEADERBOARD_DISPLAY_PASSWORD,
     )):
-        raise RuntimeError("Demo and leaderboard display account settings are required.")
+        return {}
 
     event_config = db.query(EventConfig).first()
     starting_coins = event_config.starting_coins if event_config else 5000

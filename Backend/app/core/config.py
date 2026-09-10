@@ -29,12 +29,12 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = ""
     ADMIN_NAME: str = "Event Admin"
     DEMO_ADMIN_EMAIL: str = "admin.demo@bidtobuild.example.com"
-    DEMO_ADMIN_PASSWORD: str = "DemoAdmin@123"
+    DEMO_ADMIN_PASSWORD: str = ""
     DEMO_LEADER_EMAIL: str = "leader@demo.example.com"
-    DEMO_LEADER_PASSWORD: str = "DemoLeader@123"
+    DEMO_LEADER_PASSWORD: str = ""
     DEMO_TEAM_NAME: str = "Demo Team"
     LEADERBOARD_DISPLAY_EMAIL: str = "leaderboard@bidtobuild.example.com"
-    LEADERBOARD_DISPLAY_PASSWORD: str = "Leaderboard@123"
+    LEADERBOARD_DISPLAY_PASSWORD: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
