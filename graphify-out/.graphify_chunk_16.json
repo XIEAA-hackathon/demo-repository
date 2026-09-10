@@ -1,0 +1,124 @@
+{
+  "nodes": [
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_registration_credentials_preview",
+      "label": "Registration Credentials Preview",
+      "file_type": "image",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_thirty_team_accounts",
+      "label": "30 Team Accounts",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_leader_identity_records",
+      "label": "Leader Identity Records",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_leader_login_emails",
+      "label": "Leader Login Email Column",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_leader_passwords",
+      "label": "Leader Password Column",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_registration_credentials_preview",
+      "target": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_thirty_team_accounts",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_registration_credentials_preview",
+      "target": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_leader_identity_records",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_registration_credentials_preview",
+      "target": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_leader_login_emails",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_registration_credentials_preview",
+      "target": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_leader_passwords",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_leader_identity_records",
+      "target": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_leader_login_emails",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_leader_identity_records",
+      "target": "outputs_hackathon_simulation_20260825_simulation_registration_credentials_preview_leader_passwords",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_registration_credentials-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}
