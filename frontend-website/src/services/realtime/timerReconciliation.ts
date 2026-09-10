@@ -1,4 +1,4 @@
-export const TIMER_SNAPSHOT_TOLERANCE_SECONDS = 2
+export const TIMER_SNAPSHOT_TOLERANCE_SECONDS = 0.75
 
 export type ApiStatus = 'checking' | 'healthy' | 'degraded' | 'offline'
 
@@ -7,6 +7,8 @@ export interface TimerTiming {
   serverTime?: string | null
   received_at?: number | null
   receivedAt?: number | null
+  clock_offset_ms?: number | null
+  clockOffsetMs?: number | null
   started_at?: string | null
   startedAt?: string | null
   ends_at?: string | null
@@ -68,6 +70,10 @@ export function deriveServerRemaining(timing: TimerTiming | null | undefined, lo
   }
 
   const endsAt = Date.parse(valueFrom<string>(timing, 'ends_at', 'endsAt') ?? '')
+  const measuredOffset = Number(valueFrom<number>(timing, 'clock_offset_ms', 'clockOffsetMs'))
+  if (Number.isFinite(endsAt) && Number.isFinite(measuredOffset)) {
+    return Math.max(0, Math.ceil((endsAt - (localNow + measuredOffset)) / 1000))
+  }
   const serverTime = Date.parse(valueFrom<string>(timing, 'server_time', 'serverTime') ?? '')
   const receivedAt = Number(valueFrom<number>(timing, 'received_at', 'receivedAt'))
   if (Number.isFinite(endsAt) && Number.isFinite(serverTime) && Number.isFinite(receivedAt)) {

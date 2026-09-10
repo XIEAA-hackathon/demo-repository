@@ -7,7 +7,7 @@ interface ReconnectingSocketOptions<T> {
   onStatus?: (status: RealtimeStatus) => void
   onUnauthorized?: () => void
   heartbeatIntervalMs?: number
-  heartbeatMessage?: string
+  heartbeatMessage?: string | (() => string)
 }
 
 export function connectReconnectingSocket<T>({
@@ -25,6 +25,8 @@ export function connectReconnectingSocket<T>({
   let retryTimer: number | undefined
   let settledTimer: number | undefined
   let heartbeatTimer: number | undefined
+  let clockOffsetMs: number | undefined
+  let bestRoundTripMs = Number.POSITIVE_INFINITY
 
   const stopHeartbeat = () => {
     if (heartbeatTimer !== undefined) {
@@ -48,13 +50,36 @@ export function connectReconnectingSocket<T>({
       stopHeartbeat()
       if (heartbeatIntervalMs && heartbeatIntervalMs > 0) {
         heartbeatTimer = window.setInterval(() => {
-          if (socket?.readyState === WebSocket.OPEN) socket.send(heartbeatMessage)
+          if (socket?.readyState === WebSocket.OPEN) {
+            socket.send(typeof heartbeatMessage === 'function' ? heartbeatMessage() : heartbeatMessage)
+          }
         }, heartbeatIntervalMs)
       }
     }
     socket.onmessage = (event) => {
       try {
-        onMessage?.(JSON.parse(event.data) as T)
+        const receivedAt = Date.now()
+        const parsed = JSON.parse(event.data) as Record<string, unknown>
+        const payload = parsed.payload && typeof parsed.payload === 'object'
+          ? parsed.payload as Record<string, unknown>
+          : undefined
+        if (parsed.type === 'session_heartbeat' && payload) {
+          const sentAt = Number(payload.client_time)
+          const serverTime = Date.parse(String(parsed.server_time || ''))
+          const roundTripMs = receivedAt - sentAt
+          if (Number.isFinite(sentAt) && Number.isFinite(serverTime) && roundTripMs >= 0 && roundTripMs < bestRoundTripMs) {
+            bestRoundTripMs = roundTripMs
+            clockOffsetMs = serverTime - (sentAt + roundTripMs / 2)
+          }
+        }
+        if (payload?.timing && typeof payload.timing === 'object') {
+          payload.timing = {
+            ...(payload.timing as Record<string, unknown>),
+            received_at: receivedAt,
+            ...(clockOffsetMs === undefined ? {} : { clock_offset_ms: clockOffsetMs }),
+          }
+        }
+        onMessage?.(parsed as T)
       } catch {
         // Ignore malformed frames and keep the live connection open.
       }

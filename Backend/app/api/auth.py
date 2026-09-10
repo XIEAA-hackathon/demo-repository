@@ -18,7 +18,7 @@ from app.core.security import (
     is_sha256_password_hash,
     verify_password,
 )
-from jose import JWTError, jwt
+from jose import ExpiredSignatureError, JWTError, jwt
 from app.core.config import settings
 from app.services.activity_log import record_event
 from app.services.participant_session import (
@@ -72,8 +72,11 @@ def decode_bid_auth_claims(token: str) -> BidAuthClaims:
         ):
             raise credentials_exception
         return BidAuthClaims(email=email, session_id=session_id, role=role)
+    except ExpiredSignatureError as exc:
+        logger.info("Rejected invalid bid token logout_reason=JWT_EXPIRED")
+        raise credentials_exception from exc
     except JWTError as exc:
-        logger.info("Rejected invalid bid token reason=jwt_validation")
+        logger.info("Rejected invalid bid token logout_reason=JWT_INVALID")
         raise credentials_exception from exc
 
 
@@ -94,23 +97,35 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         email: str = payload.get("sub")
         session_id: str = payload.get("session_id")
         if email is None or not session_id:
-            logger.info("Rejected invalid session token reason=missing_claims")
+            logger.info("Rejected invalid session token logout_reason=JWT_INVALID detail=missing_claims")
             raise credentials_exception
+    except ExpiredSignatureError:
+        logger.info("Rejected invalid session token logout_reason=JWT_EXPIRED")
+        raise credentials_exception
     except JWTError:
-        logger.info("Rejected invalid session token reason=jwt_validation")
+        logger.info("Rejected invalid session token logout_reason=JWT_INVALID")
         raise credentials_exception
     user = db.query(User).filter(User.email == email).first()
-    if user is None or not user.credentials_active:
-        logger.info("Rejected invalid session token reason=account_unavailable")
+    if user is None:
+        logger.info("Rejected invalid session token logout_reason=ACCOUNT_NOT_FOUND")
+        raise credentials_exception
+    if not user.credentials_active:
+        logger.info(
+            "Rejected invalid session token user_id=%s role=%s logout_reason=ACCOUNT_DISABLED",
+            user.id,
+            user.role,
+        )
         raise credentials_exception
     
     # A token is valid only while both sides carry the same active session.
     # A null database session is an explicit revocation, not a skipped check.
     if not user.session_id or user.session_id != session_id:
+        logout_reason = "SESSION_REVOKED" if not user.session_id else "SESSION_REPLACED"
         logger.info(
-            "Rejected invalid session token user_id=%s role=%s reason=session_mismatch",
+            "Rejected invalid session token user_id=%s role=%s logout_reason=%s",
             user.id,
             user.role,
+            logout_reason,
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -125,7 +140,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         last_seen_at=user.session_last_seen_at,
     ):
         logger.info(
-            "Rejected invalid session token user_id=%s role=%s reason=concurrent_replacement",
+            "Rejected invalid session token user_id=%s role=%s logout_reason=SESSION_MISMATCH",
             user.id,
             user.role,
         )
@@ -463,7 +478,7 @@ async def logout(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is no longer active.")
     db.commit()
-    logger.info("Logout completed user_id=%s role=%s", user_id, user_role)
+    logger.info("Logout completed user_id=%s role=%s logout_reason=EXPLICIT_LOGOUT", user_id, user_role)
 
     # Release request DB connection before WebSocket/network I/O.
     db.close()

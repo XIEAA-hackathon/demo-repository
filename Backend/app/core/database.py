@@ -17,13 +17,13 @@ if database_backend == "sqlite":
     # SQLite remains the zero-configuration local/test backend only.
     engine_options["connect_args"] = {"check_same_thread": False}
 elif database_backend == "postgresql":
-    # At most 20 checked-out connections under short bursts. This is
-    # intentionally conservative for a small EC2 host and ~60 participants.
+    # Keep the deployment's pool budget explicit and configurable. WebSockets
+    # do not retain connections, so this budget serves short request bursts.
     engine_options.update(
-        pool_size=10,
-        max_overflow=10,
-        pool_timeout=10,
-        pool_recycle=1800,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+        pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
+        pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
     )
 
 engine = create_engine(settings.DATABASE_URL, **engine_options)

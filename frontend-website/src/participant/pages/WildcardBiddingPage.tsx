@@ -70,6 +70,7 @@ export default function WildcardBiddingPage() {
   const applied = Boolean(dashboard.wildcardApplication) && dashboard.wildcard?.status === 'applied'
   const isLeader = dashboard.team.leaderId === dashboard.currentUserId
   const biddingActive = dashboard.eventState === 'WILDCARD_BIDDING'
+    && (dashboard.timing.paused || Boolean(dashboard.timing.endsAt))
   const slots = dashboard.wildcard?.slotCount ?? dashboard.gameConfig.wildcardSlots
   const currentPrice = Math.max(dashboard.gameConfig.wildcardBaseBidPrice, ...entries.map((entry) => entry.amount))
   const canAfford = (increment: BidIncrement) => currentPrice + increment <= dashboard.wallet.balance

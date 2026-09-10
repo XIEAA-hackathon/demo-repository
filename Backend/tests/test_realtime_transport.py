@@ -2,6 +2,11 @@ import asyncio
 import json
 import time
 
+import pytest
+from sqlalchemy.exc import SQLAlchemyError
+from starlette.websockets import WebSocketDisconnect
+
+from app.api import websockets
 from app.api.websockets import ConnectionManager, make_event
 
 
@@ -137,3 +142,21 @@ def test_hot_path_publish_is_bounded_and_does_not_wait_for_slow_socket():
         await manager.stop()
 
     asyncio.run(scenario())
+
+
+def test_invalid_websocket_token_uses_definite_auth_close_code(client):
+    with pytest.raises(WebSocketDisconnect) as disconnected:
+        with client.websocket_connect("/ws/auction?token=invalid-token") as socket:
+            socket.receive_json()
+    assert disconnected.value.code == 4401
+
+
+def test_transient_websocket_backend_failure_uses_retryable_close_code(client, monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise SQLAlchemyError("temporary database failure")
+
+    monkeypatch.setattr(websockets, "_authenticate_socket", unavailable)
+    with pytest.raises(WebSocketDisconnect) as disconnected:
+        with client.websocket_connect("/ws/auction?token=well-formed-but-unchecked") as socket:
+            socket.receive_json()
+    assert disconnected.value.code == 1011

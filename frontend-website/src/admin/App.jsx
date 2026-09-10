@@ -11,7 +11,7 @@ import {
   downloadRoundOneAssignments, downloadWildcardAssignments,
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
   assignRoundOneProblem, rebidRoundOneProblem, endRoundOne, openWildcardApplications, closeWildcardApplications,
-  confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding, endWildcardSelectionTurn, endWildcard,
+  confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding, finalizeWildcard, endWildcardSelectionTurn, endWildcard,
   getAdminSubmissions, openSubmissions, closeSubmissions, downloadFinalEventResults, ApiError,
   getJudging, saveJudgingWinners, publishJudgingResults,
   getAdminHealth, runPreflight, getRecoveryState, resumeRecoveryTimer, reloadRecoveryState,
@@ -104,6 +104,7 @@ function AdminApplication({ onLogout }) {
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [assignmentRevision, setAssignmentRevision] = useState(0);
+  const [wildcardEvent, setWildcardEvent] = useState(null);
   const loadInFlight = useRef(null);
   const lastSuccessfulLoadStartedAt = useRef(0);
   const socketStatusRef = useRef("connecting");
@@ -224,6 +225,10 @@ function AdminApplication({ onLogout }) {
           setTeams((current) => current.map((team) => ({ ...team, logged_in: loggedInTeamIds.has(team.id) })));
           return;
         }
+        if (message.type === "wildcard_bid_updated" || message.type === "wildcard_updated") {
+          setWildcardEvent(message);
+          return;
+        }
         if (["round1_assignment_changed", "external_problems_imported"].includes(message.type)) {
           setAssignmentRevision((current) => current + 1);
           queueLoad();
@@ -283,7 +288,7 @@ function AdminApplication({ onLogout }) {
           {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} config={config} onConfig={setConfig} />}
           {page === "round1" && <RoundControlPage round="round-1" state={state} config={config} remaining={remaining} onConfig={setConfig} />}
           {page === "change-problem" && <ChangeProblemPage revision={assignmentRevision} />}
-          {page === "wildcard" && <WildcardControlPage state={state} config={config} remaining={remaining} onConfig={setConfig} />}
+          {page === "wildcard" && <WildcardControlPage state={state} config={config} remaining={remaining} onConfig={setConfig} socketConnected={socketConnected} realtimeEvent={wildcardEvent} />}
           {page === "submission" && <SubmissionAdminPage />}
           {page === "judging" && <JudgingAdminPage onGlobalSync={load} />}
           {page === "admin-users" && <ManagedUsersPage kind="admin" />}
@@ -528,7 +533,7 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
   </section>;
 }
 
-function WildcardControlPage({ state, config, remaining, onConfig }) {
+function WildcardControlPage({ state, config, remaining, onConfig, socketConnected, realtimeEvent }) {
   const [data, setData] = useState(null);
   const [endConfirming, setEndConfirming] = useState(false);
   const selectionRemaining = useServerCountdown({ server_time: data?.event?.timing?.server_time, ends_at: data?.selection?.ends_at, received_at: data?.selection?.received_at, remaining_seconds: data?.selection?.remaining_seconds, paused: false }, data?.selection?.current_rank);
@@ -541,12 +546,32 @@ function WildcardControlPage({ state, config, remaining, onConfig }) {
   const load = useCallback(async () => { try { const result = await getRoundControl("wildcard"); result.selection.received_at = Date.now(); setData(result); if (result.slots?.count || result.settings?.wildcard_slots) setSlots(result.slots?.count || result.settings.wildcard_slots); setError(""); return result; } catch (cause) { setError(cause.message); return null; } }, []);
   useEffect(() => {
     let stopped = false; let timer;
-    const poll = async () => { const result = await load(); if (stopped) return; const live = ["APPLICATIONS_OPEN", "BIDDING_OPEN", "PROBLEM_SELECTION"].includes(result?.status); timer = setTimeout(poll, document.hidden ? 60000 : live ? 2000 : 15000); };
+    const poll = async () => { await load(); if (stopped) return; timer = setTimeout(poll, document.hidden ? 60000 : socketConnected ? 45000 : 7500); };
     void poll();
     const onVisibility = () => { if (!document.hidden) { clearTimeout(timer); void poll(); } };
     document.addEventListener("visibilitychange", onVisibility);
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [load]);
+  }, [load, socketConnected]);
+  useEffect(() => {
+    const serverStatus = state?.rounds?.WILDCARD?.status;
+    if (serverStatus && data?.status && serverStatus !== data.status) void load();
+  }, [data?.status, load, state?.rounds?.WILDCARD?.status]);
+  useEffect(() => {
+    if (!realtimeEvent) return;
+    if (realtimeEvent.type === "wildcard_bid_updated") {
+      const payload = realtimeEvent.payload || {};
+      setData((current) => {
+        if (!current) return current;
+        const nextRow = { team_id: payload.team_id, team_name: payload.team_name, value: Number(payload.amount), qualified: false, timestamp: payload.timestamp };
+        const ranking = [...current.bidding.ranking.filter((row) => row.team_id !== payload.team_id), nextRow]
+          .sort((left, right) => right.value - left.value || String(left.timestamp || "").localeCompare(String(right.timestamp || "")) || left.team_id - right.team_id)
+          .map((row, index) => ({ ...row, rank: index + 1 }));
+        return { ...current, bidding: { ...current.bidding, ranking } };
+      });
+      return;
+    }
+    if (realtimeEvent.type === "wildcard_updated") void load();
+  }, [load, realtimeEvent]);
   useEffect(() => {
     if (data?.status === "APPLICATIONS_CLOSED" || data?.status === "BIDDING_OPEN" || data?.status === "BIDDING_CLOSED") setTab("bidding");
     if (data?.status === "PROBLEM_SELECTION" || data?.status === "COMPLETE") setTab("selection");
@@ -612,7 +637,7 @@ function WildcardControlPage({ state, config, remaining, onConfig }) {
 
     {tab === "bidding" && <div className="wildcard-panel-grid">
       <section className="wildcard-stage-card wildcard-slots"><div><span className="eyebrow">AVAILABLE SLOTS</span><h3>Choose advancing teams</h3><p>Slots cannot exceed applied teams or available wildcard problems.</p></div><div className="wildcard-slot-control"><label>Slots<input type="number" min="1" max={Math.max(1, maxSlots)} value={slots} onChange={(event) => setSlots(Number(event.target.value))} /></label><span>Maximum now: <strong>{maxSlots}</strong></span><button className="primary-button" disabled={!canConfirmSlots || working || slots < 1 || slots > maxSlots} onClick={() => run(() => confirmWildcardSlots(slots), `${slots} wildcard slot${slots === 1 ? "" : "s"} confirmed.`)}>{data.slots.confirmed ? `Confirmed: ${data.slots.count}` : "Confirm slots"}</button></div></section>
-      <section className="wildcard-stage-card wildcard-live-bidding"><div><span className="eyebrow">ONE SLOT AUCTION</span><h3>{data.bidding.open ? "Bidding is live" : data.status === "BIDDING_CLOSED" ? "Bidding expired · ready to finalize" : data.slots.confirmed ? "Ready for slot bidding" : "Confirm slots first"}</h3><p>Each applicant submits one fixed +5, +10, or +25 bid. Higher bid ranks first; equal bids keep the earlier timestamp.</p></div><div>{data.bidding.open ? <div><div className="round-live-clock">{formatTime(remaining)}</div><p>Base bid price: <strong>{config?.wildcard_starting_bid ?? 0} coins</strong> · cooldown: <strong>{config?.bid_cooldown_seconds ?? 5}s</strong></p></div> : <p>Bidding duration: <strong>{config?.wildcard_bid_seconds ?? 180}s</strong> · Base bid: <strong>{config?.wildcard_starting_bid ?? 0} coins</strong></p>}</div><div className="round-inline-actions">{data.status === "APPLICATIONS_CLOSED" && data.slots.confirmed && <button className="primary-button" disabled={working} onClick={() => run(startWildcardSlotBidding, "Wildcard slot bidding started.")}>Start slot bidding</button>}{data.bidding.open && <><button className="danger-button" disabled={working} onClick={() => window.confirm("Close slot bidding and charge the top ranked teams?") && run(closeWildcardSlotBidding, "Slot bidding finalized.")}>Close and rank</button><TimerButtons state={state} remaining={remaining} run={run} /></>}{data.status === "BIDDING_CLOSED" && <button className="primary-button" disabled={working} onClick={() => window.confirm("Finalize the frozen ranking and charge qualified teams?") && run(closeWildcardSlotBidding, "Slot bidding finalized.")}>Finalize ranking</button>}</div></section>
+      <section className="wildcard-stage-card wildcard-live-bidding"><div><span className="eyebrow">ONE SLOT AUCTION</span><h3>{data.bidding.open ? "Bidding is live" : data.status === "BIDDING_CLOSED" ? "Bidding closed · ready to finalize" : data.slots.confirmed ? "Ready for slot bidding" : "Confirm slots first"}</h3><p>Each applicant submits one fixed +5, +10, or +25 bid. Higher bid ranks first; equal bids keep the earlier timestamp.</p></div><div>{data.bidding.open ? <div><div className="round-live-clock">{formatTime(remaining)}</div><p>Base bid price: <strong>{config?.wildcard_starting_bid ?? 0} coins</strong> · cooldown: <strong>{config?.bid_cooldown_seconds ?? 5}s</strong></p></div> : <p>Bidding duration: <strong>{config?.wildcard_bid_seconds ?? 180}s</strong> · Base bid: <strong>{config?.wildcard_starting_bid ?? 0} coins</strong></p>}</div><div className="round-inline-actions">{data.status === "APPLICATIONS_CLOSED" && data.slots.confirmed && <button className="primary-button" disabled={working} onClick={() => run(startWildcardSlotBidding, "Wildcard slot bidding started.")}>Start slot bidding</button>}{data.bidding.open && <><button className="danger-button" disabled={working} onClick={() => window.confirm("Close slot bidding? The ranking will freeze, but no team is charged until you finalize it.") && run(closeWildcardSlotBidding, "Slot bidding closed. Review the frozen ranking before finalizing.")}>Close bidding</button><TimerButtons state={state} remaining={remaining} run={run} /></>}{data.status === "BIDDING_CLOSED" && <button className="primary-button" disabled={working} onClick={() => window.confirm("Finalize the frozen ranking and charge qualified teams? This action is idempotent but cannot be reversed through event controls.") && run(finalizeWildcard, "Ranking finalized and qualified teams charged once.")}>Finalize ranking</button>}</div></section>
       <section className="wildcard-stage-card wildcard-ranking"><div className="round-section-heading"><div><span className="eyebrow">LIVE RANKING</span><h3>{data.bidding.ranking.length} bids received</h3></div><span className="wildcard-slot-badge">TOP {data.slots.count || "—"} QUALIFY</span></div>{data.bidding.ranking.length ? <div className="wildcard-rank-list">{data.bidding.ranking.map((row) => <div key={row.team_id}><strong>#{row.rank}</strong><span>{row.team_name}</span><b>{row.value} coins</b>{row.qualified && <em>Qualified</em>}</div>)}</div> : <div className="round-empty"><strong>No bids yet</strong><p>The ranking updates live while bidding is open.</p></div>}</section>
     </div>}
 
@@ -756,7 +781,8 @@ function ActivityLogPage() {
 }
 
 function TimerButtons({ state, remaining, run }) {
-  return <div className="round-timer-actions"><button className="secondary-button" disabled={state?.timing?.paused} onClick={() => run(pauseTimer, "Timer paused.")}>Pause</button><button className="secondary-button" disabled={!state?.timing?.paused} onClick={() => run(resumeTimer, "Timer resumed.")}>Resume</button><button className="secondary-button" onClick={() => run(() => addTime(30), "Added 30 seconds.")}>+30 sec</button><button className="secondary-button" disabled={remaining <= 0} onClick={() => run(() => removeTime(30), "Removed up to 30 seconds.")}>−30 sec</button></div>;
+  const hasTimer = Boolean(state?.timing?.paused || state?.timing?.ends_at || state?.timing?.endsAt);
+  return <div className="round-timer-actions"><button className="secondary-button" disabled={!hasTimer || state?.timing?.paused} onClick={() => run(pauseTimer, "Timer paused.")}>Pause</button><button className="secondary-button" disabled={!hasTimer || !state?.timing?.paused} onClick={() => run(resumeTimer, "Timer resumed.")}>Resume</button><button className="secondary-button" disabled={!hasTimer} onClick={() => run(() => addTime(30), "Added 30 seconds.")}>+30 sec</button><button className="secondary-button" disabled={!hasTimer || remaining <= 0} onClick={() => run(() => removeTime(30), "Removed up to 30 seconds.")}>−30 sec</button></div>;
 }
 
 function Teams({ teams, onAction }) {

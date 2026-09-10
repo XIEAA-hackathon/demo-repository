@@ -3,9 +3,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from urllib.parse import urlparse
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 from app.core.database import get_db
-from app.models.models import User, Team, Member, Bid, Wildcard, WildcardBid, Submission, FinalResult, GameConfig, ProblemStatement
+from app.models.models import (
+    User, Team, Member, Bid, Wildcard, WildcardBid, Submission, FinalResult,
+    GameConfig, EventConfig, ProblemStatement, RoundControl, WildcardSelectionPool,
+)
 from app.schemas.schemas import (
     ParticipantDashboardResponse, DashboardUser, DashboardTeam, DashboardMember,
     DashboardLeader, DashboardProblem, DashboardBid, DashboardWildcard,
@@ -15,7 +18,6 @@ from app.schemas.schemas import (
 from app.api.auth import get_current_active_admin, get_current_active_participant
 from app.services.event_service import (
     get_team_for_user, get_or_create_game_config, get_or_create_event_config, get_or_create_round_control,
-    current_user_is_team_leader,
     ensure_leader, event_snapshot, event_timing, transition_event_state,
 )
 from app.api.websockets import manager
@@ -23,7 +25,6 @@ from app.services.wildcard_service import (
     available_wildcard_problems,
     current_selection,
     ranked_wildcard_bids,
-    reconcile_wildcard_selection,
     selection_remaining_seconds,
 )
 from app.services.activity_log import record_event
@@ -52,17 +53,34 @@ def _valid_github_url(value: str) -> bool:
 
 @router.get("/participant/dashboard", response_model=ParticipantDashboardResponse)
 def get_participant_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
-    reconcile_wildcard_selection(db)
-    team = get_team_for_user(db, current_user)
+    team_query = db.query(Team).options(
+        selectinload(Team.members),
+        joinedload(Team.wildcard),
+        joinedload(Team.submission),
+    )
+    team = (
+        team_query.filter(Team.id == current_user.team_id).first()
+        if current_user.team_id
+        else team_query.filter(Team.leader_id == current_user.id).first()
+    )
     if not team:
         raise HTTPException(status_code=404, detail="No team linked to this account")
 
-    leader = db.query(User).filter(User.id == team.leader_id).first()
-    config = get_or_create_game_config(db)
-    event_config = get_or_create_event_config(db)
+    leader = current_user if current_user.id == team.leader_id else db.query(User).filter(User.id == team.leader_id).first()
+    config = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
+    event_config = db.query(EventConfig).order_by(EventConfig.id.asc()).first()
+    if config is None or event_config is None:
+        raise HTTPException(status_code=503, detail="Event configuration is temporarily unavailable.")
+    controls = {
+        row.round_type: row
+        for row in db.query(RoundControl)
+        .filter(RoundControl.round_type.in_(("ROUND1", "WILDCARD")))
+        .all()
+    }
+    round_control = controls.get("ROUND1")
+    wildcard_control = controls.get("WILDCARD")
 
     # members with leader flags
-    member_objs = db.query(Member).filter(Member.team_id == team.id).all()
     members = []
     if leader:
         members.append(DashboardMember(
@@ -71,7 +89,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             email=leader.email,
             is_leader=True,
         ))
-    for m in member_objs:
+    for m in team.members:
         members.append(DashboardMember(
             id=m.id,
             member_name=m.member_name,
@@ -79,9 +97,19 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             is_leader=(team.leader_id and m.member_name == leader.name) if leader else False,
         ))
 
-    final_problem_obj = db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first() if team.ps_id else None
-    round1_problem_obj = db.query(ProblemStatement).filter(ProblemStatement.id == team.round1_problem_id).first() if team.round1_problem_id else None
-    wildcard_problem_obj = db.query(ProblemStatement).filter(ProblemStatement.id == team.wildcard_problem_id).first() if team.wildcard_problem_id else None
+    problem_ids = {problem_id for problem_id in (team.ps_id, team.round1_problem_id, team.wildcard_problem_id) if problem_id}
+    if config.state.startswith("ROUND1") and round_control and round_control.current_problem_id:
+        problem_ids.add(round_control.current_problem_id)
+    problems_by_id = {
+        problem.id: problem
+        for problem in (
+            db.query(ProblemStatement).filter(ProblemStatement.id.in_(problem_ids)).all()
+            if problem_ids else []
+        )
+    }
+    final_problem_obj = problems_by_id.get(team.ps_id)
+    round1_problem_obj = problems_by_id.get(team.round1_problem_id)
+    wildcard_problem_obj = problems_by_id.get(team.wildcard_problem_id)
     # Compatibility for assignments created before explicit history fields existed.
     if final_problem_obj and final_problem_obj.round == 1 and not round1_problem_obj:
         round1_problem_obj = final_problem_obj
@@ -89,11 +117,8 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         wildcard_problem_obj = final_problem_obj
 
     current_problem = _dashboard_problem(final_problem_obj)
-    if not current_problem and config.state.startswith("ROUND1"):
-        control = get_or_create_round_control(db, "ROUND1")
-        current_problem = _dashboard_problem(
-            db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
-        )
+    if not current_problem and config.state.startswith("ROUND1") and round_control:
+        current_problem = _dashboard_problem(problems_by_id.get(round_control.current_problem_id))
 
     current_bid = None
     latest_bid = db.query(Bid).filter(Bid.team_id == team.id, Bid.round == 1).order_by(Bid.timestamp.desc()).first()
@@ -103,12 +128,30 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             amount=latest_bid.amount, round=latest_bid.round, timestamp=latest_bid.timestamp,
         )
 
-    wildcard = db.query(Wildcard).filter(Wildcard.team_id == team.id).first()
+    wildcard = team.wildcard
     wildcard_bid = db.query(WildcardBid).filter(WildcardBid.team_id == team.id).first()
     wildcard_out = None
     if wildcard:
-        active_selection = current_selection(db)
-        wildcard_control = get_or_create_round_control(db, "WILDCARD")
+        selection_open = bool(wildcard_control and wildcard_control.status == "PROBLEM_SELECTION")
+        active_selection = current_selection(db) if selection_open else None
+        available_problem_count = 0
+        if selection_open:
+            pool_exists = db.query(WildcardSelectionPool.id).first() is not None
+            if pool_exists:
+                available_problem_count = (
+                    db.query(WildcardSelectionPool.id)
+                    .join(ProblemStatement, ProblemStatement.id == WildcardSelectionPool.problem_id)
+                    .filter(
+                        WildcardSelectionPool.selected_by_team_id.is_(None),
+                        ProblemStatement.status.in_(("available", "visible")),
+                    )
+                    .count()
+                )
+            else:
+                available_problem_count = db.query(ProblemStatement.id).filter(
+                    ProblemStatement.round == 2,
+                    ProblemStatement.status.in_(("available", "visible")),
+                ).count()
         wildcard_out = DashboardWildcard(
             status=wildcard.status,
             coins_paid=wildcard.coins_paid,
@@ -122,15 +165,15 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             current_selection_rank=active_selection[0].rank if active_selection else None,
             current_selection_team=active_selection[1].team_name if active_selection else None,
             is_selection_turn=bool(active_selection and active_selection[1].id == team.id),
-            available_problem_count=len(available_wildcard_problems(db)),
-            slot_count=wildcard_control.slot_count,
-            selection_started_at=wildcard_control.selection_started_at,
-            selection_ends_at=wildcard_control.selection_ends_at,
-            selection_duration_seconds=wildcard_control.selection_duration_seconds,
-            selection_remaining_seconds=selection_remaining_seconds(wildcard_control),
+            available_problem_count=available_problem_count,
+            slot_count=wildcard_control.slot_count if wildcard_control else None,
+            selection_started_at=wildcard_control.selection_started_at if wildcard_control else None,
+            selection_ends_at=wildcard_control.selection_ends_at if wildcard_control else None,
+            selection_duration_seconds=wildcard_control.selection_duration_seconds if wildcard_control else None,
+            selection_remaining_seconds=selection_remaining_seconds(wildcard_control) if wildcard_control else None,
         )
 
-    submission = db.query(Submission).filter(Submission.team_id == team.id).first()
+    submission = team.submission
     submission_out = None
     if submission:
         submitter = db.query(User).filter(User.id == submission.submitted_by_user_id).first() if submission.submitted_by_user_id else None
@@ -156,13 +199,12 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
 
     cooldown_remaining = 0.0
     if config.state == "ROUND1_BIDDING":
-        round_control = get_or_create_round_control(db, "ROUND1")
         cooldown_remaining = bid_cooldown_remaining(
             db,
             team.id,
             event_config.bid_cooldown_seconds or 0,
             round_type="ROUND1",
-            problem_id=round_control.current_problem_id,
+            problem_id=round_control.current_problem_id if round_control else None,
             round_number=config.current_round,
         )
     elif config.state == "WILDCARD_BIDDING":
@@ -173,7 +215,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             round_type="WILDCARD",
         )
 
-    is_leader = current_user_is_team_leader(db, current_user, team)
+    is_leader = team.leader_id == current_user.id
 
     return ParticipantDashboardResponse(
         user=DashboardUser(id=current_user.id, name=current_user.name, email=current_user.email, role=current_user.role),
@@ -218,7 +260,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         round1AssignmentType=team.round1_assignment_type,
         round1AssignmentCost=team.round1_assignment_cost,
         wildcardEligible=bool(team.is_approved),
-        wildcardApplicationsOpen=get_or_create_round_control(db, "WILDCARD").applications_open,
+        wildcardApplicationsOpen=bool(wildcard_control and wildcard_control.applications_open),
         submissionsOpen=bool(event_config.submissions_open),
     )
 
@@ -246,7 +288,6 @@ def get_participant_problems(
     event_config = get_or_create_event_config(db)
     starting_bid = event_config.round1_minimum_bid if round == 1 else 0
     if round == 2:
-        reconcile_wildcard_selection(db)
         team = get_team_for_user(db, current_user)
         active = current_selection(db)
         if not team or not active or active[1].id != team.id:

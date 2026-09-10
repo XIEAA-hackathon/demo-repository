@@ -24,7 +24,6 @@ from app.services.event_service import (
     get_or_create_game_config,
     get_or_create_round_control,
     get_team_for_user,
-    sync_expired_event_state,
     transition_event_state,
 )
 from app.services.activity_log import record_event
@@ -36,7 +35,6 @@ from app.services.wildcard_service import (
     available_wildcard_problems,
     current_selection,
     finalize_slot_bidding,
-    reconcile_wildcard_selection,
     ranked_wildcard_bids,
     selection_remaining_seconds,
     sync_application_window,
@@ -75,14 +73,8 @@ def _place_wildcard_bid_transaction(
     user_id: int | None = None
     with session_factory() as db:
         try:
-            control = (
-                db.query(RoundControl)
-                .filter(RoundControl.round_type == "WILDCARD")
-                .with_for_update()
-                .one_or_none()
-            )
-            if control is None:
-                raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
+            # Authentication, membership, and static configuration are checked
+            # before entering the globally serialized auction section.
             user = (
                 db.query(User)
                 .filter(
@@ -102,16 +94,9 @@ def _place_wildcard_bid_transaction(
                 team_id = db.query(Team.id).filter(Team.leader_id == user.id).scalar()
             if team_id is None:
                 raise HTTPException(status_code=403, detail="No team is linked to your account.")
-            game = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
             event_config = db.query(EventConfig).order_by(EventConfig.id.asc()).first()
-            if not game or not event_config:
+            if not event_config:
                 raise HTTPException(status_code=409, detail="Event configuration is unavailable.")
-            if (
-                control.status != "BIDDING_OPEN"
-                or game.state != "WILDCARD_BIDDING"
-                or _remaining_seconds(game) == 0
-            ):
-                raise HTTPException(status_code=409, detail="Wildcard slot bidding is not open.")
             application_exists = (
                 db.query(Wildcard.id)
                 .filter(Wildcard.team_id == team_id, Wildcard.status == "applied")
@@ -121,6 +106,33 @@ def _place_wildcard_bid_transaction(
             if not application_exists:
                 raise HTTPException(status_code=403, detail="Only teams that applied may bid for a Wildcard slot.")
 
+            # One short critical section protects the shared current price.
+            # Authentication, membership, and application checks have already
+            # completed; no network I/O occurs while this lock is held.
+            control = (
+                db.query(RoundControl)
+                .filter(RoundControl.round_type == "WILDCARD")
+                .with_for_update()
+                .one_or_none()
+            )
+            if control is None:
+                raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
+            game = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
+            session_still_active = db.query(User.id).filter(
+                User.id == user.id,
+                User.credentials_active.is_(True),
+                User.session_id == session_id,
+            ).first()
+            if session_still_active is None:
+                logger.info("Rejected Wildcard bid user_id=%s logout_reason=SESSION_REPLACED", user.id)
+                raise HTTPException(status_code=401, detail="Session expired or was revoked. Please log in again.")
+            if (
+                not game
+                or control.status != "BIDDING_OPEN"
+                or game.state != "WILDCARD_BIDDING"
+                or _remaining_seconds(game) == 0
+            ):
+                raise HTTPException(status_code=409, detail="Wildcard slot bidding is not open.")
             team = (
                 db.query(Team)
                 .filter(Team.id == team_id)
@@ -230,7 +242,11 @@ async def apply_wildcard(db: Session = Depends(get_db), current_user=Depends(get
     db.commit()
     team_name = team.team_name
     db.close()
-    await manager.broadcast_event("wildcard_updated", {"team_name": team_name, "action": "applied"})
+    await manager.broadcast_event(
+        "wildcard_updated",
+        {"team_id": team.id, "team_name": team_name, "action": "applied"},
+        roles={"admin"},
+    )
     return {"message": "Wildcard application confirmed."}
 
 
@@ -251,20 +267,28 @@ async def decline_wildcard(db: Session = Depends(get_db), current_user=Depends(g
     db.commit()
     team_name = team.team_name
     db.close()
-    await manager.broadcast_event("wildcard_updated", {"team_name": team_name, "action": "declined"})
+    await manager.broadcast_event(
+        "wildcard_updated",
+        {"team_id": team.id, "team_name": team_name, "action": "declined"},
+        roles={"admin"},
+    )
     return {"message": "Wildcard participation declined."}
 
 
 @router.get("/wildcard/status")
 def get_wildcard_status(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    reconcile_wildcard_selection(db)
-    control = sync_application_window(db)
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.round_type == "WILDCARD")
+        .one_or_none()
+        or RoundControl(round_type="WILDCARD", status="NOT_STARTED", ended=False, applications_open=False)
+    )
     team = get_team_for_user(db, current_user)
     record = db.query(Wildcard).filter(Wildcard.team_id == team.id).first() if team else None
     active = current_selection(db)
     return {
         "visible": control.status != "NOT_STARTED",
-        "enabled": get_or_create_event_config(db).wildcard_enabled,
+        "enabled": bool((db.query(EventConfig).order_by(EventConfig.id.asc()).first() or EventConfig()).wildcard_enabled),
         "state": control.status,
         "wildcard_slots": control.slot_count,
         "applied": bool(record and record.status in {"applied", "qualified", "selected", "eliminated"}),
@@ -311,7 +335,11 @@ async def confirm_wildcard_slots(
     db.commit()
     response = wildcard_payload(db)
     db.close()
-    await manager.broadcast_event("wildcard_updated", {"action": "slots_confirmed", "slots": request.slots})
+    await manager.broadcast_event(
+        "wildcard_updated",
+        {"action": "slots_confirmed", "slots": request.slots},
+        roles={"admin"},
+    )
     return response
 
 
@@ -383,25 +411,53 @@ async def place_wildcard_bid(
 
 @router.post("/admin/rounds/wildcard/bidding/close")
 async def close_wildcard_slot_bidding(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
-    sync_expired_event_state(db)
-    control = get_or_create_round_control(db, "WILDCARD")
     control = (
         db.query(RoundControl)
-        .filter(RoundControl.id == control.id)
+        .filter(RoundControl.round_type == "WILDCARD")
         .with_for_update()
-        .one()
+        .one_or_none()
     )
-    if control.status in {"PROBLEM_SELECTION", "COMPLETE"}:
+    if control is None:
+        raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
+    if control.status in {"BIDDING_CLOSED", "PROBLEM_SELECTION", "COMPLETE"}:
         logger.info(
             "Duplicate Wildcard bidding close ignored user_id=%s status=%s",
             current_user.id,
             control.status,
         )
-        winners = finalize_slot_bidding(db, control)
-        return {"winners": winners, **wildcard_payload(db)}
-    if control.status not in {"BIDDING_OPEN", "BIDDING_CLOSED"}:
+        return wildcard_payload(db)
+    if control.status != "BIDDING_OPEN":
         raise HTTPException(status_code=409, detail="Wildcard slot bidding is not active.")
     control.status = "BIDDING_CLOSED"
+    game = get_or_create_game_config(db)
+    game.auction_timer_end = None
+    game.timer_paused = False
+    game.timer_paused_remaining_seconds = None
+    record_event(db, "wildcard.bidding_closed", actor=current_user)
+    db.commit()
+    snapshot = event_snapshot(db)
+    response = wildcard_payload(db)
+    db.close()
+    await manager.broadcast_event("wildcard_updated", {"action": "bidding_closed"})
+    await manager.broadcast_event("event_state_changed", snapshot)
+    return response
+
+
+@router.post("/admin/wildcard/finalize")
+async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.round_type == "WILDCARD")
+        .with_for_update()
+        .one_or_none()
+    )
+    if control is None:
+        raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
+    if control.status in {"PROBLEM_SELECTION", "COMPLETE"}:
+        winners = finalize_slot_bidding(db, control)
+        return {"winners": winners, **wildcard_payload(db)}
+    if control.status != "BIDDING_CLOSED":
+        raise HTTPException(status_code=409, detail="Close Wildcard bidding before finalizing the ranking.")
     game = get_or_create_game_config(db)
     game.auction_timer_end = None
     game.timer_paused = False
@@ -420,11 +476,6 @@ async def close_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
     await manager.broadcast_event("wildcard_updated", {"action": "bidding_finalized", "winners": winners})
     await manager.broadcast_event("event_state_changed", snapshot)
     return response
-
-
-@router.post("/admin/wildcard/finalize")
-async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
-    return await close_wildcard_slot_bidding(db, current_user)
 
 
 @router.post("/admin/rounds/wildcard/end")
@@ -494,9 +545,16 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
     team_name = team.team_name
     db.close()
     await manager.broadcast_event("wildcard_updated", {
+        "team_id": result["team_id"],
         "team_name": team_name,
         "problem_id": result["problem"]["id"],
+        "problem": result["problem"],
         "action": "problem_selected" if result["method"] == "manual" else "selection_timeout",
+        "next_rank": result["next_rank"],
+        "next_team_id": result["next_team_id"],
+        "next_team": result["next_team"],
+        "selection_started_at": result["selection_started_at"],
+        "selection_ends_at": result["selection_ends_at"],
     })
     if snapshot is not None:
         await manager.broadcast_event("event_state_changed", snapshot)
@@ -529,9 +587,16 @@ async def end_wildcard_selection_turn(
     response = {"assignment": result, **wildcard_payload(db)}
     db.close()
     await manager.broadcast_event("wildcard_updated", {
+        "team_id": result["team_id"],
         "team_name": result["team_name"],
         "problem_id": result["problem"]["id"],
+        "problem": result["problem"],
         "action": result["method"],
+        "next_rank": result["next_rank"],
+        "next_team_id": result["next_team_id"],
+        "next_team": result["next_team"],
+        "selection_started_at": result["selection_started_at"],
+        "selection_ends_at": result["selection_ends_at"],
     })
     if snapshot is not None:
         await manager.broadcast_event("event_state_changed", snapshot)

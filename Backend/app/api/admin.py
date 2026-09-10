@@ -1094,6 +1094,11 @@ async def set_imported_participant_password(
     )
     db.commit()
     db.refresh(account)
+    logger.info(
+        "Participant sessions invalidated user_id=%s role=%s logout_reason=PASSWORD_RESET",
+        account.id,
+        account.role,
+    )
     await manager.disconnect_users({account.id})
     await manager.broadcast_event(
         "participant_presence_changed",

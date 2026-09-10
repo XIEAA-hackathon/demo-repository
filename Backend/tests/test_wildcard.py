@@ -7,6 +7,7 @@ from threading import Barrier
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from app.api import auth, participant, rounds, wildcard
 from app.core.database import get_db
 
@@ -24,6 +25,7 @@ from app.models.models import (
     WildcardSelectionPool,
 )
 from app.services.wildcard_service import reconcile_wildcard_selection
+from app.services.event_service import sync_expired_event_state
 
 
 def _team(db, index: int, *, round1_problem=None):
@@ -126,12 +128,20 @@ def _run_slot_flow(client, admin_headers, db, *, applicants: int, slots: int, pr
 
     closed = client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers)
     assert closed.status_code == 200, closed.text
-    winners = closed.json()["winners"]
+    assert closed.json()["status"] == "BIDDING_CLOSED"
+    assert db.query(WalletTransaction).filter(WalletTransaction.transaction_type == "WILDCARD_WIN").count() == 0
+    finalized = client.post("/admin/wildcard/finalize", headers=admin_headers)
+    assert finalized.status_code == 200, finalized.text
+    winners = finalized.json()["winners"]
+    finalized_again = client.post("/admin/wildcard/finalize", headers=admin_headers)
+    assert finalized_again.status_code == 200, finalized_again.text
+    assert finalized_again.json()["winners"] == winners
+    assert db.query(WalletTransaction).filter(WalletTransaction.transaction_type == "WILDCARD_WIN").count() == slots
     assert len(winners) == slots
     assert [winner["rank"] for winner in winners] == list(range(1, slots + 1))
     assert [winner["team_name"] for winner in winners] == [f"Team {index}" for index in range(1, slots + 1)]
-    assert closed.json()["selection"]["pool_frozen"] is True
-    assert len(closed.json()["selection"]["pool"]) == slots
+    assert finalized.json()["selection"]["pool_frozen"] is True
+    assert len(finalized.json()["selection"]["pool"]) == slots
 
     # A later upload must not mutate the frozen selection snapshot.
     late_import = client.post(
@@ -188,7 +198,9 @@ def _prepare_active_selection(client, admin_headers, db, *, slots=3, problems=5)
         assert client.post("/wildcard/bid", json={"increment": 5}, headers=team_headers).status_code == 200
     closed = client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers)
     assert closed.status_code == 200, closed.text
-    assert closed.json()["selection"]["duration_seconds"] == 10
+    finalized = client.post("/admin/wildcard/finalize", headers=admin_headers)
+    assert finalized.status_code == 200, finalized.text
+    assert finalized.json()["selection"]["duration_seconds"] == 10
     return teams, headers
 
 
@@ -383,6 +395,7 @@ def test_only_current_rank_can_select_and_slots_are_validated(client, admin_head
     client.post("/wildcard/bid", json={"increment": 5}, headers=headers2)
     client.post("/wildcard/bid", json={"increment": 5}, headers=headers1)
     client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers)
+    client.post("/admin/wildcard/finalize", headers=admin_headers)
 
     available = client.get("/participant/problems?round=2", headers=headers1).json()
     blocked = client.post(f"/wildcard/select/{available[0]['id']}", headers=headers2)
@@ -418,8 +431,84 @@ def test_equal_slot_bids_use_earlier_final_bid_timestamp(client, admin_headers, 
     db.commit()
     result = client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers)
     assert result.status_code == 200
+    assert result.json()["status"] == "BIDDING_CLOSED"
+    result = client.post("/admin/wildcard/finalize", headers=admin_headers)
+    assert result.status_code == 200
     assert result.json()["winners"][0]["team_id"] == team1.id
     assert db.query(WildcardBid).count() == 2
+
+
+def test_wildcard_timer_expiry_closes_without_charging_then_finalize_charges_once(
+    client, admin_headers, db,
+):
+    _prepare_round(db)
+    team, _email, _password = _team(db, 1)
+    db.add_all([
+        RoundControl(round_type="WILDCARD", status="BIDDING_OPEN", slot_count=1),
+        Wildcard(team_id=team.id, status="applied"),
+        WildcardBid(team_id=team.id, amount=105, timestamp=datetime.now(timezone.utc)),
+        ProblemStatement(ps_number="WC-TIMER", title="Timer", description="Timer", round=2, status="available"),
+    ])
+    game = db.query(GameConfig).one()
+    game.state = "WILDCARD_BIDDING"
+    game.current_round = 2
+    game.auction_timer_end = datetime.now(timezone.utc) - timedelta(milliseconds=1)
+    db.commit()
+
+    assert sync_expired_event_state(db) == ["wildcard.bidding_expired"]
+    db.expire_all()
+    assert db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one().status == "BIDDING_CLOSED"
+    assert db.query(GameConfig).one().state == "WILDCARD_BIDDING"
+    assert db.query(GameConfig).one().auction_timer_end is None
+    assert db.query(WalletTransaction).filter(WalletTransaction.transaction_type == "WILDCARD_WIN").count() == 0
+
+    first = client.post("/admin/wildcard/finalize", headers=admin_headers)
+    second = client.post("/admin/wildcard/finalize", headers=admin_headers)
+    assert first.status_code == second.status_code == 200
+    db.expire_all()
+    assert db.query(Team).filter(Team.id == team.id).one().coins == 895
+    assert db.query(WalletTransaction).filter(WalletTransaction.transaction_type == "WILDCARD_WIN").count() == 1
+
+
+def test_nonexpired_selection_reconciliation_never_requests_row_lock(db):
+    control = RoundControl(
+        round_type="WILDCARD",
+        status="PROBLEM_SELECTION",
+        selection_ends_at=datetime.now(timezone.utc) + timedelta(seconds=30),
+    )
+    db.add(control)
+    db.commit()
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(db.get_bind(), "before_cursor_execute", capture)
+    try:
+        assert reconcile_wildcard_selection(db) is None
+    finally:
+        event.remove(db.get_bind(), "before_cursor_execute", capture)
+    assert not any("FOR UPDATE" in statement.upper() for statement in statements)
+
+
+def test_status_dashboard_and_problem_reads_do_not_reconcile_expired_selection(
+    client, admin_headers, db,
+):
+    teams, headers = _prepare_active_selection(client, admin_headers, db, slots=1, problems=1)
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    control.selection_ends_at = datetime.now(timezone.utc) - timedelta(milliseconds=1)
+    db.commit()
+
+    assert client.get("/wildcard/status", headers=headers[0]).status_code == 200
+    assert client.get("/participant/dashboard", headers=headers[0]).status_code == 200
+    assert client.get("/participant/problems?round=2", headers=headers[0]).status_code == 200
+    db.expire_all()
+    application = db.query(Wildcard).filter(Wildcard.team_id == teams[0].id).one()
+    assert application.status == "qualified"
+    assert application.problem_id is None
+
+    assignment = reconcile_wildcard_selection(db)
+    assert assignment and assignment["team_id"] == teams[0].id
 
 
 def test_simultaneous_wildcard_choices_allow_exactly_one_claim(session_factory):
@@ -467,6 +556,7 @@ def test_simultaneous_wildcard_choices_allow_exactly_one_claim(session_factory):
     assert client.post("/wildcard/bid", json={"increment": 5}, headers=headers2).status_code == 200
     assert client.post("/wildcard/bid", json={"increment": 5}, headers=headers1).status_code == 200
     assert client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers).status_code == 200
+    assert client.post("/admin/wildcard/finalize", headers=admin_headers).status_code == 200
 
     choices = client.get("/participant/problems?round=2", headers=headers1).json()
     assert len(choices) == 2

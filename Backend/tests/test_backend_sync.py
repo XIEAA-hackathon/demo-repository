@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import event as sqlalchemy_event
+
 from app.models.models import Bid, EventConfig, GameConfig, ProblemStatement, RoundControl, Team, Wildcard
 
 
@@ -128,7 +130,10 @@ def test_wildcard_bid_uses_same_team_cooldown(client, admin_headers, csv_bytes, 
     game.state = "WILDCARD_BIDDING"
     game.current_round = 2
     game.auction_timer_end = datetime.now(timezone.utc) + timedelta(seconds=60)
-    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one_or_none()
+    if control is None:
+        control = RoundControl(round_type="WILDCARD")
+        db.add(control)
     control.status = "BIDDING_OPEN"
     control.slot_count = 1
     db.add(Wildcard(team_id=team_id, status="applied"))
@@ -150,6 +155,24 @@ def test_wildcard_bid_uses_same_team_cooldown(client, admin_headers, csv_bytes, 
     db.commit()
     insufficient = client.post("/wildcard/bid", json={"increment": 5}, headers=alpha_headers)
     assert insufficient.status_code == 400
+
+
+def test_participant_dashboard_query_budget(client, admin_headers, csv_bytes, db):
+    alpha_headers = _leader_headers(client, admin_headers, csv_bytes)["alice@test.com"]
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    sqlalchemy_event.listen(db.get_bind(), "before_cursor_execute", capture)
+    try:
+        response = client.get("/participant/dashboard", headers=alpha_headers)
+    finally:
+        sqlalchemy_event.remove(db.get_bind(), "before_cursor_execute", capture)
+
+    assert response.status_code == 200, response.text
+    assert len(statements) <= 12, f"Dashboard query budget regressed: {len(statements)} SELECTs"
 
 
 def test_admin_problem_management_and_upload_restriction(client, admin_headers):

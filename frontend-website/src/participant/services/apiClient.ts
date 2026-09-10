@@ -1,5 +1,5 @@
 import { API_URL } from '../../services/api/config'
-import { clearAccessToken, getAccessToken } from './participantToken'
+import { clearAccessToken, getAccessToken, shouldClearAccessTokenForStatus } from './participantToken'
 
 export { clearAccessToken, getAccessToken, setAccessToken } from './participantToken'
 
@@ -31,7 +31,7 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
 
   const data = await response.json().catch(() => null) as { detail?: string; message?: string; retry_after_seconds?: number } | null
   if (!response.ok) {
-    if (response.status === 401) {
+    if (shouldClearAccessTokenForStatus(response.status)) {
       clearAccessToken()
       window.dispatchEvent(new Event('participant:unauthorized'))
     }

@@ -25,7 +25,7 @@ export function connectEventSocket(onMessage: (message: EventMessage) => void, o
     },
     onStatus,
     heartbeatIntervalMs: PARTICIPANT_HEARTBEAT_INTERVAL_MS,
-    heartbeatMessage: 'heartbeat',
+    heartbeatMessage: () => JSON.stringify({ type: 'heartbeat', client_time: Date.now() }),
     onUnauthorized: () => {
       clearAccessToken()
       window.dispatchEvent(new Event('participant:unauthorized'))

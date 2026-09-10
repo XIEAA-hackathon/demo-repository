@@ -11,6 +11,8 @@ from app.services.event_service import _remaining_seconds, sync_expired_event_st
 
 
 def _leader(db, email="resilient@team.test"):
+    if not db.query(EventConfig).first():
+        db.add_all([EventConfig(), GameConfig(state="WAITING")])
     user = User(name="Resilient Leader", email=email, role="leader", password_hash=get_password_hash("temp-pass"))
     db.add(user)
     db.flush()
@@ -119,6 +121,34 @@ def test_natural_expiry_broadcasts_committed_snapshot_once(db):
     assert db.query(EventActivityLog).filter(
         EventActivityLog.action == "round1.bidding_expired"
     ).count() == 1
+
+
+def test_active_timer_emits_periodic_authoritative_sync(db):
+    db.add(RoundControl(round_type="ROUND1", status="BIDDING"))
+    db.add(GameConfig(
+        state="ROUND1_BIDDING",
+        current_round=1,
+        auction_timer_end=datetime.now(timezone.utc) + timedelta(seconds=60),
+    ))
+    db.commit()
+
+    class CapturingManager:
+        def __init__(self):
+            self.events = []
+
+        async def broadcast_event(self, event_type, payload):
+            self.events.append((event_type, payload))
+
+    manager = CapturingManager()
+    factory = sessionmaker(autocommit=False, autoflush=False, bind=db.get_bind())
+    actions = asyncio.run(process_expiry_cycle(factory, manager, emit_timer_sync=True))
+
+    assert actions == []
+    assert len(manager.events) == 1
+    event_type, payload = manager.events[0]
+    assert event_type == "timer_sync"
+    assert payload["event_state"] == "ROUND1_BIDDING"
+    assert 0 < payload["timing"]["remaining_seconds"] <= 60
 
 
 def test_repeated_manual_round_end_is_idempotent(client, admin_headers, db):

@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440 # 24 hours
     SESSION_HEARTBEAT_SECONDS: int = 20
-    SESSION_STALE_SECONDS: int = 90
+    SESSION_STALE_SECONDS: int = 300
     SESSION_TOUCH_INTERVAL_SECONDS: int = 15
     DEPLOYED_COMMIT: str = "development"
     APP_ENV: str = "development"

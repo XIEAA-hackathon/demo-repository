@@ -143,7 +143,10 @@ def test_only_team_leader_controls_mutations(client, admin_headers, db):
 
     config.state = "WILDCARD_APPLICATION"
     from datetime import datetime, timedelta, timezone
-    wildcard_control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    wildcard_control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one_or_none()
+    if wildcard_control is None:
+        wildcard_control = RoundControl(round_type="WILDCARD")
+        db.add(wildcard_control)
     round_one_control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one()
     round_one_control.ended = True
     wildcard_control.status = "APPLICATIONS_OPEN"

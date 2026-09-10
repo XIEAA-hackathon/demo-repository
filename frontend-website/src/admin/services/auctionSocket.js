@@ -8,5 +8,7 @@ export function connectAuctionSocket({ onMessage, onStatus } = {}) {
     getToken,
     onMessage,
     onStatus,
+    heartbeatIntervalMs: 20_000,
+    heartbeatMessage: () => JSON.stringify({ type: "heartbeat", client_time: Date.now() }),
   });
 }

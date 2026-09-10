@@ -108,11 +108,12 @@ def preflight(db: Session = Depends(get_db), current_user: User = Depends(get_cu
 @router.get("/admin/recovery")
 def recovery_snapshot(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     del current_user
-    expiry_actions = sync_expired_event_state(db)
+    expiry_actions: list[str] = []
     event = event_snapshot(db)
-    game = get_or_create_game_config(db)
-    round1 = get_or_create_round_control(db, "ROUND1")
-    wildcard = get_or_create_round_control(db, "WILDCARD")
+    game = db.query(GameConfig).first() or GameConfig(state="SETUP")
+    round1 = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").first() or RoundControl(round_type="ROUND1")
+    wildcard = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").first() or RoundControl(round_type="WILDCARD")
+    event_config = db.query(EventConfig).first() or EventConfig()
     active = current_selection(db)
     current_problem = db.query(ProblemStatement).filter(ProblemStatement.id == round1.current_problem_id).first() if round1.current_problem_id else None
     return {
@@ -124,7 +125,7 @@ def recovery_snapshot(db: Session = Depends(get_db), current_user: User = Depend
         "wildcard_applications": {"open": wildcard.applications_open, "status": wildcard.status},
         "wildcard_auction_state": wildcard.status,
         "wildcard_selection_rank": active[0].rank if active else None,
-        "submission_state": "OPEN" if get_or_create_event_config(db).submissions_open else "CLOSED",
+        "submission_state": "OPEN" if event_config.submissions_open else "CLOSED",
         "last_state_update": game.last_state_update,
         "expiry_actions": expiry_actions,
         "reset_enabled": bool(settings.ENABLE_EVENT_RESET and not settings.is_production),

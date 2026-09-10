@@ -211,6 +211,7 @@ def test_top_five_lockout_base_prices_and_current_assignment_export(
     public_wildcard = client.get("/public/leaderboard", headers=display_headers).json()
     assert public_wildcard["base_price"] == 300
     assert client.post("/admin/rounds/wildcard/bidding/close", headers=admin_headers).status_code == 200
+    assert client.post("/admin/wildcard/finalize", headers=admin_headers).status_code == 200
     selected = client.post(f"/wildcard/select/{wildcard_problem['id']}", headers=headers_by_index[8])
     assert selected.status_code == 200, selected.text
 

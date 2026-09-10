@@ -1,26 +1,29 @@
 from datetime import datetime, timedelta, timezone
+import json
 
 import pytest
 
 from app.core.security import get_password_hash
-from app.models.models import EventActivityLog, Team, User
+from app.models.models import EventActivityLog, EventConfig, GameConfig, Team, User
 from app.services.participant_session import participant_session_is_stale
 
 
 PASSWORD = "ParticipantSession@123"
 
 
-def test_session_staleness_uses_strict_ninety_second_boundary():
+def test_session_staleness_uses_strict_five_minute_boundary():
     now = datetime.now(timezone.utc)
     assert participant_session_is_stale(None, now=now) is True
-    assert participant_session_is_stale(now - timedelta(seconds=90), now=now) is False
+    assert participant_session_is_stale(now - timedelta(seconds=300), now=now) is False
     assert participant_session_is_stale(
-        now - timedelta(seconds=90, milliseconds=1),
+        now - timedelta(seconds=300, milliseconds=1),
         now=now,
     ) is True
 
 
 def _participant(db, *, email: str, role: str = "leader") -> User:
+    if not db.query(EventConfig).first():
+        db.add_all([EventConfig(), GameConfig(state="WAITING")])
     user = User(
         name=f"Session {role.title()}",
         email=email,
@@ -97,7 +100,7 @@ def test_stale_session_is_replaced_and_old_token_cannot_logout_new_session(clien
     db.expire_all()
     stored = db.get(User, user.id)
     first_session_id = stored.session_id
-    stored.session_last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=91)
+    stored.session_last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=301)
     db.commit()
 
     replacement = _login(client, user)
@@ -149,8 +152,10 @@ def test_websocket_reconnect_and_disconnect_preserve_same_session(client, db):
         assert socket.receive_json()["type"] == "session_heartbeat"
         db.expire_all()
         first_heartbeat_at = db.get(User, user.id).session_last_seen_at
-        socket.send_text("heartbeat")
-        assert socket.receive_json()["type"] == "session_heartbeat"
+        socket.send_text(json.dumps({"type": "heartbeat", "client_time": 123456789}))
+        heartbeat = socket.receive_json()
+        assert heartbeat["type"] == "session_heartbeat"
+        assert heartbeat["payload"]["client_time"] == 123456789
         db.expire_all()
         assert db.get(User, user.id).session_last_seen_at == first_heartbeat_at
 

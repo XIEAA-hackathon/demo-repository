@@ -42,3 +42,31 @@ On the production-shaped host, compare login and bid latency with WebSocket
 continuity, CPU, memory, PostgreSQL lock waits/deadlocks, pool timeouts, and
 service restarts. Password verification is constant-cost SHA-256 and has no
 bcrypt worker-pool tuning.
+
+## Wildcard mixed load
+
+`wildcard-load.js` models the live Wildcard pressure point: 80 unique participant
+WebSockets, 5–15 unique active bidders, and a synchronized dashboard-refresh
+cohort. Use three disjoint credential groups so the single-session contract is
+not itself the test bottleneck. The event must already be in `BIDDING_OPEN`, all
+bidder accounts must have applied, and the target must be disposable.
+
+```powershell
+$env:BASE_URL = 'http://127.0.0.1:8000'
+$env:CREDENTIALS_FILE = './credentials.json'
+$env:SOCKETS = '80'
+$env:BIDDERS = '10'
+$env:DASHBOARD_USERS = '20'
+k6 run .\wildcard-load.js
+
+$env:SOCKETS = '150'
+$env:BIDDERS = '15'
+$env:DASHBOARD_USERS = '40'
+k6 run .\wildcard-load.js
+```
+
+The k6 summary reports request success plus p50/p95/p99 for bid and dashboard
+latency, unexpected 401s, 5xx responses, WebSocket disconnects, and received
+events. Correlate the same timestamps with backend transaction logs and
+PostgreSQL `pg_stat_activity` / `pg_locks` for pool usage and lock waits; those
+server-side measurements cannot be inferred reliably by a client-only script.

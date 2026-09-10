@@ -166,7 +166,11 @@ def sync_expired_event_state(db: Session) -> list[str]:
     taken only after the timer appears expired, and the round row is always
     locked before GameConfig so bidding/finalization and expiry use one order.
     """
-    config = get_or_create_game_config(db)
+    # Startup owns singleton creation. The one-second worker must stay a pure,
+    # non-locking read when no deadline is due.
+    config = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
+    if config is None:
+        return []
     round_type = {
         "ROUND1_PREVIEW": "ROUND1",
         "ROUND1_BIDDING": "ROUND1",
@@ -224,6 +228,8 @@ def _sync_expired_event_state(db: Session, config_id: int, round_type: str) -> l
             control.status = "APPLICATIONS_CLOSED"
             actions.append("wildcard.applications_expired")
     elif config.state == "WILDCARD_BIDDING":
+        # The broad event phase remains WILDCARD_BIDDING while the round-level
+        # state records the closed, explicit-finalization-pending boundary.
         if control.status == "BIDDING_OPEN":
             control.status = "BIDDING_CLOSED"
             actions.append("wildcard.bidding_expired")
@@ -306,19 +312,39 @@ def event_timing(config: GameConfig) -> dict:
         "remaining_seconds": _remaining_seconds(config),
     }
 
-def event_snapshot(db: Session) -> dict:
-    sync_expired_event_state(db)
-    config = get_or_create_game_config(db)
-    event_config = get_or_create_event_config(db)
-    round1 = get_or_create_round_control(db, "ROUND1")
-    wildcard = get_or_create_round_control(db, "WILDCARD")
+def event_snapshot(
+    db: Session,
+    *,
+    config: GameConfig | None = None,
+    event_config: EventConfig | None = None,
+    round_controls: dict[str, RoundControl] | None = None,
+) -> dict:
+    """Return authoritative event state without performing transitions or writes."""
+    config = config or db.query(GameConfig).order_by(GameConfig.id.asc()).first()
+    event_config = event_config or db.query(EventConfig).order_by(EventConfig.id.asc()).first()
+    if round_controls is None:
+        round_controls = {
+            row.round_type: row
+            for row in db.query(RoundControl)
+            .filter(RoundControl.round_type.in_(("ROUND1", "WILDCARD")))
+            .all()
+        }
+    # Missing singletons are a startup/configuration concern. Transient defaults
+    # keep read-only diagnostics usable without turning a GET into a repair job.
+    config = config or GameConfig(state="WAITING", current_round=1)
+    event_config = event_config or EventConfig()
+    round1 = round_controls.get("ROUND1") or RoundControl(round_type="ROUND1", status="IDLE", ended=False)
+    wildcard = round_controls.get("WILDCARD") or RoundControl(
+        round_type="WILDCARD", status="NOT_STARTED", ended=False, applications_open=False,
+    )
+    event_state = config.state or "WAITING"
     return {
-        "event_state": config.state,
-        "current_round": config.current_round,
+        "event_state": event_state,
+        "current_round": config.current_round or 1,
         "bid_cooldown_seconds": event_config.bid_cooldown_seconds,
         "last_state_update": config.last_state_update,
         "timing": event_timing(config),
-        "allowed_transitions": sorted(STATE_TRANSITIONS.get(config.state, set())),
+        "allowed_transitions": sorted(STATE_TRANSITIONS.get(event_state, set())),
         "rounds": {
             "ROUND1": {"status": round1.status, "ended": round1.ended, "current_problem_id": round1.current_problem_id},
             "WILDCARD": {"status": wildcard.status, "ended": wildcard.ended, "current_problem_id": wildcard.current_problem_id, "applications_open": wildcard.applications_open},

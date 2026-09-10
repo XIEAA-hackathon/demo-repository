@@ -8,6 +8,11 @@ demo.txt
 test_credentials.txt
 load_test/credentials.json
 load_test/credentials-*.json
+load_test/*registration_accounts*.xlsx
+bid_to_build_*_participants.csv
+outputs/**/*credentials*
+outputs/**/simulation_state.json
+outputs/**/ui_probe_login.json
 
 # Databases and persistent state
 *.db
@@ -28,6 +33,8 @@ dist-ssr/
 *.tsbuildinfo
 
 # Logs and local tooling
+graphify-out/
+work/
 *.log
 npm-debug.log*
 yarn-debug.log*

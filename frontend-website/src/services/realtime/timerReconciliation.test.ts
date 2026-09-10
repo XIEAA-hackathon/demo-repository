@@ -26,7 +26,21 @@ assert.equal(shouldApplyTimerSnapshot({
   nextTimerKey: 'same-phase',
   expectedRemaining: 55,
   serverRemaining: 56,
+}), true)
+
+assert.equal(shouldApplyTimerSnapshot({
+  previousTiming: timing,
+  previousTimerKey: 'same-phase',
+  nextTiming: { ...timing, serverTime: '2026-08-26T10:00:05.000Z', receivedAt: localNow + 5_000 },
+  nextTimerKey: 'same-phase',
+  expectedRemaining: 55,
+  serverRemaining: 55.5,
 }), false)
+
+assert.equal(deriveServerRemaining({
+  ...timing,
+  clockOffsetMs: 250,
+}, localNow + 20_000), 40)
 
 assert.equal(shouldApplyTimerSnapshot({
   previousTiming: timing,

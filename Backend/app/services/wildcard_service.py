@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import (
     EventConfig,
+    GameConfig,
     ProblemStatement,
     RoundControl,
     Team,
@@ -201,6 +202,7 @@ def ranking_payload(db: Session, control: RoundControl | None = None) -> list[di
             "team_id": team.id,
             "team_name": team.team_name,
             "value": bid.amount,
+            "timestamp": bid.timestamp,
             "qualified": application.status in {"qualified", "selected"},
         })
     return rows
@@ -324,7 +326,10 @@ def _assign_locked_selection(
         "problem": problem_payload(problem),
         "method": method,
         "next_rank": next_active[0].rank if next_active else None,
+        "next_team_id": next_active[1].id if next_active else None,
         "next_team": next_active[1].team_name if next_active else None,
+        "selection_started_at": control.selection_started_at,
+        "selection_ends_at": control.selection_ends_at,
     }
 
 
@@ -396,15 +401,38 @@ def assign_wildcard_selection(
 
 
 def reconcile_wildcard_selection(db: Session, *, now: datetime | None = None) -> dict | None:
-    """Finalize an expired turn. Safe for the background worker and request paths."""
-    get_or_create_round_control(db, "WILDCARD")
+    """Finalize one expired turn; the background expiry worker is the owner.
+
+    The ordinary path is deliberately a cheap, non-locking projection. Only an
+    observed expired selection deadline is allowed to contend for the shared
+    Wildcard control row, and every predicate is rechecked under that lock.
+    """
+    check_time = now or utc_now()
+    candidate = (
+        db.query(RoundControl.id, RoundControl.status, RoundControl.selection_ends_at)
+        .filter(RoundControl.round_type == "WILDCARD")
+        .one_or_none()
+    )
+    if (
+        candidate is None
+        or candidate.status != "PROBLEM_SELECTION"
+        or candidate.selection_ends_at is None
+        or as_utc(candidate.selection_ends_at) > check_time
+    ):
+        return None
+
     control = (
         db.query(RoundControl)
-        .filter(RoundControl.round_type == "WILDCARD")
+        .filter(RoundControl.id == candidate.id)
         .with_for_update()
+        .populate_existing()
         .one()
     )
-    if control.status != "PROBLEM_SELECTION":
+    if (
+        control.status != "PROBLEM_SELECTION"
+        or control.selection_ends_at is None
+        or as_utc(control.selection_ends_at) > check_time
+    ):
         return None
     active = _locked_current_selection(db)
     if not active:
@@ -413,7 +441,6 @@ def reconcile_wildcard_selection(db: Session, *, now: datetime | None = None) ->
         control.ended = True
         db.commit()
         return None
-    check_time = now or utc_now()
     if control.current_selection_rank != active[0].rank or control.selection_ends_at is None:
         start_selection_timer(db, control, now=check_time)
         db.commit()
@@ -444,6 +471,8 @@ def finalize_slot_bidding(db: Session, control: RoundControl, *, commit: bool = 
             }
             for application, team in ordered_qualifications(db)
         ]
+    if control.status != "BIDDING_CLOSED":
+        raise ValueError("Close Wildcard bidding before finalizing the ranking.")
 
     slot_count = control.slot_count or 0
     rows = [
@@ -509,9 +538,21 @@ def finalize_slot_bidding(db: Session, control: RoundControl, *, commit: bool = 
 
 
 def wildcard_payload(db: Session) -> dict:
-    reconcile_wildcard_selection(db)
-    control = sync_application_window(db)
-    config: EventConfig = get_or_create_event_config(db)
+    """Build the admin Wildcard projection without reconciling or mutating state."""
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.round_type == "WILDCARD")
+        .one_or_none()
+        or RoundControl(round_type="WILDCARD", status="NOT_STARTED", ended=False, applications_open=False)
+    )
+    config: EventConfig = db.query(EventConfig).order_by(EventConfig.id.asc()).first() or EventConfig()
+    game = db.query(GameConfig).order_by(GameConfig.id.asc()).first() or GameConfig(state="WAITING", current_round=1)
+    round1 = (
+        db.query(RoundControl)
+        .filter(RoundControl.round_type == "ROUND1")
+        .one_or_none()
+        or RoundControl(round_type="ROUND1", status="IDLE", ended=False)
+    )
     applications = db.query(Wildcard).all()
     eligible = eligible_team_count(db)
     applied = sum(record.status in {"applied", "qualified", "selected", "eliminated"} for record in applications)
@@ -519,11 +560,20 @@ def wildcard_payload(db: Session) -> dict:
     problems = wildcard_problems(db)
     pool_rows = selection_pool(db)
     problem_by_id = {problem.id: problem for problem in problems}
-    available = available_wildcard_problems(db)
+    if pool_rows:
+        available = [
+            problem_by_id[row.problem_id]
+            for row in pool_rows
+            if row.selected_by_team_id is None
+            and row.problem_id in problem_by_id
+            and problem_by_id[row.problem_id].status in {"available", "visible"}
+        ]
+    else:
+        available = [problem for problem in problems if problem.status in {"available", "visible"}]
     qualifications = []
     active = current_selection(db)
     for application, team in ordered_qualifications(db):
-        selected_problem = next((problem for problem in problems if problem.id == application.problem_id), None)
+        selected_problem = problem_by_id.get(application.problem_id)
         qualifications.append({
             "rank": application.rank,
             "team_id": team.id,
@@ -587,5 +637,10 @@ def wildcard_payload(db: Session) -> dict:
             "base_price": config.wildcard_starting_bid,
             "wildcard_slots": control.slot_count or config.wildcard_slots,
         },
-        "event": event_snapshot(db),
+        "event": event_snapshot(
+            db,
+            config=game,
+            event_config=config,
+            round_controls={"ROUND1": round1, "WILDCARD": control},
+        ),
     }

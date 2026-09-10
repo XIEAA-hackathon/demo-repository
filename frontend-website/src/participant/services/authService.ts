@@ -11,7 +11,6 @@ export async function login(email: string, password: string) {
   try {
     const response = await apiRequest<TokenResponse>('/login', { method: 'POST', body })
     setAccessToken(response.access_token)
-    await apiRequest('/participant/dashboard')
   } catch (cause) {
     clearAccessToken()
     if (cause instanceof ApiError) {

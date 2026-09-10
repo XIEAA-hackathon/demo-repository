@@ -185,6 +185,7 @@ export interface ParticipantDashboard {
 export interface EventTiming {
   serverTime: string
   receivedAt: number
+  clockOffsetMs?: number | null
   startedAt: string | null
   endsAt: string | null
   paused: boolean

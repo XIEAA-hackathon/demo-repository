@@ -195,7 +195,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           ? dashboardRef.current
           : await refresh()
         if (next && shouldNavigateNow) navigate(getStageRoute(next.eventState).path, { replace: true })
-      }, 300)
+      }, jitterMilliseconds(250, 900))
     }
     const disconnect = connectEventSocket((message) => {
       const previousVersion = lastEventVersion.current
@@ -222,7 +222,8 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
               eventState: nextState ?? current.eventState,
               timing: rawTiming ? {
                 serverTime: String(rawTiming.server_time ?? message.server_time),
-                receivedAt: Date.now(),
+                receivedAt: Number(rawTiming.received_at ?? Date.now()),
+                clockOffsetMs: rawTiming.clock_offset_ms == null ? current.timing.clockOffsetMs : Number(rawTiming.clock_offset_ms),
                 startedAt: rawTiming.started_at == null ? null : String(rawTiming.started_at),
                 endsAt: rawTiming.ends_at == null ? null : String(rawTiming.ends_at),
                 paused: Boolean(rawTiming.paused),
@@ -252,6 +253,56 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
             cooldownSeconds: delta.cooldownSeconds,
             serverTime: message.server_time,
           })
+        }
+        return
+      }
+      if (message.type === 'wildcard_updated') {
+        const action = String(message.payload.action ?? '')
+        const ownTeamId = dashboardRef.current?.team.id
+        if (action === 'bidding_closed') return
+        if (action === 'bidding_finalized') {
+          const winners = Array.isArray(message.payload.winners) ? message.payload.winners : []
+          const ownWinner = winners.find((entry) => String((entry as Record<string, unknown>).team_id) === ownTeamId) as Record<string, unknown> | undefined
+          realtimeRevision.current += 1
+          setDashboard((current) => {
+            if (!current?.wildcard) return current
+            const next = {
+              ...current,
+              wildcard: {
+                ...current.wildcard,
+                status: ownWinner ? 'qualified' : 'eliminated',
+                rank: ownWinner ? Number(ownWinner.rank) : null,
+                winningBid: ownWinner ? Number(ownWinner.winning_bid) : null,
+              },
+            }
+            dashboardRef.current = next
+            return next
+          })
+          if (ownWinner) queueRefresh(true)
+          return
+        }
+        if (['problem_selected', 'selection_timeout', 'admin_end_turn'].includes(action)) {
+          const selectedTeamId = String(message.payload.team_id ?? '')
+          const nextTeamId = message.payload.next_team_id == null ? null : String(message.payload.next_team_id)
+          realtimeRevision.current += 1
+          setDashboard((current) => {
+            if (!current?.wildcard) return current
+            const next = {
+              ...current,
+              wildcard: {
+                ...current.wildcard,
+                currentSelectionRank: message.payload.next_rank == null ? null : Number(message.payload.next_rank),
+                currentSelectionTeam: message.payload.next_team == null ? null : String(message.payload.next_team),
+                isSelectionTurn: nextTeamId === current.team.id,
+                selectionStartedAt: message.payload.selection_started_at == null ? null : String(message.payload.selection_started_at),
+                selectionEndsAt: message.payload.selection_ends_at == null ? null : String(message.payload.selection_ends_at),
+              },
+            }
+            dashboardRef.current = next
+            return next
+          })
+          if (selectedTeamId === ownTeamId || nextTeamId === ownTeamId) queueRefresh()
+          return
         }
         return
       }

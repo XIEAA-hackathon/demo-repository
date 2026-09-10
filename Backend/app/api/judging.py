@@ -9,15 +9,11 @@ from app.api.auth import get_current_active_admin, get_current_active_display
 from app.api.rounds import public_round_leaderboard
 from app.api.websockets import manager
 from app.core.database import get_db
-from app.models.models import FinalResult, ProblemStatement, Team, User
+from app.models.models import EventConfig, FinalResult, GameConfig, ProblemStatement, RoundControl, Team, User
 from app.schemas.schemas import JudgingWinnersUpdate
 from app.services.activity_log import record_event
 from app.services.event_service import (
     event_snapshot,
-    get_or_create_event_config,
-    get_or_create_game_config,
-    get_or_create_round_control,
-    sync_expired_event_state,
     transition_event_state,
 )
 from app.services.wildcard_service import available_wildcard_problems
@@ -148,9 +144,8 @@ def public_event_display(
 ):
     del current_user
     response.headers["Cache-Control"] = "no-store"
-    sync_expired_event_state(db)
-    game = get_or_create_game_config(db)
-    event_config = get_or_create_event_config(db)
+    game = db.query(GameConfig).first() or GameConfig(state="SETUP")
+    event_config = db.query(EventConfig).first() or EventConfig()
     result = db.query(FinalResult).filter(FinalResult.result_status == "PUBLISHED").first()
     timing = event_snapshot(db)["timing"]
     if result:
@@ -165,7 +160,7 @@ def public_event_display(
 
     if game.state == "ROUND1_BIDDING":
         board = public_round_leaderboard("round-1", response, db)
-        control = get_or_create_round_control(db, "ROUND1")
+        control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").first() or RoundControl(round_type="ROUND1")
         problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
         return {
             "mode": "ROUND1_LIVE",
@@ -211,12 +206,12 @@ def public_event_display(
     }
     problem = None
     if game.state.startswith("ROUND1"):
-        control = get_or_create_round_control(db, "ROUND1")
-        if control.current_problem_id:
+        control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").first()
+        if control and control.current_problem_id:
             problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
     elif game.state.startswith("WILDCARD"):
-        control = get_or_create_round_control(db, "WILDCARD")
-        if control.current_problem_id:
+        control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").first()
+        if control and control.current_problem_id:
             problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
     payload = {
         "mode": "JUDGING_WAITING" if game.state == "JUDGING_WAIT" else "RESULTS_WAITING" if game.state == "RESULTS" else "WAITING",

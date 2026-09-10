@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
-from jose import JWTError, jwt
+from jose import ExpiredSignatureError, JWTError, jwt
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
@@ -246,8 +247,17 @@ def _authenticate_socket(
         # long-lived connection so an idle socket never occupies the pool.
         with session_factory() as db:
             user = db.query(User).filter(User.email == email).first()
-            if not user or not user.credentials_active or not user.session_id or user.session_id != session_id:
-                logger.info("Rejected WebSocket session reason=session_mismatch")
+            if not user:
+                logger.info("Rejected WebSocket session logout_reason=ACCOUNT_NOT_FOUND")
+                return None, None
+            if not user.credentials_active:
+                logger.info("Rejected WebSocket session user_id=%s logout_reason=ACCOUNT_DISABLED", user.id)
+                return None, None
+            if not user.session_id:
+                logger.info("Rejected WebSocket session user_id=%s logout_reason=SESSION_REVOKED", user.id)
+                return None, None
+            if user.session_id != session_id:
+                logger.info("Rejected WebSocket session user_id=%s logout_reason=SESSION_REPLACED", user.id)
                 return None, None
             if user.role in PARTICIPANT_ROLES and not touch_participant_session(
                 db,
@@ -257,7 +267,7 @@ def _authenticate_socket(
                 force=True,
             ):
                 logger.info(
-                    "Rejected WebSocket session user_id=%s role=%s reason=concurrent_replacement",
+                    "Rejected WebSocket session user_id=%s role=%s logout_reason=SESSION_MISMATCH",
                     user.id,
                     user.role,
                 )
@@ -274,9 +284,25 @@ def _authenticate_socket(
             snapshot = event_snapshot(db)
             snapshot["identity"] = {"role": user.role, "team_id": team.id if team else None}
             return identity, snapshot
-    except JWTError:
-        logger.info("Rejected WebSocket session reason=jwt_validation")
+    except ExpiredSignatureError:
+        logger.info("Rejected WebSocket session logout_reason=JWT_EXPIRED")
         return None, None
+    except JWTError:
+        logger.info("Rejected WebSocket session logout_reason=JWT_INVALID")
+        return None, None
+
+
+def _heartbeat_frame(message: str) -> tuple[bool, int | float | None]:
+    if message == "heartbeat":
+        return True, None
+    try:
+        payload = json.loads(message)
+    except (TypeError, ValueError):
+        return False, None
+    if not isinstance(payload, dict) or payload.get("type") != "heartbeat":
+        return False, None
+    client_time = payload.get("client_time")
+    return True, client_time if isinstance(client_time, (int, float)) else None
 
 
 async def broadcast_presence_snapshot(
@@ -316,6 +342,8 @@ def _touch_socket_identity(
 
 async def _safe_close(websocket: WebSocket, *, code: int, reason: str) -> None:
     try:
+        if websocket.application_state == WebSocketState.CONNECTING:
+            await websocket.accept()
         await websocket.close(code=code, reason=reason)
     except (WebSocketDisconnect, RuntimeError, OSError):
         pass
@@ -332,6 +360,10 @@ async def websocket_auction(websocket: WebSocket):
         )
     except SQLAlchemyError:
         logger.exception("WebSocket authentication snapshot failed before handshake.")
+        await _safe_close(websocket, code=1011, reason="Initial state temporarily unavailable")
+        return
+    except Exception:
+        logger.exception("Unexpected WebSocket authentication failure before handshake.")
         await _safe_close(websocket, code=1011, reason="Initial state temporarily unavailable")
         return
     if not identity or not snapshot:
@@ -359,16 +391,22 @@ async def websocket_auction(websocket: WebSocket):
             expires_at = identity.get("expires_at")
             if expires_at is None:
                 message = await websocket.receive_text()
-                if identity["role"] in PARTICIPANT_ROLES and message == "heartbeat":
-                    session_alive = await run_in_threadpool(
-                        _touch_socket_identity,
-                        identity,
-                        session_factory,
+                is_heartbeat, client_time = _heartbeat_frame(message)
+                if is_heartbeat:
+                    if identity["role"] in PARTICIPANT_ROLES:
+                        session_alive = await run_in_threadpool(
+                            _touch_socket_identity,
+                            identity,
+                            session_factory,
+                        )
+                        if not session_alive:
+                            await websocket.close(code=4401, reason="Session revoked")
+                            break
+                    await manager.send_event(
+                        websocket,
+                        "session_heartbeat",
+                        {"status": "active", "client_time": client_time},
                     )
-                    if not session_alive:
-                        await websocket.close(code=4401, reason="Session revoked")
-                        break
-                    await manager.send_event(websocket, "session_heartbeat", {"status": "active"})
                 continue
             seconds_until_expiry = expires_at - datetime.now(timezone.utc).timestamp()
             if seconds_until_expiry <= 0:
@@ -379,16 +417,22 @@ async def websocket_auction(websocket: WebSocket):
                     websocket.receive_text(),
                     timeout=seconds_until_expiry,
                 )
-                if identity["role"] in PARTICIPANT_ROLES and message == "heartbeat":
-                    session_alive = await run_in_threadpool(
-                        _touch_socket_identity,
-                        identity,
-                        session_factory,
+                is_heartbeat, client_time = _heartbeat_frame(message)
+                if is_heartbeat:
+                    if identity["role"] in PARTICIPANT_ROLES:
+                        session_alive = await run_in_threadpool(
+                            _touch_socket_identity,
+                            identity,
+                            session_factory,
+                        )
+                        if not session_alive:
+                            await websocket.close(code=4401, reason="Session revoked")
+                            break
+                    await manager.send_event(
+                        websocket,
+                        "session_heartbeat",
+                        {"status": "active", "client_time": client_time},
                     )
-                    if not session_alive:
-                        await websocket.close(code=4401, reason="Session revoked")
-                        break
-                    await manager.send_event(websocket, "session_heartbeat", {"status": "active"})
             except asyncio.TimeoutError:
                 await websocket.close(code=4401, reason="Session expired")
                 break

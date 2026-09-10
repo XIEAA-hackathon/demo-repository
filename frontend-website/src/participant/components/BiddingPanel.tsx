@@ -79,6 +79,7 @@ export default function BiddingPanel({
   const isLeader = dashboard.team.leaderId === dashboard.currentUserId
   const isWildcard = round === 'WILDCARD'
   const biddingActive = dashboard.eventState === (isWildcard ? 'WILDCARD_BIDDING' : 'ROUND1_BIDDING')
+    && (dashboard.timing.paused || Boolean(dashboard.timing.endsAt))
   const currentPrice = Math.max(problem.startingBid, ...entries.map((entry) => entry.amount))
   const ownBid = dashboard.latestBid?.round === round && dashboard.latestBid.problemId === problem.id
     ? dashboard.latestBid.amount
