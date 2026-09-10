@@ -1,5 +1,11 @@
--- Database Schema for Hackathon Auction Platform
--- This is for verification purposes. SQLAlchemy's Base.metadata.create_all() will execute similar commands.
+-- Legacy reference only.
+--
+-- The authoritative schema is now the immutable Alembic history under
+-- migrations/versions. Provision and upgrade databases with:
+--
+--     alembic upgrade head
+--
+-- Do not execute this historical file against production.
 
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,

@@ -4,7 +4,7 @@ import casinoBackground from './casinobg.jpg'
 
 export default function HeroSection() {
   return (
-    <section className="hero-casino relative overflow-hidden" aria-label="Hero">
+    <section id="hero" className="hero-casino relative overflow-hidden" aria-label="Hero">
       <div
         aria-hidden="true"
         className="hero-casino__image pointer-events-none absolute inset-0"

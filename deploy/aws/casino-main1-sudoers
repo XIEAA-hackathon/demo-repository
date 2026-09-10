@@ -1,0 +1,2 @@
+# Narrow commands needed by deploy-main1-remote.sh.
+ec2-user ALL=(root) NOPASSWD: /usr/sbin/nginx -t, /usr/bin/systemctl restart casino-backend.service, /usr/bin/systemctl reload nginx.service, /usr/bin/journalctl --no-pager -u casino-backend.service -n 80

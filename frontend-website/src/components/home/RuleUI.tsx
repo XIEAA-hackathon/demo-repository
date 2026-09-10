@@ -2,7 +2,7 @@ import type { RuleItem } from '../../config/eventContent'
 import { ruleIcon } from './RuleCards'
 
 const GOLD_TERMS = [
-  '1000 AlumniCoins',
+  '5000 AlumniCoins',
   'One Problem at a Time',
   'Top 5',
   'Live Auction',

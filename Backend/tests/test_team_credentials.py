@@ -1,5 +1,10 @@
 from app.core.security import verify_password
-from app.models.models import Bid, GameConfig, Member, ProblemStatement, Submission, Team, User, Wildcard
+from app.models.models import Bid, EventConfig, GameConfig, Member, ProblemStatement, RoundControl, Submission, Team, User, Wildcard, WildcardSelectionPool
+
+
+def activate_round_one_problem(db, problem):
+    problem.status = "current"
+    db.add(RoundControl(round_type="ROUND1", current_problem_id=problem.id, status="BIDDING"))
 
 
 def team_payload(name="Alpha", leader_email="alice@example.com"):
@@ -68,7 +73,7 @@ def test_admin_generates_individual_accounts_and_shared_team_wallet(client, admi
         dashboards.append(dashboard.json())
 
     assert len(dashboards[0]["team"]["members"]) == 3
-    assert {dashboard["wallet"]["balance"] for dashboard in dashboards} == {1000}
+    assert {dashboard["wallet"]["balance"] for dashboard in dashboards} == {5000}
     assert sum(bool(dashboard["isLeader"]) for dashboard in dashboards) == 1
 
 
@@ -109,7 +114,7 @@ def test_admin_can_reset_password_once_without_storing_plaintext(client, admin_h
     assert verify_password(updated["temporary_password"], account.password_hash)
 
 
-def test_teammate_is_spectator_and_leader_controls_all_mutations(client, admin_headers, db):
+def test_only_team_leader_controls_mutations(client, admin_headers, db):
     result = create_team(client, admin_headers)
     leader_credential, members = credentials_by_role(result)
     leader_headers = login(client, leader_credential["username"], leader_credential["temporary_password"])
@@ -121,6 +126,7 @@ def test_teammate_is_spectator_and_leader_controls_all_mutations(client, admin_h
     bonus = ProblemStatement(ps_number="WC-01", title="Bonus", description="desc", round=2, status="visible")
     db.add_all([round_one, bonus])
     db.flush()
+    activate_round_one_problem(db, round_one)
     config = db.query(GameConfig).first()
     config.state = "ROUND1_BIDDING"
     config.current_round = 1
@@ -128,32 +134,54 @@ def test_teammate_is_spectator_and_leader_controls_all_mutations(client, admin_h
 
     assert client.get("/participant/dashboard", headers=member_headers).status_code == 200
     assert client.get("/participant/leaderboard", headers=member_headers).status_code == 200
-    assert client.post("/bid", headers=member_headers, json={"ps_id": round_one.id, "amount": 100}).status_code == 403
-    leader_bid = client.post("/bid", headers=leader_headers, json={"ps_id": round_one.id, "amount": 100})
+    assert client.post("/bid", headers=member_headers, json={"ps_id": round_one.id, "increment": 5}).status_code == 403
+    leader_bid = client.post("/bid", headers=leader_headers, json={"ps_id": round_one.id, "increment": 25})
     assert leader_bid.status_code == 200, leader_bid.text
     member_dashboard = client.get("/participant/dashboard", headers=member_headers).json()
-    assert member_dashboard["currentBid"]["amount"] == 100
+    assert member_dashboard["currentBid"]["amount"] == 50
     assert member_dashboard["isLeader"] is False
 
     config.state = "WILDCARD_APPLICATION"
+    from datetime import datetime, timedelta, timezone
+    wildcard_control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one_or_none()
+    if wildcard_control is None:
+        wildcard_control = RoundControl(round_type="WILDCARD")
+        db.add(wildcard_control)
+    round_one_control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one()
+    round_one_control.ended = True
+    wildcard_control.status = "APPLICATIONS_OPEN"
+    wildcard_control.applications_open = True
+    config.auction_timer_end = datetime.now(timezone.utc) + timedelta(seconds=30)
     db.commit()
     assert client.post("/wildcard/apply", headers=member_headers).status_code == 403
     assert client.post("/wildcard/apply", headers=leader_headers).status_code == 200
 
     config.state = "WILDCARD_BIDDING"
+    wildcard_control.status = "BIDDING_OPEN"
+    wildcard_control.slot_count = 1
+    wildcard_control.applications_open = False
+    bonus.status = "current"
     db.commit()
-    assert client.post(f"/wildcard/bid?ps_id={bonus.id}&amount=150", headers=member_headers).status_code == 403
-    assert client.post(f"/wildcard/bid?ps_id={bonus.id}&amount=150", headers=leader_headers).status_code == 200
+    assert client.post("/wildcard/bid", headers=member_headers, json={"increment": 5}).status_code == 403
+    assert client.post("/wildcard/bid", headers=leader_headers, json={"increment": 5}).status_code == 200
 
     team.ps_id = round_one.id
+    team.round1_problem_id = round_one.id
     wildcard = db.query(Wildcard).filter(Wildcard.team_id == team.id).one()
-    wildcard.status = "won"
+    wildcard.status = "qualified"
+    wildcard.rank = 1
+    wildcard.winning_bid = 150
+    wildcard_control.status = "PROBLEM_SELECTION"
+    bonus.status = "visible"
     config.state = "WILDCARD_SELECTION"
+    db.add(WildcardSelectionPool(position=1, problem_id=bonus.id))
     db.commit()
     assert client.post(f"/wildcard/select/{bonus.id}", headers=member_headers).status_code == 403
     assert client.post(f"/wildcard/select/{bonus.id}", headers=leader_headers).status_code == 200
 
     submission = {"repository_url": "https://github.com/example/alpha"}
+    db.query(EventConfig).first().submissions_open = True
+    db.commit()
     assert client.post("/submissions/me", headers=member_headers, json=submission).status_code == 403
     assert client.post("/submissions/me", headers=leader_headers, json=submission).status_code == 201
     assert db.query(Submission).filter(Submission.team_id == team.id).count() == 1
@@ -172,6 +200,8 @@ def test_cross_team_id_injection_cannot_redirect_a_leaders_bid(client, admin_hea
 
     problem = ProblemStatement(ps_number="PS-X", title="Cross-team", description="desc", round=1, status="visible")
     db.add(problem)
+    db.flush()
+    activate_round_one_problem(db, problem)
     config = db.query(GameConfig).first()
     config.state = "ROUND1_BIDDING"
     config.current_round = 1
@@ -181,7 +211,7 @@ def test_cross_team_id_injection_cannot_redirect_a_leaders_bid(client, admin_hea
     response = client.post(
         "/bid",
         headers=headers,
-        json={"ps_id": problem.id, "amount": 100, "team_id": beta["team_id"]},
+        json={"ps_id": problem.id, "increment": 5, "team_id": beta["team_id"]},
     )
     assert response.status_code == 200, response.text
     bid = db.query(Bid).one()
@@ -197,6 +227,8 @@ def test_teammate_websocket_receives_leaders_live_bid(client, admin_headers, db)
 
     problem = ProblemStatement(ps_number="PS-LIVE", title="Live bid", description="desc", round=1, status="visible")
     db.add(problem)
+    db.flush()
+    activate_round_one_problem(db, problem)
     config = db.query(GameConfig).first()
     config.state = "ROUND1_BIDDING"
     config.current_round = 1
@@ -208,9 +240,12 @@ def test_teammate_websocket_receives_leaders_live_bid(client, admin_headers, db)
         assert snapshot["type"] == "event_snapshot"
         assert snapshot["payload"]["identity"]["role"] == "member"
 
-        response = client.post("/bid", headers=leader_headers, json={"ps_id": problem.id, "amount": 420})
+        response = client.post("/bid", headers=leader_headers, json={"ps_id": problem.id, "increment": 25})
         assert response.status_code == 200, response.text
         update = socket.receive_json()
         assert update["type"] == "bid_updated"
         assert update["payload"]["team_id"] == result["team_id"]
-        assert update["payload"]["amount"] == 420
+        assert update["payload"]["amount"] == 50
+        assert "bid_id" in update["payload"]
+        assert "timestamp" in update["payload"]
+        assert "leaderboard" not in update["payload"]

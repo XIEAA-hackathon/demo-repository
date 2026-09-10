@@ -25,7 +25,6 @@ import type { RuleIconKey } from '../../config/eventContent'
 import evaluationImg from './evaluation.png'
 import round1Img from './round1.png'
 import round2Img from './round2.png'
-import royaltyImg from './royalty.png'
 import wildcardImg from './wildcard.png'
 
 const iconMap: Partial<Record<RuleIconKey, LucideIcon>> = {
@@ -61,19 +60,15 @@ function CardImage({
   emphasized = false,
   compact = false,
   matchDesktopHeight = false,
-  wideDesktop = false,
 }: {
   src: string
   alt: string
   emphasized?: boolean
   compact?: boolean
   matchDesktopHeight?: boolean
-  wideDesktop?: boolean
 }) {
   const widthClass = matchDesktopHeight
     ? 'w-[88%] max-w-[20rem] lg:h-full lg:w-full lg:max-w-[27rem]'
-    : wideDesktop
-    ? 'w-[88%] max-w-[20rem] lg:w-full lg:max-w-[27rem]'
     : compact
     ? 'w-[88%] max-w-[20rem]'
     : `w-[92%] sm:w-full ${emphasized ? 'max-w-[30rem]' : 'max-w-[28rem]'}`
@@ -118,8 +113,4 @@ export function EvaluationCard() {
       matchDesktopHeight
     />
   )
-}
-
-export function RoyaltyCard() {
-  return <CardImage src={royaltyImg} alt="Royalty Bonus card" wideDesktop />
 }

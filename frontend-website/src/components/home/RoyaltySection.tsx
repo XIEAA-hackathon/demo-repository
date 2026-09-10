@@ -1,20 +1,25 @@
 import { royaltyHowItWorks } from '../../config/eventContent'
-import { RuleBlock, RuleList } from './RuleUI'
-import { RoyaltyCard } from './RuleCards'
 
 export default function RoyaltySection() {
   return (
-    <section className="py-10 md:py-12" aria-labelledby="royalty-heading">
-      <div className="container-page">
-        <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,0.34fr)_minmax(0,0.66fr)] lg:gap-6">
-          <div className="flex justify-center lg:-mt-3">
-            <RoyaltyCard />
-          </div>
-          <div>
-            <RuleBlock kicker="The Twist" title="Royalty Bonus" />
-            <RuleList items={royaltyHowItWorks} />
-          </div>
-        </div>
+    <section className="rulebook-royalty" aria-labelledby="royalty-heading">
+      <header className="rulebook-royalty-header">
+        <h3 id="royalty-heading">Royalty <span>Bonus.</span></h3>
+        <p>Unused AlumniCoins become Royalty Points, rewarding teams that balance confidence at auction with restraint.</p>
+      </header>
+
+      <div className="rulebook-royalty-panel">
+        <ol>
+          {royaltyHowItWorks.map((rule, index) => (
+            <li key={rule.title}>
+              <span aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
+              <div>
+                <h4>{rule.title}</h4>
+                <p>{rule.description}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
       </div>
     </section>
   )

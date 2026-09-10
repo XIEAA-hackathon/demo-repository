@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -6,14 +7,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+if not TEST_DATABASE_URL:
+    raise RuntimeError(
+        "TEST_DATABASE_URL is required and must point to a disposable PostgreSQL database."
+    )
+test_database_url = make_url(TEST_DATABASE_URL)
+if (
+    test_database_url.get_backend_name() != "postgresql"
+    or test_database_url.drivername != "postgresql+psycopg"
+):
+    raise RuntimeError("TEST_DATABASE_URL must use postgresql+psycopg.")
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
 from app.core.database import Base, get_db
 from app.core.security import get_password_hash
+from app.core.config import settings
 from app.models.models import User, EventConfig, GameConfig, ProblemStatement
-from app.api import auth, team, problem_statements, auction, wildcard, participant, admin, websockets
+from app.services.demo_seed import provision_demo_accounts
+from app.api import auth, team, problem_statements, auction, wildcard, participant, admin, websockets, rounds, operations, judging, management
 
 # ---------------------------------------------------------------- helpers
 
@@ -44,13 +62,15 @@ def _create_problem(db, ps_number="PS-01", round_no=1):
 
 @pytest.fixture(scope="session")
 def engine():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(bind=engine)
-    return engine
+    backend_root = Path(__file__).resolve().parent.parent
+    alembic_config = Config(str(backend_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(backend_root / "migrations"))
+    command.upgrade(alembic_config, "head")
+    test_engine = create_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    try:
+        yield test_engine
+    finally:
+        test_engine.dispose()
 
 @pytest.fixture(scope="session")
 def session_factory(engine):
@@ -61,8 +81,9 @@ def _clean_db(engine, session_factory):
     """Truncate all tables before each test so state never leaks between tests."""
     db = session_factory()
     try:
-        for table in reversed(Base.metadata.sorted_tables):
-            db.execute(table.delete())
+        quote = engine.dialect.identifier_preparer.quote
+        tables = ", ".join(quote(name) for name in Base.metadata.tables)
+        db.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
         db.commit()
     finally:
         db.close()
@@ -86,7 +107,12 @@ def client(engine, session_factory):
     app.include_router(wildcard.router)
     app.include_router(participant.router)
     app.include_router(admin.router)
+    app.include_router(rounds.router)
     app.include_router(websockets.router)
+    app.include_router(operations.router)
+    app.include_router(judging.router)
+    app.include_router(management.router)
+    app.state.session_factory = session_factory
 
     def override_get_db():
         db = session_factory()
@@ -103,6 +129,18 @@ def admin_headers(client, db):
     _create_event_defaults(db)
     admin_user = _create_admin(db)
     response = client.post("/login", data={"username": admin_user.email, "password": "admin123"})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+@pytest.fixture()
+def display_headers(client, db):
+    _create_event_defaults(db)
+    provision_demo_accounts(db)
+    db.commit()
+    response = client.post(
+        "/leaderboard/login",
+        data={"username": settings.LEADERBOARD_DISPLAY_EMAIL, "password": settings.LEADERBOARD_DISPLAY_PASSWORD},
+    )
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 

@@ -2,18 +2,20 @@ from app.api.websockets import make_event
 
 
 def _participant_headers(client, admin_headers, csv_bytes):
-    preview = client.post(
-        "/admin/registration/import/preview",
+    source = (
+        "Team Name,Leader Name,Leader Email,Leader Password\n"
+        "Team Alpha,Alice,alice@test.com,Alice@123\n"
+    ).encode()
+    imported = client.post(
+        "/admin/registration/import",
         headers=admin_headers,
-        files={"file": ("registrations.csv", csv_bytes, "text/csv")},
-    ).json()
-    confirmed = client.post(
-        "/admin/registration/import/confirm",
-        headers=admin_headers,
-        json={"import_id": preview["import_id"]},
-    ).json()
-    password = next(row["temporary_password"] for row in confirmed["credentials"] if row["email"] == "alice@test.com")
-    token = client.post("/login", data={"username": "alice@test.com", "password": password}).json()["access_token"]
+        files={"file": ("registrations.csv", source, "text/csv")},
+    )
+    assert imported.status_code == 200, imported.text
+    token = client.post(
+        "/login",
+        data={"username": "alice@test.com", "password": "Alice@123"},
+    ).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -40,7 +42,8 @@ def test_event_snapshot_contains_server_timing(client, admin_headers):
 
 
 def test_websocket_event_envelope_is_structured():
-    message = make_event("bid_updated", {"team_id": 4, "amount": 250})
+    message = make_event("bid_updated", {"team_id": 4, "amount": 250}, version=7)
     assert message["type"] == "bid_updated"
     assert message["timestamp"] == message["server_time"]
     assert message["payload"] == {"team_id": 4, "amount": 250}
+    assert message["version"] == 7

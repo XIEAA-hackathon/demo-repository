@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from sqlalchemy import or_
+from typing import List
 from app.core.database import get_db
-from app.models.models import ProblemStatement, Team
-from app.schemas.schemas import PSCreate, PSUpdate, PSResponse, AdminPSResponse
+from app.models.models import Bid, ProblemStatement, RoundControl, Submission, Team, Wildcard, WildcardSelectionPool
+from app.schemas.schemas import AdminPSResponse, PSCreate, PSResponse, PSUpdate
 from app.api.auth import get_current_user, get_current_active_admin
 from app.api.websockets import manager
 
@@ -21,7 +22,6 @@ async def create_ps(ps: PSCreate, db: Session = Depends(get_db), current_user = 
     db.add(new_ps)
     db.commit()
     db.refresh(new_ps)
-
     await manager.broadcast_event("ps_updated", {
         "action": "created",
         "ps_id": new_ps.id,
@@ -33,65 +33,77 @@ async def create_ps(ps: PSCreate, db: Session = Depends(get_db), current_user = 
 @router.get("/problem-statements", response_model=List[PSResponse])
 def get_pss(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     if current_user.role == "admin":
+        # Admin sees all
         pss = db.query(ProblemStatement).all()
     else:
+        # User only sees visible ones, and we should ideally hide titles until they own it (based on requirements)
+        # But for now, just return visible ones
         pss = db.query(ProblemStatement).filter(ProblemStatement.status == "visible").all()
+        # Hide title and description if not allocated to this team, according to rules.
+        # This can be handled in frontend or we can nullify them here.
+        for ps in pss:
+            ps.title = "Hidden"
+            ps.description = "Hidden"
     return pss
+
 
 @router.get("/problem-statements/admin", response_model=List[AdminPSResponse])
 def get_pss_admin(db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
-    """Admin live view of all Problem Statements with team allotment information."""
-    pss = db.query(ProblemStatement).all()
-    teams = db.query(Team).all()
-    team_by_ps = {t.ps_id: t for t in teams if t.ps_id}
+    problems = db.query(ProblemStatement).all()
+    teams = db.query(Team).filter(
+        or_(Team.ps_id.is_not(None), Team.round1_problem_id.is_not(None), Team.wildcard_problem_id.is_not(None))
+    ).all()
+    team_by_problem: dict[int, Team] = {}
+    for team in teams:
+        for problem_id in (team.ps_id, team.round1_problem_id, team.wildcard_problem_id):
+            if problem_id is not None:
+                team_by_problem.setdefault(problem_id, team)
 
-    res = []
-    for ps in pss:
-        team = team_by_ps.get(ps.id)
-        res.append(AdminPSResponse(
-            id=ps.id,
-            ps_number=ps.ps_number,
-            title=ps.title,
-            description=ps.description,
-            round=ps.round,
-            status=ps.status,
-            allocated_team_id=team.id if team else None,
-            allocated_team_name=team.team_name if team else None,
-        ))
-    return res
+    return [
+        AdminPSResponse(
+            id=problem.id,
+            ps_number=problem.ps_number,
+            title=problem.title,
+            description=problem.description,
+            round=problem.round,
+            status=problem.status,
+            allocated_team_id=team_by_problem[problem.id].id if problem.id in team_by_problem else None,
+            allocated_team_name=team_by_problem[problem.id].team_name if problem.id in team_by_problem else None,
+        )
+        for problem in problems
+    ]
+
 
 @router.put("/problem-statement/{ps_id}", response_model=PSResponse)
-async def update_ps(ps_id: int, ps_in: PSUpdate, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
-    ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
-    if not ps:
+async def update_ps(
+    ps_id: int,
+    updates: PSUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_admin),
+):
+    problem = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
+    if not problem:
         raise HTTPException(status_code=404, detail="Problem Statement not found")
 
-    if ps_in.ps_number and ps_in.ps_number != ps.ps_number:
-        dup = db.query(ProblemStatement).filter(ProblemStatement.ps_number == ps_in.ps_number).first()
-        if dup:
+    data = updates.model_dump(exclude_unset=True)
+    new_number = data.get("ps_number")
+    if new_number and new_number != problem.ps_number:
+        duplicate = db.query(ProblemStatement).filter(ProblemStatement.ps_number == new_number).first()
+        if duplicate:
             raise HTTPException(status_code=400, detail="Problem Statement number already in use")
-        ps.ps_number = ps_in.ps_number
-
-    if ps_in.title is not None:
-        ps.title = ps_in.title
-    if ps_in.description is not None:
-        ps.description = ps_in.description
-    if ps_in.round is not None:
-        ps.round = ps_in.round
-    if ps_in.status is not None:
-        ps.status = ps_in.status
+    for field, value in data.items():
+        setattr(problem, field, value)
 
     db.commit()
-    db.refresh(ps)
-
+    db.refresh(problem)
     await manager.broadcast_event("ps_updated", {
         "action": "updated",
-        "ps_id": ps.id,
-        "ps_number": ps.ps_number,
-        "title": ps.title,
-        "status": ps.status,
+        "ps_id": problem.id,
+        "ps_number": problem.ps_number,
+        "title": problem.title,
+        "status": problem.status,
     })
-    return ps
+    return problem
 
 @router.put("/problem-statement/{ps_id}/visibility")
 async def toggle_visibility(ps_id: int, status: str, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
@@ -106,22 +118,26 @@ async def toggle_visibility(ps_id: int, status: str, db: Session = Depends(get_d
     await manager.broadcast_event("ps_updated", {"action": "status_changed", "ps_id": ps.id, "status": status})
     return {"message": f"PS {ps.ps_number} status updated to {status}"}
 
+
 @router.delete("/problem-statement/{ps_id}")
 async def delete_ps(ps_id: int, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
-    ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
-    if not ps:
+    problem = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
+    if not problem:
         raise HTTPException(status_code=404, detail="Problem Statement not found")
 
-    # Clear ps_id on any allocated team
-    allocated_teams = db.query(Team).filter(Team.ps_id == ps.id).all()
-    for t in allocated_teams:
-        t.ps_id = None
+    referenced = any((
+        db.query(Team).filter(or_(Team.ps_id == ps_id, Team.round1_problem_id == ps_id, Team.wildcard_problem_id == ps_id)).first(),
+        db.query(RoundControl).filter(RoundControl.current_problem_id == ps_id).first(),
+        db.query(Bid).filter(Bid.ps_id == ps_id).first(),
+        db.query(Wildcard).filter(Wildcard.problem_id == ps_id).first(),
+        db.query(WildcardSelectionPool).filter(WildcardSelectionPool.problem_id == ps_id).first(),
+        db.query(Submission).filter(Submission.problem_id == ps_id).first(),
+    ))
+    if referenced:
+        raise HTTPException(status_code=409, detail="Problem Statement is in use and cannot be deleted.")
 
-    db.delete(ps)
+    problem_number = problem.ps_number
+    db.delete(problem)
     db.commit()
-
-    await manager.broadcast_event("ps_updated", {
-        "action": "deleted",
-        "ps_id": ps_id,
-    })
-    return {"message": f"Problem Statement {ps.ps_number} deleted successfully"}
+    await manager.broadcast_event("ps_updated", {"action": "deleted", "ps_id": ps_id})
+    return {"message": f"Problem Statement {problem_number} deleted successfully"}

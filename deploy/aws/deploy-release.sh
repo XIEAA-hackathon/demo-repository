@@ -161,17 +161,13 @@ if [[ ! -d $release ]]; then
   tar -xzf "$archive" -C "$stage"
   test -f "$stage/Backend/app/main.py"
   test -f "$stage/Backend/requirements.txt"
-  test -f "$stage/static/public/index.html"
-  test -f "$stage/static/participant/index.html"
-  test -f "$stage/static/admin/index.html"
+  test -f "$stage/static/index.html"
   test "$(sed -n 's/^DEPLOYED_COMMIT=//p' "$stage/deploy.env")" = "$sha"
   chmod -R u=rwX,go=rX "$stage"
   mv "$stage" "$release"
 fi
 test -f "$release/Backend/app/main.py"
-test -f "$release/static/public/index.html"
-test -f "$release/static/participant/index.html"
-test -f "$release/static/admin/index.html"
+test -f "$release/static/index.html"
 test "$(sed -n 's/^DEPLOYED_COMMIT=//p' "$release/deploy.env")" = "$sha"
 if find "$release" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print -quit | grep -q .; then
   echo "Release contains a database file; persistent data must stay outside releases." >&2
@@ -186,9 +182,7 @@ fi
 "$release/.venv/bin/pip" install -r "$release/Backend/requirements.txt"
 
 set_stage "BUILDING"
-test -s "$release/static/public/index.html"
-test -s "$release/static/participant/index.html"
-test -s "$release/static/admin/index.html"
+test -s "$release/static/index.html"
 
 set_stage "VALIDATING"
 sudo systemd-run --quiet --wait --pipe --collect \

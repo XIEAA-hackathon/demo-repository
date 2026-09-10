@@ -23,6 +23,9 @@ def get_dashboard(db: Session = Depends(get_db), current_user: User = Depends(ge
 @router.get("/teams", response_model=List[TeamResponse])
 def get_all_teams(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     teams = db.query(Team).all()
+    active_team_ids = manager.participant_team_ids()
+    for team in teams:
+        team.logged_in = team.id in active_team_ids
     return teams
 
 @router.put("/team/{team_id}/approve")
@@ -33,8 +36,11 @@ async def approve_team(team_id: int, db: Session = Depends(get_db), current_user
     
     team.is_approved = True
     db.commit()
-    await manager.broadcast_event("team_updated", {"action": "approved", "team_id": team.id, "team_name": team.team_name})
-    return {"message": f"Team {team.team_name} approved successfully"}
+    payload = {"action": "approved", "team_id": team.id, "team_name": team.team_name}
+    message = f"Team {team.team_name} approved successfully"
+    db.close()
+    await manager.broadcast_event("team_updated", payload)
+    return {"message": message}
 
 @router.delete("/team/{team_id}")
 async def delete_team(team_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
@@ -50,5 +56,6 @@ async def delete_team(team_id: int, db: Session = Depends(get_db), current_user:
     if leader:
         db.delete(leader)
     db.commit()
+    db.close()
     await manager.broadcast_event("team_updated", {"action": "deleted", "team_id": team_id, "team_name": team_name})
     return {"message": "Team deleted successfully"}
