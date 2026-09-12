@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.api.auth import get_current_active_admin, get_current_active_display, get_current_user
 from app.api.websockets import manager
 from app.core.database import get_db
-from app.models.models import Bid, GameConfig, ProblemStatement, RoundControl, Team, WalletTransaction, Wildcard
+from app.models.models import Bid, EventConfig, GameConfig, ProblemStatement, RoundControl, Team, WalletTransaction, Wildcard
 from app.services.event_service import (
     _remaining_seconds,
     event_snapshot,
@@ -817,9 +817,27 @@ def public_round_leaderboard(
     del current_user
     meta = _meta(round_slug)
     response.headers["Cache-Control"] = "no-store"
-    event_config = get_or_create_event_config(db)
+    event_config = db.query(EventConfig).order_by(EventConfig.id.asc()).first() or EventConfig()
     if meta["type"] == "WILDCARD":
-        control = get_or_create_round_control(db, "WILDCARD")
+        control = (
+            db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one_or_none()
+            or RoundControl(round_type="WILDCARD", status="NOT_STARTED")
+        )
+        return _leaderboard_payload(db, meta, event_config, control)
+    control = (
+        db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one_or_none()
+        or RoundControl(round_type="ROUND1", status="IDLE", ended=False)
+    )
+    return _leaderboard_payload(db, meta, event_config, control)
+
+
+def _leaderboard_payload(
+    db: Session,
+    meta: dict,
+    event_config: EventConfig,
+    control: RoundControl,
+) -> dict:
+    if meta["type"] == "WILDCARD":
         return {
             "round": "WILDCARD",
             "label": "Wildcard Slot Auction",
@@ -829,20 +847,23 @@ def public_round_leaderboard(
             "base_price": event_config.wildcard_starting_bid,
             "rows": ranking_payload(db, control),
         }
-    control = get_or_create_round_control(db, "ROUND1")
     query = db.query(Bid).filter(Bid.round == 1)
     if control.current_problem_id:
         query = query.filter(Bid.ps_id == control.current_problem_id)
-    bids = query.order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).all()
+    bids = (
+        query.add_entity(Team)
+        .join(Team, Team.id == Bid.team_id)
+        .order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc())
+        .all()
+    )
     highest_by_team = {}
-    for bid in bids:
+    for bid, team in bids:
         if bid.team_id not in highest_by_team or bid.amount > highest_by_team[bid.team_id].amount:
-            highest_by_team[bid.team_id] = bid
-    rows = []
-    for team_id, bid in highest_by_team.items():
-        team = db.query(Team).filter(Team.id == team_id).first()
-        if team:
-            rows.append({"team_id": team.id, "team_name": team.team_name, "value": bid.amount, "problem_id": bid.ps_id})
+            highest_by_team[bid.team_id] = (bid, team)
+    rows = [
+        {"team_id": team.id, "team_name": team.team_name, "value": bid.amount, "problem_id": bid.ps_id}
+        for bid, team in highest_by_team.values()
+    ]
     rows.sort(key=lambda row: (-row["value"], row["team_id"]))
     return {
         "round": meta["type"],

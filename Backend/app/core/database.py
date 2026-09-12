@@ -10,21 +10,16 @@ from app.core.config import settings
 logger = logging.getLogger("uvicorn.error")
 
 database_url = make_url(settings.DATABASE_URL)
-database_backend = database_url.get_backend_name()
 
-engine_options: dict = {"pool_pre_ping": True}
-if database_backend == "sqlite":
-    # SQLite remains the zero-configuration local/test backend only.
-    engine_options["connect_args"] = {"check_same_thread": False}
-elif database_backend == "postgresql":
+engine_options: dict = {
+    "pool_pre_ping": True,
     # Keep the deployment's pool budget explicit and configurable. WebSockets
     # do not retain connections, so this budget serves short request bursts.
-    engine_options.update(
-        pool_size=settings.DB_POOL_SIZE,
-        max_overflow=settings.DB_MAX_OVERFLOW,
-        pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
-        pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
-    )
+    "pool_size": settings.DB_POOL_SIZE,
+    "max_overflow": settings.DB_MAX_OVERFLOW,
+    "pool_timeout": settings.DB_POOL_TIMEOUT_SECONDS,
+    "pool_recycle": settings.DB_POOL_RECYCLE_SECONDS,
+}
 
 engine = create_engine(settings.DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -62,12 +57,10 @@ REQUIRED_USER_COLUMNS = {
 def initialize_database() -> None:
     """Verify connectivity and schema without performing startup migrations.
 
-    SQLite development installs may still bootstrap an entirely empty database.
-    PostgreSQL schemas and every existing database must be upgraded explicitly
-    with ``alembic upgrade head`` before the service starts.
+    PostgreSQL schemas must be upgraded explicitly with ``alembic upgrade head``
+    before the service starts.
     """
-    backend_labels = {"sqlite": "SQLite", "postgresql": "PostgreSQL"}
-    logger.info("Database backend: %s", backend_labels.get(database_backend, database_backend))
+    logger.info("Database backend: PostgreSQL")
 
     try:
         with engine.connect() as connection:
@@ -75,12 +68,6 @@ def initialize_database() -> None:
 
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
-        if not table_names and database_backend == "sqlite":
-            # Keep local development zero-configuration. create_all is only a
-            # fresh-install bootstrap and is never used to upgrade a schema.
-            Base.metadata.create_all(bind=engine)
-            table_names = set(inspect(engine).get_table_names())
-
         missing = REQUIRED_TABLES.difference(table_names)
         if missing:
             raise RuntimeError(
@@ -95,17 +82,11 @@ def initialize_database() -> None:
                 f"{sorted(missing_user_columns)}. Run 'alembic upgrade head'."
             )
     except OperationalError:
-        if database_backend == "postgresql":
-            logger.error(
-                "PostgreSQL connection failed at %s:%s. Verify DATABASE_URL and database availability.",
-                database_url.host or "localhost",
-                database_url.port or 5432,
-            )
-        else:
-            logger.error(
-                "Database initialization failed for %s.",
-                database_url.render_as_string(hide_password=True),
-            )
+        logger.error(
+            "PostgreSQL connection failed at %s:%s. Verify DATABASE_URL and database availability.",
+            database_url.host or "localhost",
+            database_url.port or 5432,
+        )
         raise
 
 

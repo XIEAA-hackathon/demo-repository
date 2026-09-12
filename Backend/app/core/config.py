@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440 # 24 hours
     SESSION_HEARTBEAT_SECONDS: int = 20
     SESSION_STALE_SECONDS: int = 300
-    SESSION_TOUCH_INTERVAL_SECONDS: int = 15
+    SESSION_TOUCH_INTERVAL_SECONDS: int = 60
     DEPLOYED_COMMIT: str = "development"
     APP_ENV: str = "development"
     ENABLE_EVENT_RESET: bool = False
@@ -54,7 +54,12 @@ class Settings(BaseSettings):
             return "postgresql+psycopg://" + database_url[len("postgres://"):]
         if lowered.startswith("postgresql://"):
             return "postgresql+psycopg://" + database_url[len("postgresql://"):]
-        return database_url
+        if lowered.startswith("postgresql+psycopg://"):
+            return database_url
+        raise ValueError(
+            "DATABASE_URL must be a PostgreSQL URL (postgresql+psycopg://...). "
+            "Non-PostgreSQL runtime backends are not supported."
+        )
 
     @property
     def cors_origins(self) -> list[str]:

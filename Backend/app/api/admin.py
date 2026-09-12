@@ -500,6 +500,7 @@ async def reset_participant_password(
     await manager.broadcast_event(
         "participant_presence_changed",
         participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
+        roles={"admin"},
     )
     supplied_email = account.email if "@" in account.email else ""
     return _credential(account, team, password, supplied_email)
@@ -959,6 +960,7 @@ async def import_registrations(
         await manager.broadcast_event(
             "participant_presence_changed",
             participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
+            roles={"admin"},
         )
     await manager.broadcast_event("team_updated", {
         "action": "registrations_imported",
@@ -1016,7 +1018,7 @@ async def reset_registration_credentials(
     game = get_or_create_game_config(db)
     sockets_closed = await manager.disconnect_users(imported_user_ids)
     presence = participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
-    await manager.broadcast_event("participant_presence_changed", presence)
+    await manager.broadcast_event("participant_presence_changed", presence, roles={"admin"})
     await manager.broadcast_event("team_updated", {
         "action": "registration_credentials_reset",
         "participant_accounts": credential_reset["participant_accounts"],
@@ -1103,6 +1105,7 @@ async def set_imported_participant_password(
     await manager.broadcast_event(
         "participant_presence_changed",
         participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
+        roles={"admin"},
     )
     return {"status": "password_set", "account": _participant_account_payload(db, account)}
 

@@ -9,13 +9,20 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging, management
-from app.core.database import initialize_database, SessionLocal
+from app.core.database import engine, initialize_database, SessionLocal
 from app.core.logging import install_sensitive_query_redaction
 from app.models import models
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.services.demo_seed import provision_demo_accounts
-from app.services.event_service import event_snapshot, event_timing, get_or_create_event_config, get_or_create_game_config, upgrade_legacy_starting_coins
+from app.services.event_service import (
+    event_snapshot,
+    event_timing,
+    get_or_create_event_config,
+    get_or_create_game_config,
+    get_or_create_round_control,
+    upgrade_legacy_starting_coins,
+)
 from app.services.event_service import sync_expired_event_state
 from app.services.wildcard_service import reconcile_wildcard_selection
 from app.api.websockets import manager
@@ -61,15 +68,22 @@ def _process_expiry_database_cycle(
     timer_sync = None
     db = session_factory()
     try:
-        actions = sync_expired_event_state(db)
-        wildcard_assignment = reconcile_wildcard_selection(db)
+        # One singleton read is the complete ordinary one-second cycle. Extra
+        # queries are reserved for an observed expiry or an active selection.
+        config = db.query(models.GameConfig).order_by(models.GameConfig.id.asc()).first()
+        if config is None:
+            return actions, wildcard_assignment, snapshot, timer_sync
+        actions = sync_expired_event_state(db, config=config)
+        wildcard_assignment = (
+            reconcile_wildcard_selection(db)
+            if config.state == "WILDCARD_SELECTION" else None
+        )
         if wildcard_assignment:
             actions.append("wildcard_selection_timeout")
         if actions:
-            snapshot = event_snapshot(db)
+            snapshot = event_snapshot(db, config=config)
         elif include_timer_sync:
-            config = db.query(models.GameConfig).order_by(models.GameConfig.id.asc()).first()
-            if config and config.state in TIMER_SYNC_STATES and (
+            if config.state in TIMER_SYNC_STATES and (
                 config.timer_paused or config.auction_timer_end is not None
             ):
                 timer_sync = {"event_state": config.state, "timing": event_timing(config)}
@@ -159,9 +173,11 @@ async def lifespan(app: FastAPI):
         provision_demo_accounts(db)
         db.commit()
 
-        # Ensure singleton EventConfig + GameConfig rows exist
+        # Startup owns singleton creation so request and snapshot paths stay read-only.
         get_or_create_event_config(db)
         get_or_create_game_config(db)
+        get_or_create_round_control(db, "ROUND1")
+        get_or_create_round_control(db, "WILDCARD")
         upgraded_teams = upgrade_legacy_starting_coins(db)
         if upgraded_teams:
             logger.info("Upgraded %s legacy team wallets to 5,000 starting coins.", upgraded_teams)
@@ -222,7 +238,18 @@ def readiness_check():
     db = SessionLocal()
     try:
         db.execute(text("SELECT 1"))
-        return {"status": "ready", "database": "healthy"}
+        pool = engine.pool
+        pool_diagnostics = {
+            "checked_out": pool.checkedout() if hasattr(pool, "checkedout") else None,
+            "size": pool.size() if hasattr(pool, "size") else None,
+            "overflow_in_use": max(0, pool.overflow()) if hasattr(pool, "overflow") else None,
+        }
+        return {
+            "status": "ready",
+            "database": "healthy",
+            "database_pool": pool_diagnostics,
+            "websocket": manager.diagnostics(),
+        }
     finally:
         db.close()
 

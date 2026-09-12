@@ -29,7 +29,7 @@ from app.services.participant_session import (
     touch_participant_session,
     utc_now,
 )
-from app.api.websockets import broadcast_presence_snapshot, manager
+from app.api.websockets import manager
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -421,7 +421,7 @@ async def login(
                 reason="Stale session replaced by a new login",
             )
             session_factory = getattr(request.app.state, "session_factory", SessionLocal)
-            await broadcast_presence_snapshot(session_factory)
+            manager.schedule_presence_refresh(session_factory)
         outcome = "success"
         return token
     except HTTPException as exc:
@@ -486,5 +486,5 @@ async def logout(
     if participant_logout:
         await manager.disconnect_users({user_id})
         session_factory = getattr(request.app.state, "session_factory", SessionLocal)
-        await broadcast_presence_snapshot(session_factory)
+        manager.schedule_presence_refresh(session_factory)
     return {"message": "Successfully logged out"}

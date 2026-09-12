@@ -159,7 +159,11 @@ def _remaining_seconds(config: GameConfig, now: datetime | None = None) -> int |
     return max(0, ceil((ends_at - current_time).total_seconds()))
 
 
-def sync_expired_event_state(db: Session) -> list[str]:
+def sync_expired_event_state(
+    db: Session,
+    *,
+    config: GameConfig | None = None,
+) -> list[str]:
     """Persist safe timer expiry outcomes from server time.
 
     The normal path is deliberately a non-locking read. An exclusive lock is
@@ -168,7 +172,7 @@ def sync_expired_event_state(db: Session) -> list[str]:
     """
     # Startup owns singleton creation. The one-second worker must stay a pure,
     # non-locking read when no deadline is due.
-    config = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
+    config = config or db.query(GameConfig).order_by(GameConfig.id.asc()).first()
     if config is None:
         return []
     round_type = {

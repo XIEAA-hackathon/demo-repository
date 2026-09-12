@@ -1,6 +1,7 @@
 from collections.abc import Iterable
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import Team, User
@@ -20,8 +21,12 @@ def participant_presence_payload(
     do not own the in-memory connection registry.
     """
     current_time = now or utc_now()
-    session_users = (
-        db.query(User)
+    session_rows = (
+        db.query(
+            func.coalesce(User.team_id, Team.id).label("team_id"),
+            User.session_last_seen_at,
+        )
+        .outerjoin(Team, Team.leader_id == User.id)
         .filter(
             User.role.in_(("leader", "member")),
             User.credentials_active.is_(True),
@@ -29,27 +34,17 @@ def participant_presence_payload(
         )
         .all()
     )
-    leader_team_ids = {
-        leader_id: team_id
-        for team_id, leader_id in db.query(Team.id, Team.leader_id)
-        .filter(Team.leader_id.is_not(None))
-        .all()
-    }
-
-    def team_id_for(user: User) -> int | None:
-        return user.team_id if user.team_id is not None else leader_team_ids.get(user.id)
-
     active_session_team_ids = {
         team_id
-        for user in session_users
-        if not participant_session_is_stale(user.session_last_seen_at, now=current_time)
-        if (team_id := team_id_for(user)) is not None
+        for team_id, last_seen_at in session_rows
+        if team_id is not None
+        and not participant_session_is_stale(last_seen_at, now=current_time)
     }
     stale_session_team_ids = {
         team_id
-        for user in session_users
-        if participant_session_is_stale(user.session_last_seen_at, now=current_time)
-        if (team_id := team_id_for(user)) is not None
+        for team_id, last_seen_at in session_rows
+        if team_id is not None
+        and participant_session_is_stale(last_seen_at, now=current_time)
     }
     online_team_ids = (
         active_session_team_ids

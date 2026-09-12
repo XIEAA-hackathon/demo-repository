@@ -5,6 +5,7 @@ import json
 import logging
 from contextlib import suppress
 from datetime import datetime, timezone
+from time import monotonic, perf_counter
 from typing import Any, Callable
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -20,7 +21,12 @@ from app.core.database import SessionLocal
 from app.models.models import User
 from app.services.event_service import event_snapshot, get_team_for_user
 from app.services.participant_presence import participant_presence_payload
-from app.services.participant_session import PARTICIPANT_ROLES, touch_participant_session
+from app.services.participant_session import (
+    PARTICIPANT_ROLES,
+    participant_session_needs_touch,
+    touch_participant_session,
+    utc_now,
+)
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
@@ -49,6 +55,12 @@ class ConnectionManager:
         self._broadcast_worker: asyncio.Task | None = None
         self._worker_loop: asyncio.AbstractEventLoop | None = None
         self._send_locks: dict[WebSocket, asyncio.Lock] = {}
+        self._dropped_publish_events = 0
+        self._drop_counter_started_at = monotonic()
+        self._last_drop_log_at = 0.0
+        self._presence_generation = 0
+        self._presence_task: asyncio.Task | None = None
+        self._presence_session_factory: Callable[[], Session] | None = None
 
     def start(self) -> None:
         """Start one bounded, ordered fan-out worker for the current event loop."""
@@ -67,6 +79,13 @@ class ConnectionManager:
         )
 
     async def stop(self) -> None:
+        presence_task = self._presence_task
+        if presence_task is not None and not presence_task.done():
+            presence_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await presence_task
+        self._presence_task = None
+        self._presence_session_factory = None
         worker = self._broadcast_worker
         if worker is not None and not worker.done():
             worker.cancel()
@@ -111,12 +130,64 @@ class ConnectionManager:
             self._broadcast_queue.put_nowait((event_type, payload, exclude, roles, None))
             return True
         except asyncio.QueueFull:
-            logger.error(
-                "WebSocket broadcast queue full; dropped event_type=%s queue_size=%s",
-                event_type,
-                self._queue_size,
-            )
+            self._dropped_publish_events += 1
+            now = monotonic()
+            if self._dropped_publish_events == 1 or now - self._last_drop_log_at >= 5:
+                elapsed = max(1.0, now - self._drop_counter_started_at)
+                logger.error(
+                    "WebSocket broadcast queue full event_type=%s queue_depth=%s "
+                    "dropped_total=%s dropped_per_second=%.3f",
+                    event_type,
+                    self._broadcast_queue.qsize(),
+                    self._dropped_publish_events,
+                    self._dropped_publish_events / elapsed,
+                )
+                self._last_drop_log_at = now
             return False
+
+    def diagnostics(self) -> dict[str, int | float | bool]:
+        queue = self._broadcast_queue
+        return {
+            "active_connections": len(self.active_connections),
+            "broadcast_queue_depth": queue.qsize() if queue is not None else 0,
+            "broadcast_queue_capacity": self._queue_size,
+            "broadcast_dropped_total": self._dropped_publish_events,
+            "broadcast_worker_running": bool(self._broadcast_worker and not self._broadcast_worker.done()),
+        }
+
+    def schedule_presence_refresh(
+        self,
+        session_factory: Callable[[], Session],
+        *,
+        debounce_seconds: float = 0.35,
+    ) -> None:
+        """Coalesce participant connection churn into one authoritative refresh."""
+        self._presence_generation += 1
+        self._presence_session_factory = session_factory
+        if self._presence_task is None or self._presence_task.done():
+            self._presence_task = asyncio.get_running_loop().create_task(
+                self._run_presence_refresh(debounce_seconds),
+                name="websocket-presence-refresh",
+            )
+
+    async def _run_presence_refresh(self, debounce_seconds: float) -> None:
+        try:
+            while True:
+                generation = self._presence_generation
+                await asyncio.sleep(debounce_seconds)
+                if generation != self._presence_generation:
+                    continue
+                session_factory = self._presence_session_factory
+                if session_factory is None:
+                    return
+                try:
+                    await broadcast_presence_snapshot(session_factory, connection_manager=self)
+                except Exception:
+                    logger.exception("Participant presence snapshot was skipped after connection change.")
+                if generation == self._presence_generation:
+                    return
+        finally:
+            self._presence_task = None
 
     async def connect(self, websocket: WebSocket, identity: dict[str, Any]):
         await websocket.accept()
@@ -259,12 +330,17 @@ def _authenticate_socket(
             if user.session_id != session_id:
                 logger.info("Rejected WebSocket session user_id=%s logout_reason=SESSION_REPLACED", user.id)
                 return None, None
+            authenticated_at = utc_now()
+            session_needs_touch = participant_session_needs_touch(
+                user.session_last_seen_at,
+                now=authenticated_at,
+            )
             if user.role in PARTICIPANT_ROLES and not touch_participant_session(
                 db,
                 user_id=user.id,
                 session_id=session_id,
                 last_seen_at=user.session_last_seen_at,
-                force=True,
+                now=authenticated_at,
             ):
                 logger.info(
                     "Rejected WebSocket session user_id=%s role=%s logout_reason=SESSION_MISMATCH",
@@ -279,6 +355,9 @@ def _authenticate_socket(
                 "role": user.role,
                 "team_id": team.id if team else None,
                 "session_id": user.session_id,
+                "session_last_seen_at": (
+                    authenticated_at if session_needs_touch else user.session_last_seen_at
+                ),
                 "expires_at": int(expires_at) if expires_at is not None else None,
             }
             snapshot = event_snapshot(db)
@@ -309,8 +388,10 @@ async def broadcast_presence_snapshot(
     session_factory: Callable[[], Session],
     *,
     exclude: set[WebSocket] | None = None,
+    connection_manager: ConnectionManager = manager,
 ) -> None:
-    connected_team_ids = manager.participant_team_ids()
+    started_at = perf_counter()
+    connected_team_ids = connection_manager.participant_team_ids()
 
     def build_presence() -> dict[str, Any]:
         with session_factory() as db:
@@ -320,11 +401,16 @@ async def broadcast_presence_snapshot(
             )
 
     presence = await run_in_threadpool(build_presence)
-    await manager.broadcast_event(
+    await connection_manager.broadcast_event(
         "participant_presence_changed",
         presence,
         exclude=exclude,
         roles={"admin"},
+    )
+    logger.info(
+        "Participant presence rebuilt connected_teams=%s duration_ms=%.2f",
+        len(connected_team_ids),
+        (perf_counter() - started_at) * 1000,
     )
 
 
@@ -332,12 +418,42 @@ def _touch_socket_identity(
     identity: dict[str, Any],
     session_factory: Callable[[], Session],
 ) -> bool:
+    now = utc_now()
+    last_seen_at = identity.get("session_last_seen_at")
     with session_factory() as db:
-        return touch_participant_session(
-            db,
-            user_id=int(identity["user_id"]),
-            session_id=str(identity["session_id"]),
-        )
+        if participant_session_needs_touch(last_seen_at, now=now):
+            alive = touch_participant_session(
+                db,
+                user_id=int(identity["user_id"]),
+                session_id=str(identity["session_id"]),
+                last_seen_at=last_seen_at,
+                now=now,
+            )
+            if alive:
+                identity["session_last_seen_at"] = now
+            return alive
+        persisted = db.query(User.session_last_seen_at).filter(
+            User.id == int(identity["user_id"]),
+            User.role.in_(PARTICIPANT_ROLES),
+            User.credentials_active.is_(True),
+            User.session_id == str(identity["session_id"]),
+        ).first()
+        if persisted is None:
+            return False
+        persisted_last_seen_at = persisted[0]
+        if participant_session_needs_touch(persisted_last_seen_at, now=now):
+            alive = touch_participant_session(
+                db,
+                user_id=int(identity["user_id"]),
+                session_id=str(identity["session_id"]),
+                last_seen_at=persisted_last_seen_at,
+                now=now,
+            )
+            if alive:
+                identity["session_last_seen_at"] = now
+            return alive
+        identity["session_last_seen_at"] = persisted_last_seen_at
+        return True
 
 
 async def _safe_close(websocket: WebSocket, *, code: int, reason: str) -> None:
@@ -375,10 +491,7 @@ async def websocket_auction(websocket: WebSocket):
         await manager.connect(websocket, identity)
         connected = True
         if identity["role"] in ("leader", "member"):
-            try:
-                await broadcast_presence_snapshot(session_factory, exclude={websocket})
-            except SQLAlchemyError:
-                logger.warning("Participant presence snapshot was skipped after WebSocket connect.")
+            manager.schedule_presence_refresh(session_factory)
         # The first client-visible frame is sent only after all initial DB work
         # has closed its short-lived session, so an idle socket never overlaps
         # with a checked-out connection.
@@ -446,7 +559,4 @@ async def websocket_auction(websocket: WebSocket):
     finally:
         disconnected_identity = manager.disconnect(websocket) if connected else None
         if disconnected_identity and disconnected_identity.get("role") in ("leader", "member"):
-            try:
-                await broadcast_presence_snapshot(session_factory)
-            except SQLAlchemyError:
-                logger.warning("Participant presence snapshot was skipped after WebSocket disconnect.")
+            manager.schedule_presence_refresh(session_factory)

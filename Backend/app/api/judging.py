@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_active_admin, get_current_active_display
-from app.api.rounds import public_round_leaderboard
+from app.api.rounds import ROUND_META, _leaderboard_payload
 from app.api.websockets import manager
 from app.core.database import get_db
 from app.models.models import EventConfig, FinalResult, GameConfig, ProblemStatement, RoundControl, Team, User
@@ -146,8 +146,22 @@ def public_event_display(
     response.headers["Cache-Control"] = "no-store"
     game = db.query(GameConfig).first() or GameConfig(state="SETUP")
     event_config = db.query(EventConfig).first() or EventConfig()
-    result = db.query(FinalResult).filter(FinalResult.result_status == "PUBLISHED").first()
-    timing = event_snapshot(db)["timing"]
+    controls = {
+        control.round_type: control
+        for control in db.query(RoundControl)
+        .filter(RoundControl.round_type.in_(("ROUND1", "WILDCARD")))
+        .all()
+    }
+    result = (
+        db.query(FinalResult).filter(FinalResult.result_status == "PUBLISHED").first()
+        if game.state == "RESULTS" else None
+    )
+    timing = event_snapshot(
+        db,
+        config=game,
+        event_config=event_config,
+        round_controls=controls,
+    )["timing"]
     if result:
         return {
             "mode": "RESULTS_PUBLISHED",
@@ -159,8 +173,8 @@ def public_event_display(
         }
 
     if game.state == "ROUND1_BIDDING":
-        board = public_round_leaderboard("round-1", response, db)
-        control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").first() or RoundControl(round_type="ROUND1")
+        control = controls.get("ROUND1") or RoundControl(round_type="ROUND1")
+        board = _leaderboard_payload(db, ROUND_META["round-1"], event_config, control)
         problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
         return {
             "mode": "ROUND1_LIVE",
@@ -180,7 +194,8 @@ def public_event_display(
         }
 
     if game.state == "WILDCARD_BIDDING":
-        board = public_round_leaderboard("wildcard", response, db)
+        control = controls.get("WILDCARD") or RoundControl(round_type="WILDCARD", status="NOT_STARTED")
+        board = _leaderboard_payload(db, ROUND_META["wildcard"], event_config, control)
         return {
             "mode": "WILDCARD_LIVE",
             "event_state": game.state,
@@ -206,11 +221,11 @@ def public_event_display(
     }
     problem = None
     if game.state.startswith("ROUND1"):
-        control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").first()
+        control = controls.get("ROUND1")
         if control and control.current_problem_id:
             problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
     elif game.state.startswith("WILDCARD"):
-        control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").first()
+        control = controls.get("WILDCARD")
         if control and control.current_problem_id:
             problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
     payload = {

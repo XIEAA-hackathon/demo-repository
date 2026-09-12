@@ -403,17 +403,21 @@ async def finalize_round_one(
 def get_leaderboard(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """Visible to all authenticated participants; cutoff is a display concern handled
     by the frontend using EventConfig.round1_winner_count."""
-    config = get_or_create_game_config(db)
-    teams = db.query(Team).order_by(Team.coins.desc()).all()
-    result = []
-    for t in teams:
-        ps = db.query(ProblemStatement).filter(ProblemStatement.id == t.ps_id).first()
-        result.append({
-            "team_id": t.id,
-            "team_name": t.team_name,
-            "coins": t.coins,
-            "allocated_ps": ps.ps_number if ps else None,
-        })
+    config = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
+    if config is None:
+        raise HTTPException(status_code=503, detail="Event configuration is temporarily unavailable.")
+    teams = (
+        db.query(Team, ProblemStatement.ps_number)
+        .outerjoin(ProblemStatement, ProblemStatement.id == Team.ps_id)
+        .order_by(Team.coins.desc())
+        .all()
+    )
+    result = [{
+        "team_id": team.id,
+        "team_name": team.team_name,
+        "coins": team.coins,
+        "allocated_ps": ps_number,
+    } for team, ps_number in teams]
     return {"teams": result, "state": config.state, "round": config.current_round}
 
 # ---------------------------------------------------------------- Admin Round Controls

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
+from time import perf_counter
 from fastapi import APIRouter, Depends, HTTPException
 from urllib.parse import urlparse
 
+from sqlalchemy import case, func, true
 from sqlalchemy.orm import Session, joinedload, selectinload
 from app.core.database import get_db
 from app.models.models import (
@@ -31,6 +34,7 @@ from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_remaining
 
 router = APIRouter()
+logger = logging.getLogger("uvicorn.error")
 
 
 def _dashboard_problem(problem: ProblemStatement | None) -> DashboardProblem | None:
@@ -53,6 +57,7 @@ def _valid_github_url(value: str) -> bool:
 
 @router.get("/participant/dashboard", response_model=ParticipantDashboardResponse)
 def get_participant_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
+    started_at = perf_counter()
     team_query = db.query(Team).options(
         selectinload(Team.members),
         joinedload(Team.wildcard),
@@ -66,11 +71,16 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
     if not team:
         raise HTTPException(status_code=404, detail="No team linked to this account")
 
-    leader = current_user if current_user.id == team.leader_id else db.query(User).filter(User.id == team.leader_id).first()
-    config = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
-    event_config = db.query(EventConfig).order_by(EventConfig.id.asc()).first()
-    if config is None or event_config is None:
+    singleton_configs = (
+        db.query(GameConfig, EventConfig)
+        .select_from(GameConfig)
+        .join(EventConfig, true())
+        .order_by(GameConfig.id.asc(), EventConfig.id.asc())
+        .first()
+    )
+    if singleton_configs is None:
         raise HTTPException(status_code=503, detail="Event configuration is temporarily unavailable.")
+    config, event_config = singleton_configs
     controls = {
         row.round_type: row
         for row in db.query(RoundControl)
@@ -79,6 +89,20 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
     }
     round_control = controls.get("ROUND1")
     wildcard_control = controls.get("WILDCARD")
+
+    related_user_ids = {
+        user_id
+        for user_id in (team.leader_id, team.submission.submitted_by_user_id if team.submission else None)
+        if user_id is not None and user_id != current_user.id
+    }
+    related_users = {
+        user.id: user
+        for user in (
+            db.query(User).filter(User.id.in_(related_user_ids)).all()
+            if related_user_ids else []
+        )
+    }
+    leader = current_user if current_user.id == team.leader_id else related_users.get(team.leader_id)
 
     # members with leader flags
     members = []
@@ -129,24 +153,30 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         )
 
     wildcard = team.wildcard
-    wildcard_bid = db.query(WildcardBid).filter(WildcardBid.team_id == team.id).first()
+    wildcard_bid = (
+        db.query(WildcardBid).filter(WildcardBid.team_id == team.id).first()
+        if wildcard else None
+    )
     wildcard_out = None
     if wildcard:
         selection_open = bool(wildcard_control and wildcard_control.status == "PROBLEM_SELECTION")
         active_selection = current_selection(db) if selection_open else None
         available_problem_count = 0
         if selection_open:
-            pool_exists = db.query(WildcardSelectionPool.id).first() is not None
-            if pool_exists:
-                available_problem_count = (
-                    db.query(WildcardSelectionPool.id)
-                    .join(ProblemStatement, ProblemStatement.id == WildcardSelectionPool.problem_id)
-                    .filter(
-                        WildcardSelectionPool.selected_by_team_id.is_(None),
-                        ProblemStatement.status.in_(("available", "visible")),
-                    )
-                    .count()
+            pool_count, pool_available_count = (
+                db.query(
+                    func.count(WildcardSelectionPool.id),
+                    func.sum(case((
+                        (WildcardSelectionPool.selected_by_team_id.is_(None))
+                        & (ProblemStatement.status.in_(("available", "visible"))),
+                        1,
+                    ), else_=0)),
                 )
+                .outerjoin(ProblemStatement, ProblemStatement.id == WildcardSelectionPool.problem_id)
+                .one()
+            )
+            if pool_count:
+                available_problem_count = int(pool_available_count or 0)
             else:
                 available_problem_count = db.query(ProblemStatement.id).filter(
                     ProblemStatement.round == 2,
@@ -176,7 +206,11 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
     submission = team.submission
     submission_out = None
     if submission:
-        submitter = db.query(User).filter(User.id == submission.submitted_by_user_id).first() if submission.submitted_by_user_id else None
+        submitter = (
+            current_user
+            if submission.submitted_by_user_id == current_user.id
+            else related_users.get(submission.submitted_by_user_id)
+        )
         submission_out = DashboardSubmission(
             id=submission.id, problem_id=submission.problem_id,
             repository_url=submission.repository_url,
@@ -186,7 +220,10 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         )
 
     final_results = None
-    result = db.query(FinalResult).filter(FinalResult.result_status == "PUBLISHED").first()
+    result = (
+        db.query(FinalResult).filter(FinalResult.result_status == "PUBLISHED").first()
+        if config.state == "RESULTS" else None
+    )
     if result:
         winner_ids = [result.first_place_team_id, result.second_place_team_id, result.third_place_team_id]
         winning_teams = {row.id: row for row in db.query(Team).filter(Team.id.in_(winner_ids)).all()}
@@ -217,7 +254,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
 
     is_leader = team.leader_id == current_user.id
 
-    return ParticipantDashboardResponse(
+    response = ParticipantDashboardResponse(
         user=DashboardUser(id=current_user.id, name=current_user.name, email=current_user.email, role=current_user.role),
         team=DashboardTeam(
             id=team.id, team_name=team.team_name, coins=team.coins,
@@ -263,6 +300,14 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         wildcardApplicationsOpen=bool(wildcard_control and wildcard_control.applications_open),
         submissionsOpen=bool(event_config.submissions_open),
     )
+    logger.info(
+        "Participant dashboard timing user_id=%s team_id=%s state=%s duration_ms=%.2f",
+        current_user.id,
+        team.id,
+        config.state,
+        (perf_counter() - started_at) * 1000,
+    )
+    return response
 
 @router.get("/event/snapshot")
 def get_event_snapshot(
@@ -458,11 +503,36 @@ def get_admin_submissions(db: Session = Depends(get_db), current_user: User = De
     del current_user
     config = get_or_create_event_config(db)
     rows = []
-    teams = db.query(Team).order_by(Team.team_name.asc()).all()
+    teams = (
+        db.query(Team)
+        .options(joinedload(Team.submission))
+        .order_by(Team.team_name.asc())
+        .all()
+    )
+    problem_ids = {team.ps_id for team in teams if team.ps_id is not None}
+    submitter_ids = {
+        team.submission.submitted_by_user_id
+        for team in teams
+        if team.submission and team.submission.submitted_by_user_id is not None
+    }
+    problems_by_id = {
+        problem.id: problem
+        for problem in (
+            db.query(ProblemStatement).filter(ProblemStatement.id.in_(problem_ids)).all()
+            if problem_ids else []
+        )
+    }
+    submitters_by_id = {
+        user.id: user
+        for user in (
+            db.query(User).filter(User.id.in_(submitter_ids)).all()
+            if submitter_ids else []
+        )
+    }
     for team in teams:
-        submission = db.query(Submission).filter(Submission.team_id == team.id).first()
-        submitter = db.query(User).filter(User.id == submission.submitted_by_user_id).first() if submission and submission.submitted_by_user_id else None
-        final_problem = db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first() if team.ps_id else None
+        submission = team.submission
+        submitter = submitters_by_id.get(submission.submitted_by_user_id) if submission else None
+        final_problem = problems_by_id.get(team.ps_id)
         final_problem_payload = ({
             "id": final_problem.id,
             "ps_number": final_problem.ps_number.split("-", 1)[-1],
