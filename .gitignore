@@ -40,6 +40,7 @@ Backend/tests/*
 !Backend/tests/test_bid_increment_input.py
 !Backend/tests/test_websocket_pool.py
 !Backend/tests/test_bid_concurrency_safety.py
+!Backend/tests/test_startup_safety.py
 !Backend/tests/test_round1_preview_expiry.py
 !Backend/tests/test_submissions.py
 !Backend/requirements-dev.txt
@@ -52,6 +53,7 @@ frontend-website/src/**/*.test.*
 !frontend-website/src/lab-admin/LabAdminApp.test.jsx
 !frontend-website/src/admin/SubmissionAdminPage.test.jsx
 !frontend-website/src/admin/pages/ChangeProblemPage.test.jsx
+!frontend-website/src/admin/AdminApplication.test.jsx
 load_test/
 outputs/
 .impeccable/

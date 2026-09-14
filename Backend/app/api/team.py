@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from typing import List
 from app.core.database import get_db
 from app.models.models import Team, User
@@ -22,7 +22,7 @@ def get_dashboard(db: Session = Depends(get_db), current_user: User = Depends(ge
 
 @router.get("/teams", response_model=List[TeamResponse])
 def get_all_teams(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
-    teams = db.query(Team).all()
+    teams = db.query(Team).options(selectinload(Team.members)).all()
     active_team_ids = manager.participant_team_ids()
     for team in teams:
         team.logged_in = team.id in active_team_ids

@@ -189,7 +189,22 @@ sudo systemd-run --quiet --wait --pipe --collect \
   --uid="$app_user" --gid="$app_group" \
   -p "WorkingDirectory=$release/Backend" \
   -p "EnvironmentFile=$ENV_FILE" \
-  "$release/.venv/bin/python" -c 'import app.main'
+  "$release/.venv/bin/python" -m compileall -q app scripts migrations
+sudo systemd-run --quiet --wait --pipe --collect \
+  --uid="$app_user" --gid="$app_group" \
+  -p "WorkingDirectory=$release/Backend" \
+  -p "EnvironmentFile=$ENV_FILE" \
+  "$release/.venv/bin/python" -m alembic upgrade head
+sudo systemd-run --quiet --wait --pipe --collect \
+  --uid="$app_user" --gid="$app_group" \
+  -p "WorkingDirectory=$release/Backend" \
+  -p "EnvironmentFile=$ENV_FILE" \
+  "$release/.venv/bin/python" -m alembic check
+sudo systemd-run --quiet --wait --pipe --collect \
+  --uid="$app_user" --gid="$app_group" \
+  -p "WorkingDirectory=$release/Backend" \
+  -p "EnvironmentFile=$ENV_FILE" \
+  "$release/.venv/bin/python" -c 'from app.main import app; assert app is not None'
 
 service_tmp=$(mktemp)
 sed -e "s/__APP_USER__/$app_user/g" -e "s/__APP_GROUP__/$app_group/g" \

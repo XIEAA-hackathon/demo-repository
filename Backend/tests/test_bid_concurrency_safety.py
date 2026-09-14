@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app.api import auction
 from app.api.auction import BidCooldownActive, _place_round1_bid_transaction, finalize_round_one
+from app.core.security import create_access_token
 from app.models.models import (
     Bid,
     EventActivityLog,
@@ -296,6 +297,39 @@ def test_database_failure_rolls_back_bid_and_activity(db, session_factory, monke
     db.expire_all()
     assert db.query(Bid).count() == 0
     assert db.query(EventActivityLog).count() == 0
+
+
+def test_bid_lock_timeout_returns_retryable_error_without_writes_or_broadcast(
+    client,
+    db,
+    session_factory,
+    monkeypatch,
+):
+    problem_id, accounts = _active_round_one(db, team_count=1)
+    email, session_id, team_id = accounts[0]
+    token = create_access_token({"sub": email, "session_id": session_id, "role": "leader"})
+    headers = {"Authorization": f"Bearer {token}"}
+    broadcasts = []
+    monkeypatch.setattr(auction, "ROUND1_BID_LOCK_TIMEOUT_MS", 50)
+    monkeypatch.setattr(auction.manager, "publish_event", lambda *args, **kwargs: broadcasts.append((args, kwargs)))
+
+    with session_factory() as blocker:
+        blocker.query(RoundControl).filter(RoundControl.round_type == "ROUND1").with_for_update().one()
+        response = client.post("/bid", json={"ps_id": problem_id, "increment": 5}, headers=headers)
+        blocker.rollback()
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Auction is busy processing another bid. Please retry."
+    assert broadcasts == []
+    db.expire_all()
+    assert db.query(Bid).count() == 0
+    assert db.query(EventActivityLog).count() == 0
+    assert db.query(Team).filter(Team.id == team_id).one().coins == 5000
+
+    retry = client.post("/bid", json={"ps_id": problem_id, "increment": 5}, headers=headers)
+    assert retry.status_code == 200
+    assert db.query(Bid).count() == 1
+    assert len(broadcasts) == 1
 
 
 def test_finalization_failure_rolls_back_wallet_and_assignment(db, session_factory, monkeypatch):

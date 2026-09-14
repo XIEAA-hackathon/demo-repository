@@ -16,7 +16,6 @@ from app.core.config import settings
 from app.core.security import get_password_hash
 from app.services.demo_seed import provision_demo_accounts
 from app.services.lab_admin import provision_lab_admin_account
-from app.services.lab_allocation import try_allocate_labs
 from app.services.event_service import (
     event_snapshot,
     event_timing,
@@ -197,9 +196,6 @@ async def lifespan(app: FastAPI):
         upgraded_teams = upgrade_legacy_starting_coins(db)
         if upgraded_teams:
             logger.info("Upgraded %s legacy team wallets to 5,000 starting coins.", upgraded_teams)
-        allocated_teams = try_allocate_labs(db)
-        if allocated_teams is not None:
-            logger.info("Generated startup lab allocation for %s teams.", allocated_teams)
     finally:
         db.close()
 

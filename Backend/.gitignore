@@ -27,6 +27,7 @@ tests/*
 !tests/test_bid_increment_input.py
 !tests/test_websocket_pool.py
 !tests/test_bid_concurrency_safety.py
+!tests/test_startup_safety.py
 !tests/test_round1_preview_expiry.py
 !tests/test_submissions.py
 !requirements-dev.txt

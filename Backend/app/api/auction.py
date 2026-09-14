@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.concurrency import run_in_threadpool
@@ -34,6 +34,7 @@ from app.services.round1_assignment import (
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
+ROUND1_BID_LOCK_TIMEOUT_MS = 2500
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,8 @@ def _place_round1_bid_transaction(
     user_id: int | None = None
     with session_factory() as db:
         try:
+            # Bound contention without leaking a timeout into the pooled connection.
+            db.execute(text(f"SET LOCAL lock_timeout = '{ROUND1_BID_LOCK_TIMEOUT_MS}ms'"))
             # This single row serializes price decisions for the active Round 1
             # auction. Finalization, rebids and assignments use the same first
             # lock, so MAX(amount) does not need to lock every Bid row.
@@ -222,8 +225,19 @@ def _place_round1_bid_transaction(
             db.rollback()
             logger.info("Round 1 bid constraint conflict user_id=%s", user_id)
             raise HTTPException(status_code=409, detail="The bid changed concurrently. Refresh and retry.") from exc
-        except OperationalError:
+        except OperationalError as exc:
             db.rollback()
+            sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+            if sqlstate == "55P03":
+                logger.warning(
+                    "Round 1 bid auction_lock_timeout user_id=%s timeout_ms=%s",
+                    user_id,
+                    ROUND1_BID_LOCK_TIMEOUT_MS,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Auction is busy processing another bid. Please retry.",
+                ) from exc
             logger.exception("Round 1 bid database operation failed user_id=%s", user_id)
             raise
         except Exception:

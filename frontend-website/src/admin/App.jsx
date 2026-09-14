@@ -90,7 +90,7 @@ function useServerCountdown(timing, timerKey) {
   return remaining;
 }
 
-function AdminApplication({ onLogout }) {
+export function AdminApplication({ onLogout }) {
   const [page, setPage] = useState("dashboard");
   const [teams, setTeams] = useState([]);
   const [problems, setProblems] = useState([]);
@@ -113,8 +113,8 @@ function AdminApplication({ onLogout }) {
   const [wildcardEvent, setWildcardEvent] = useState(null);
   const [submissionEvent, setSubmissionEvent] = useState(null);
   const loadInFlight = useRef(null);
+  const problemLoadInFlight = useRef(null);
   const lastSuccessfulLoadStartedAt = useRef(0);
-  const socketStatusRef = useRef("connecting");
   const realtimeRevision = useRef({ state: 0, bids: 0, teams: 0 });
   const lastEventVersion = useRef(0);
 
@@ -167,10 +167,23 @@ function AdminApplication({ onLogout }) {
     return request;
   }, []);
 
+  const refreshProblems = useCallback(() => {
+    if (problemLoadInFlight.current) return problemLoadInFlight.current;
+    const request = Promise.resolve(loadInFlight.current)
+      .then(() => getProblemStatements())
+      .then(setProblems)
+      .catch((cause) => setError(cause.message || "Problem statements could not be refreshed."));
+    problemLoadInFlight.current = request;
+    void request.finally(() => { if (problemLoadInFlight.current === request) problemLoadInFlight.current = null; });
+    return request;
+  }, []);
+
   useEffect(() => { const id = setTimeout(() => void load(), 0); return () => clearTimeout(id); }, [load]);
   useEffect(() => { const resync = () => { void load(); }; window.addEventListener("admin:resync", resync); return () => window.removeEventListener("admin:resync", resync); }, [load]);
   useEffect(() => {
     let stopped = false; let timer; let failures = 0;
+    const connected = ["connected", "reconnected"].includes(socketStatus);
+    const reconciliationDelay = () => document.hidden || connected ? 120000 : 12000;
     const schedule = (delay) => {
       clearTimeout(timer);
       timer = window.setTimeout(async () => {
@@ -178,25 +191,24 @@ function AdminApplication({ onLogout }) {
         const ok = await load();
         if (stopped) return;
         failures = ok ? 0 : failures + 1;
-        const connected = ["connected", "reconnected"].includes(socketStatusRef.current);
-        schedule(ok ? (document.hidden && connected ? 60000 : connected ? 30000 : 12000) : Math.min(30000, 1000 * 2 ** failures));
+        schedule(ok ? reconciliationDelay() : Math.min(30000, 1000 * 2 ** failures));
       }, delay);
     };
     const onVisibility = () => {
       const hidden = document.hidden;
       setDocumentHidden(hidden);
-      if (hidden) return;
+      if (hidden) { schedule(120000); return; }
       clearTimeout(timer);
       setVisibilityRefreshPending(true);
       void load().then((ok) => {
         if (stopped) return;
         failures = ok ? 0 : failures + 1;
-        schedule(ok ? 30000 : Math.min(30000, 1000 * 2 ** failures));
+        schedule(ok ? reconciliationDelay() : Math.min(30000, 1000 * 2 ** failures));
       }).finally(() => { if (!stopped) setVisibilityRefreshPending(false); });
     };
-    schedule(30000); document.addEventListener("visibilitychange", onVisibility);
+    schedule(reconciliationDelay()); document.addEventListener("visibilitychange", onVisibility);
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [load]);
+  }, [load, socketStatus]);
   useEffect(() => {
     let fullTimer;
     let latestEventAt = 0;
@@ -209,7 +221,7 @@ function AdminApplication({ onLogout }) {
       }, 300);
     };
     const disconnect = connectAuctionSocket({
-      onStatus: (status) => { setSocketStatus(status); socketStatusRef.current = status; if (status === "reconnected") { lastEventVersion.current = 0; queueLoad(); } },
+      onStatus: (status) => { setSocketStatus(status); if (status === "reconnected") { lastEventVersion.current = 0; queueLoad(); } },
       onMessage: (message) => {
         const previousVersion = lastEventVersion.current;
         if (message.version > 0 && previousVersion > 0 && message.version < previousVersion) return;
@@ -236,8 +248,12 @@ function AdminApplication({ onLogout }) {
           setWildcardEvent(message);
           return;
         }
-        if (["round1_assignment_changed", "external_problems_imported"].includes(message.type)) {
-          queueLoad();
+        if (message.type === "round1_assignment_changed") {
+          setAssignmentEvent(message);
+          return;
+        }
+        if (message.type === "external_problems_imported") {
+          void refreshProblems();
           return;
         }
         if (["lab_allocation_updated", "lab_configuration_updated"].includes(message.type)) {
@@ -259,7 +275,7 @@ function AdminApplication({ onLogout }) {
       },
     });
     return () => { clearTimeout(fullTimer); disconnect(); };
-  }, [load]);
+  }, [load, refreshProblems]);
   useEffect(() => { const timer = setInterval(() => setClockNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   const remaining = useServerCountdown(state?.timing, state?.event_state);
   const staleSeconds = lastSyncAt ? Math.floor((clockNow - lastSyncAt) / 1000) : null;

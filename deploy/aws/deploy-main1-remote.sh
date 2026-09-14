@@ -268,8 +268,10 @@ if configuration.get("APP_ENV", "").lower() != "production":
 if not configuration.get("LAB_ADMIN_EMAIL") or not configuration.get("LAB_ADMIN_PASSWORD"):
     raise SystemExit("LAB_ADMIN_EMAIL and LAB_ADMIN_PASSWORD are required in the service environment.")
 environment = {**os.environ, **configuration, "DATABASE_URL": database_url}
-subprocess.run([sys.executable, "-c", "from app.main import app; assert app is not None"], env=environment, check=True)
+subprocess.run([sys.executable, "-m", "compileall", "-q", "app", "scripts", "migrations"], env=environment, check=True)
 subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], env=environment, check=True)
+subprocess.run([sys.executable, "-m", "alembic", "check"], env=environment, check=True)
+subprocess.run([sys.executable, "-c", "from app.main import app; assert app is not None"], env=environment, check=True)
 PY
 )
 
