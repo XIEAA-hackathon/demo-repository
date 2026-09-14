@@ -3,12 +3,11 @@ import { useParticipant } from '../ParticipantContext'
 import type { Bid, BidIncrement, LeaderboardEntry, Problem, WildcardProblem } from '../types'
 import Countdown from './Countdown'
 import Leaderboard from './Leaderboard'
-import { Button, Card, CoinBalance, PageHeading, Stat } from './ui'
+import { Card, CoinBalance, PageHeading, Stat } from './ui'
+import BidIncrementForm from './BidIncrementForm'
 import { useBidCooldown } from '../useBidCooldown'
 import { ApiError } from '../services/apiClient'
 import { applyBidDelta, jitterMilliseconds, parseBidDelta } from '../services/bidRealtime'
-
-const BID_INCREMENTS: BidIncrement[] = [5, 10, 25]
 
 export default function BiddingPanel({
   problem,
@@ -21,9 +20,6 @@ export default function BiddingPanel({
 }) {
   const { dashboard, service, recordAcceptedBid, realtimeEvent, socketStatus } = useParticipant()
   const [entries, setEntries] = useState<LeaderboardEntry[]>([])
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-  const [submitting, setSubmitting] = useState(false)
-  const [highSpendConfirmed, setHighSpendConfirmed] = useState(false)
   const cooldownResetKey = round === 'WILDCARD'
     ? dashboard?.wildcardBidAmount
     : dashboard?.latestBid?.round === round ? dashboard.latestBid.amount : null
@@ -73,7 +69,6 @@ export default function BiddingPanel({
     if (delta.problemId !== null && delta.problemId !== String(problem.id)) return
     setEntries((current) => applyBidDelta(current, delta))
   }, [problem.id, realtimeEvent, round])
-  useEffect(() => setHighSpendConfirmed(false), [problem.id])
 
   if (!dashboard) return null
   const isLeader = dashboard.team.leaderId === dashboard.currentUserId
@@ -84,18 +79,8 @@ export default function BiddingPanel({
   const ownBid = dashboard.latestBid?.round === round && dashboard.latestBid.problemId === problem.id
     ? dashboard.latestBid.amount
     : null
-  const canAfford = (increment: BidIncrement) => currentPrice + increment <= dashboard.wallet.balance
 
   const placeIncrement = async (increment: BidIncrement) => {
-    const proposedAmount = currentPrice + increment
-    if (
-      proposedAmount > dashboard.gameConfig.startingCoins / 2
-      && !highSpendConfirmed
-      && !window.confirm('High Bid Warning\n\nYou are committing more than half of your starting balance to this auction.\n\nContinue?')
-    ) return
-    if (proposedAmount > dashboard.gameConfig.startingCoins / 2) setHighSpendConfirmed(true)
-    setSubmitting(true)
-    setMessage(null)
     try {
       const accepted = isWildcard
         ? await service.placeWildcardBid(increment)
@@ -112,14 +97,11 @@ export default function BiddingPanel({
         placedAt: accepted.placedAt,
         cooldownSeconds: accepted.cooldownSeconds,
       }))
-      if (!['connected', 'reconnected'].includes(socketStatus)) await loadLeaderboard()
-      setMessage({ type: 'success', text: `Bid accepted at ${accepted.amount} coins. Coins are not deducted until finalization.` })
+      if (!['connected', 'reconnected'].includes(socketStatus)) void loadLeaderboard().catch(() => undefined)
+      return accepted
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409) await loadLeaderboard().catch(() => undefined)
-      const text = cause instanceof Error ? cause.message : 'Bid could not be placed.'
-      setMessage({ type: 'error', text })
-    } finally {
-      setSubmitting(false)
+      throw cause
     }
   }
 
@@ -148,23 +130,15 @@ export default function BiddingPanel({
         </Card>
 
         <Card className="bid-panel">
-          <h2>Quick bid</h2>
+          <h2>Place a bid</h2>
           <div className="bid-controls">
             <div className="bid-current"><span>Current auction bid</span><strong>{currentPrice} coins</strong>{ownBid != null && <small>Your bid: {ownBid} coins</small>}</div>
-            <div className="quick-bid-buttons" aria-label="Quick bid increments">
-              {BID_INCREMENTS.map((increment) => (
-                <Button key={increment} type="button" disabled={!biddingActive || !isLeader || submitting || cooldownRemaining > 0 || !canAfford(increment)} onClick={() => void placeIncrement(increment)}>
-                  +{increment}
-                </Button>
-              ))}
-            </div>
+            <BidIncrementForm key={`${round}-${problem.id}`} currentPrice={currentPrice} balance={dashboard.wallet.balance}
+              startingCoins={dashboard.gameConfig.startingCoins} disabled={!biddingActive || !isLeader}
+              cooldownRemaining={cooldownRemaining} onBid={placeIncrement} />
           </div>
-          <p className="muted bid-rules" id="bid-rules">The server adds your selected increment to the authoritative current bid. Maximum single increase: 25 coins.</p>
-          {!BID_INCREMENTS.some(canAfford) && <p className="notice">Your balance cannot cover the next available bid.</p>}
           {!isLeader && <p className="notice">Only your team leader can place bids.</p>}
           <p className="notice bid-note" id="bid-note">Coins are deducted only after a winning bid is finalized.</p>
-          {cooldownRemaining > 0 && <p className="bid-cooldown" id="bid-cooldown" role="status">Next bid available in <strong>{cooldownRemaining}s</strong></p>}
-          {message && <p className={message.type === 'success' ? 'success' : 'error'} role="status">{message.text}</p>}
         </Card>
       </div>
     </div>

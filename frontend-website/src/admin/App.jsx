@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Login from "./pages/Login";
 import ChangeProblemPage from "./pages/ChangeProblem";
+import LabConfiguration from "./components/LabConfiguration";
+import LabAllocationPanel from "../labs/LabAllocationPanel";
+import { applyLabChange } from "../labs/labBoard";
 import {
   addTime, approveTeam, clearToken, deleteTeam, downloadRegistrationAssignments, downloadRegistrationCredentials, downloadRegistrationDemo, downloadRegistrationSample, finalizeProblem,
   getAdminConfig, getAdminState, getBidHistory,
@@ -18,6 +21,7 @@ import {
   resyncClients, retryCurrentTransition, getActivityLog, developmentReset, resetEventData,
   getManagedAdminUsers, createManagedAdminUser, getManagedLeaderboardUsers,
   createManagedLeaderboardUser, resetManagedUserPassword, resetManagedUsers,
+  getLabAllocation, generateLabAllocation,
 } from "./services/api";
 import { connectAuctionSocket } from "./services/auctionSocket";
 import { classifyApiStatus, deriveServerRemaining, isSyncStale, projectCountdown, shouldApplyHttpSnapshot, shouldApplyTimerSnapshot } from "../services/realtime/timerReconciliation";
@@ -103,8 +107,11 @@ function AdminApplication({ onLogout }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
-  const [assignmentRevision, setAssignmentRevision] = useState(0);
+  const [assignmentEvent, setAssignmentEvent] = useState(null);
+  const [labRevision, setLabRevision] = useState(0);
+  const [labEvent, setLabEvent] = useState(null);
   const [wildcardEvent, setWildcardEvent] = useState(null);
+  const [submissionEvent, setSubmissionEvent] = useState(null);
   const loadInFlight = useRef(null);
   const lastSuccessfulLoadStartedAt = useRef(0);
   const socketStatusRef = useRef("connecting");
@@ -230,11 +237,17 @@ function AdminApplication({ onLogout }) {
           return;
         }
         if (["round1_assignment_changed", "external_problems_imported"].includes(message.type)) {
-          setAssignmentRevision((current) => current + 1);
           queueLoad();
           return;
         }
+        if (["lab_allocation_updated", "lab_configuration_updated"].includes(message.type)) {
+          setLabRevision((current) => current + 1);
+          return;
+        }
+        if (message.type === "lab_assignment_changed") { setLabEvent(message); return; }
+        if (message.type === "submission_updated") { setSubmissionEvent(message); return; }
         if (["event_snapshot", "event_state_changed", "timer_sync"].includes(message.type) && message.payload?.event_state) {
+          if (message.type !== "timer_sync") setAssignmentEvent(message);
           realtimeRevision.current.state += 1;
           const syncedAt = Date.now();
           setState((current) => ({ ...current, ...message.payload, timing: { ...message.payload.timing, received_at: syncedAt } }));
@@ -269,7 +282,7 @@ function AdminApplication({ onLogout }) {
         <div className="sidebar-brand"><div className="sidebar-logo">♠</div><div><strong>Bid to Build</strong><span>Admin control</span></div></div>
         <nav className="sidebar-nav">
           <span className="sidebar-section-title">Event</span>
-          {[["dashboard", "Overview", "⌂"], ["round1", "Round 1", "1"], ["change-problem", "Change Problem", "C"], ["wildcard", "Wildcard", "W"], ["submission", "Submission", "S"], ["judging", "Judging", "J"], ["recovery", "Recovery", "R"]].map(([id, label, icon]) => (
+          {[["dashboard", "Overview", "⌂"], ["round1", "Round 1", "1"], ["change-problem", "Change Problem", "C"], ["wildcard", "Wildcard", "W"], ["team-allotment", "Team Allotment", "T"], ["submission", "Submission", "S"], ["judging", "Judging", "J"], ["recovery", "Recovery", "R"]].map(([id, label, icon]) => (
             <button key={id} aria-label={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}><span className="nav-icon">{icon}</span><span className="nav-label">{label}</span></button>
           ))}
           <span className="sidebar-section-title sidebar-section-title--management">Management</span>
@@ -280,16 +293,17 @@ function AdminApplication({ onLogout }) {
         <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">A</div><div><strong>Event Admin</strong><span>Backend verified</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "change-problem" ? "Change Problem" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page === "admin-users" ? "Admin Users" : page === "leaderboard-users" ? "Leaderboard Users" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health" aria-live="polite"><span><i className={`status-dot ${socketConnected ? "online" : socketStatus === "reconnecting" || socketStatus === "connecting" ? "degraded" : "offline"}`} />Live connection <strong>{socketLabel}</strong></span><span><i className={`status-dot ${apiStatus === "healthy" ? "online" : apiStatus === "degraded" || apiStatus === "checking" ? "degraded" : "offline"}`} />Backend/API <strong>{apiLabel}</strong></span><small>Database {databaseLabel} · Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {syncLabel}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
+        <header className="topbar"><div><h1>{page === "round1" ? "Round 1" : page === "change-problem" ? "Change Problem" : page === "team-allotment" ? "Team Allotment" : page === "wildcard" ? "Wildcard" : page === "activity" ? "Event log" : page === "admin-users" ? "Admin Users" : page === "leaderboard-users" ? "Leaderboard Users" : page[0].toUpperCase() + page.slice(1)}</h1><p>Authoritative live event operations</p></div><div className="topbar-right"><div className="connection-health" aria-live="polite"><span><i className={`status-dot ${socketConnected ? "online" : socketStatus === "reconnecting" || socketStatus === "connecting" ? "degraded" : "offline"}`} />Live connection <strong>{socketLabel}</strong></span><span><i className={`status-dot ${apiStatus === "healthy" ? "online" : apiStatus === "degraded" || apiStatus === "checking" ? "degraded" : "offline"}`} />Backend/API <strong>{apiLabel}</strong></span><small>Database {databaseLabel} · Last sync {staleSeconds == null ? "pending" : `${staleSeconds}s ago`} · {syncLabel}</small></div><div className="event-date">CURRENT STAGE<strong>{labels[state?.event_state] || "—"}</strong></div></div></header>
         <div className="page-content">
           {stale && <div className="stale-state-warning" role="alert"><strong>LIVE DATA MAY BE STALE</strong><span>Last successful API synchronization: {staleSeconds == null ? "not yet completed" : `${staleSeconds} seconds ago`}. The live connection is tracked separately.</span></div>}
           {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
           {notice && <div className="admin-notice">{notice}</div>}
-          {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} config={config} onConfig={setConfig} />}
+          {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} config={config} onConfig={setConfig} labRevision={labRevision} />}
           {page === "round1" && <RoundControlPage round="round-1" state={state} config={config} remaining={remaining} onConfig={setConfig} />}
-          {page === "change-problem" && <ChangeProblemPage revision={assignmentRevision} />}
+          {page === "change-problem" && <ChangeProblemPage realtimeEvent={assignmentEvent} />}
           {page === "wildcard" && <WildcardControlPage state={state} config={config} remaining={remaining} onConfig={setConfig} socketConnected={socketConnected} realtimeEvent={wildcardEvent} />}
-          {page === "submission" && <SubmissionAdminPage />}
+          {page === "team-allotment" && <LabAllocationAdminPage revision={labRevision} realtimeEvent={labEvent} />}
+          {page === "submission" && <SubmissionAdminPage socketStatus={socketStatus} realtimeEvent={submissionEvent} />}
           {page === "judging" && <JudgingAdminPage onGlobalSync={load} />}
           {page === "admin-users" && <ManagedUsersPage kind="admin" />}
           {page === "leaderboard-users" && <ManagedUsersPage kind="leaderboard" />}
@@ -304,7 +318,7 @@ function AdminApplication({ onLogout }) {
   );
 }
 
-function Dashboard({ teams, problems, bids, state, remaining, config, onConfig }) {
+function Dashboard({ teams, problems, bids, state, remaining, config, onConfig, labRevision }) {
   const [preflight, setPreflight] = useState(null);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState("");
@@ -336,12 +350,61 @@ function Dashboard({ teams, problems, bids, state, remaining, config, onConfig }
       setCoinSaving(false);
     }
   };
-  return <section className="dashboard"><div className="hero-panel"><div><span className="eyebrow">LIVE EVENT STATE</span><h2>{labels[state?.event_state] || "Waiting"}</h2><p>Every connected participant receives state changes from the backend.</p></div><div className="hero-status"><span className="live-pulse" />{state?.timing?.paused ? "TIMER PAUSED" : remaining ? formatTime(remaining) : "READY"}</div></div><div className="stats-grid"><Stat label="REGISTERED TEAMS" value={teams.length} /><Stat label="PROBLEM STATEMENTS" value={problems.length} /><Stat label="BIDS RECEIVED" value={bids.length} /><Stat label="CURRENT ROUND" value={state?.current_round ?? 1} /></div><section className="starting-coins-panel"><div><h3>Participant starting coins</h3><p>Used for newly created or imported teams and the next explicit Event Reset. Saving here never changes any team’s current balance.</p></div><form onSubmit={saveStartingCoins}><label htmlFor="starting-coins">Starting balance</label><div className="starting-coins-control"><input id="starting-coins" type="number" min="0" max="1000000" step="1" inputMode="numeric" value={startingCoins} disabled={!config || coinSaving} onChange={(event) => { setStartingCoins(event.target.value); setCoinError(""); setCoinNotice(""); }} aria-describedby="starting-coins-help" /><button className="primary-button" type="submit" disabled={!config || coinSaving}>{coinSaving ? "Saving…" : "Save coins"}</button></div><small id="starting-coins-help">Whole number from 0 to 1,000,000.</small>{coinError && <span className="starting-coins-message starting-coins-message--error" role="alert">{coinError}</span>}{coinNotice && <span className="starting-coins-message starting-coins-message--success" role="status">{coinNotice}</span>}</form></section><section className="preflight-panel"><div><h3>Event readiness</h3><p>Validate every live-event prerequisite without changing event state.</p></div><button className="primary-button" disabled={checking} onClick={() => void check()}>{checking ? "Running checks…" : "Run event check"}</button>{checkError && <div className="global-error" role="alert">{checkError}</div>}{preflight && <><strong className={`readiness-status readiness-status--${preflight.status.toLowerCase()}`}>{preflight.status}</strong><div className="preflight-list">{preflight.checks.map((item) => <div key={item.name}><span className={`check-mark check-mark--${item.status.toLowerCase()}`}>{item.status === "READY" ? "✓" : item.status === "WARNING" ? "!" : "×"}</span><span><strong>{item.name}</strong><small>{item.detail}</small></span></div>)}</div></>}</section></section>;
+  return (
+    <section className="dashboard overview-lean">
+      <header className="overview-summary">
+        <div><h2>{labels[state?.event_state] || "Waiting"}</h2><p>Live event setup and readiness.</p></div>
+        <span>{state?.timing?.paused ? "Timer paused" : remaining ? formatTime(remaining) : "Ready"}</span>
+      </header>
+      <dl className="overview-facts">
+        <div><dt>Teams</dt><dd>{teams.length}</dd></div><div><dt>Problems</dt><dd>{problems.length}</dd></div><div><dt>Bids</dt><dd>{bids.length}</dd></div><div><dt>Round</dt><dd>{state?.current_round ?? 1}</dd></div>
+      </dl>
+      <LabConfiguration revision={labRevision} />
+      <section className="overview-controls">
+        <form className="overview-control" onSubmit={saveStartingCoins}>
+          <div><h3>Participant starting coins</h3><p>Used for new teams and the next Event Reset. Existing balances are unchanged.</p></div>
+          <label htmlFor="starting-coins">Starting balance<input id="starting-coins" type="number" min="0" max="1000000" step="1" inputMode="numeric" value={startingCoins} disabled={!config || coinSaving} onChange={(event) => { setStartingCoins(event.target.value); setCoinError(""); setCoinNotice(""); }} /></label>
+          <button className="primary-button" type="submit" disabled={!config || coinSaving}>{coinSaving ? "Saving…" : "Save coins"}</button>
+          {(coinError || coinNotice) && <small className={coinError ? "overview-error" : "overview-success"}>{coinError || coinNotice}</small>}
+        </form>
+        <section className="overview-control">
+          <div><h3>Event readiness</h3><p>Validate every live-event prerequisite without changing event state.</p></div>
+          <button className="secondary-button" disabled={checking} onClick={() => void check()}>{checking ? "Running checks…" : "Run event check"}</button>
+          {checkError && <small className="overview-error">{checkError}</small>}
+          {preflight && <strong className={`readiness-status readiness-status--${preflight.status.toLowerCase()}`}>{preflight.status}</strong>}
+        </section>
+      </section>
+    </section>
+  );
 }
 
-function RoundControlPage({ round, state, config, remaining, onConfig }) {
+function LabAllocationAdminPage({ revision, realtimeEvent }) {
+  const dataRevision = useRef(0);
+  const [board, setBoard] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    const startedRevision = dataRevision.current;
+    try { const next = await getLabAllocation(); if (startedRevision === dataRevision.current) setBoard(next); setError(""); }
+    catch (cause) { setError(cause.message || "Lab allocation could not be loaded."); }
+    finally { setLoading(false); if (startedRevision !== dataRevision.current) void load(); }
+  }, []);
+  useEffect(() => { void load(); }, [load, revision]);
+  useEffect(() => { if (realtimeEvent) { dataRevision.current += 1; setBoard(current => applyLabChange(current, realtimeEvent.payload)); } }, [realtimeEvent]);
+  return <LabAllocationPanel board={board} loading={loading} error={error} onReload={load} onAllocate={generateLabAllocation} canAllocate />;
+}
+
+export function RoundControlPage({ round, state, config, remaining, onConfig }) {
   const isWildcard = round === "wildcard";
-  const [data, setData] = useState(null);
+  const [roundData, setData] = useState(null);
+  const liveRound = state?.rounds?.[isWildcard ? "WILDCARD" : "ROUND1"];
+  const liveUpdatedAt = Date.parse(state?.last_state_update || state?.timing?.server_time || "");
+  const loadedUpdatedAt = Date.parse(roundData?.event?.last_state_update || roundData?.event?.timing?.server_time || "");
+  // Apply the round status carried by the expiry event immediately. An older
+  // in-flight HTTP response must not undo it while round details refresh.
+  const data = roundData && liveRound && liveUpdatedAt >= loadedUpdatedAt
+    ? { ...roundData, ...liveRound, event: state }
+    : roundData;
   const [file, setFile] = useState(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
@@ -470,13 +533,13 @@ function RoundControlPage({ round, state, config, remaining, onConfig }) {
         {current ? <><strong className="round-problem-number">Problem #{current.problem_number}</strong><h3 className="round-current-title">{current.title}</h3><p className="round-current-description">{current.description}</p><span className={`round-status round-status--${data.status.toLowerCase()}`}>{data.status}</span></> : <div className="round-empty"><strong>No problem selected</strong><p>Choose any available problem from the bank below.</p></div>}
       </article>
       <article className="round-live-controls">
-        <div><span className="eyebrow">LIVE CONTROLS</span><h3>{data.status === "PREVIEW" ? "Problem preview" : data.status === "BIDDING" ? `${isWildcard ? "Wildcard" : "Round 1"} — live bidding` : "Ready"}</h3></div>
+        <div><span className="eyebrow">LIVE CONTROLS</span><h3>{afterBidding ? "Bidding complete" : data.status === "PREVIEW_EXPIRED" ? "Preview complete" : data.status === "PREVIEW" ? "Problem preview" : data.status === "BIDDING" ? `${isWildcard ? "Wildcard" : "Round 1"} — live bidding` : "Ready to preview"}</h3></div>
         <div className="round-live-clock">{hasTimer ? formatTime(remaining) : "00:00:00"}</div>
         {data.status === "BIDDING" && <dl className="round-bid-metrics"><div><dt>Base bid price</dt><dd>{data.settings.base_price} coins</dd></div><div><dt>Current highest bid</dt><dd>{data.highest_bid ?? "—"}</dd></div><div><dt>Current highest team</dt><dd>{data.highest_team ?? "—"}</dd></div></dl>}
-        {(data.status === "PREVIEW" || data.status === "BIDDING") && <TimerButtons state={state} remaining={remaining} run={run} />}
+        {hasTimer && (data.status === "PREVIEW" || data.status === "BIDDING") && <TimerButtons state={state} remaining={remaining} run={run} />}
         <div className="round-primary-actions">
           {current && data.status === "READY" && !afterBidding && <button className="primary-button" disabled={working} onClick={() => run(() => startRoundPreview(round), "Preview started.")}>Start preview</button>}
-          {data.status === "PREVIEW" && <button className="primary-button" disabled={working} onClick={() => run(() => startRoundBidding(round), "Bidding started.")}>End preview / start bidding</button>}
+          {["PREVIEW", "PREVIEW_EXPIRED"].includes(data.status) && <button className="primary-button" disabled={working} onClick={() => run(() => startRoundBidding(round), "Bidding started.")}>{data.status === "PREVIEW_EXPIRED" ? "Start bidding" : "End preview / start bidding"}</button>}
           {data.status === "BIDDING" && <button className="danger-button" disabled={working} onClick={() => run(() => closeRoundBidding(round), "Bidding closed.")}>Close bidding</button>}
           {afterBidding && <button className="primary-button" disabled={working} onClick={() => run(() => assignRoundWinners(round), (result) => result?.message || "Winner assignment completed.")}>Assign winner(s)</button>}
         </div>
@@ -650,15 +713,106 @@ function WildcardControlPage({ state, config, remaining, onConfig, socketConnect
   </section>;
 }
 
-function SubmissionAdminPage() {
+export function applySubmissionUpdate(current, payload) {
+  if (!current || !payload?.team_id || !payload.submission) return current;
+  const submission = payload.submission;
+  let matched = false;
+  const rows = current.rows.map((row) => {
+    if (row.team_id !== payload.team_id) return row;
+    matched = true;
+    const githubUrl = submission.github_url ?? submission.git_url ?? submission.repository_url;
+    return {
+      ...row,
+      status: submission.status || "SUBMITTED",
+      ...(githubUrl === undefined ? {} : { github_url: githubUrl }),
+      ...(submission.submitted_at === undefined ? {} : { submitted_at: submission.submitted_at }),
+      ...(submission.updated_at === undefined ? {} : { updated_at: submission.updated_at }),
+      ...(submission.submitted_by === undefined && submission.submitted_by_name === undefined
+        ? {}
+        : { submitted_by: submission.submitted_by ?? submission.submitted_by_name }),
+    };
+  });
+  if (!matched) return current;
+  const submitted = rows.filter((row) => row.status === "SUBMITTED").length;
+  return { ...current, rows, submitted, pending: current.total - submitted };
+}
+
+export function SubmissionAdminPage({ socketStatus = "disconnected", realtimeEvent = null }) {
   const [data, setData] = useState(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [working, setWorking] = useState(false);
-  const load = useCallback(async () => { try { const result = await getAdminSubmissions(); setData(result); setError(""); return result; } catch (cause) { setError(cause.message); return null; } }, []);
-  useEffect(() => { let stopped = false; let timer; const poll = async () => { const result = await load(); if (!stopped) timer = setTimeout(poll, document.hidden ? 60000 : result?.open ? 3000 : 30000); }; void poll(); return () => { stopped = true; clearTimeout(timer); }; }, [load]);
-  const run = async (operation, success) => { setWorking(true); setError(""); setNotice(""); try { setData(await operation()); setNotice(success); } catch (cause) { setError(cause.message || "Action failed."); } finally { setWorking(false); } };
+  const [documentHidden, setDocumentHidden] = useState(() => document.hidden);
+  const loadInFlight = useRef(null);
+  const realtimeRevision = useRef(0);
+  const pendingDeltas = useRef(new Map());
+  const previousSocketStatus = useRef(socketStatus);
+  const socketConnected = socketStatus === "connected" || socketStatus === "reconnected";
+  const load = useCallback(() => {
+    if (loadInFlight.current) return loadInFlight.current;
+    const requestRevision = realtimeRevision.current;
+    const request = (async () => {
+      try {
+        const result = await getAdminSubmissions();
+        const lateDeltas = [...pendingDeltas.current.values()].filter(({ revision }) => revision > requestRevision);
+        setData((current) => {
+          if (current && realtimeRevision.current !== requestRevision) return current;
+          return lateDeltas.reduce((next, { payload }) => applySubmissionUpdate(next, payload), result);
+        });
+        for (const [teamId, delta] of pendingDeltas.current) {
+          if (delta.revision <= requestRevision) pendingDeltas.current.delete(teamId);
+        }
+        setError("");
+        return result;
+      } catch (cause) {
+        setError(cause.message || "Unable to load submissions.");
+        return null;
+      }
+    })();
+    loadInFlight.current = request;
+    void request.finally(() => { if (loadInFlight.current === request) loadInFlight.current = null; });
+    return request;
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let stopped = false;
+    let timer;
+    const schedule = () => {
+      const delay = documentHidden || socketConnected ? 60000 : 30000;
+      timer = window.setTimeout(async () => {
+        await load();
+        if (!stopped) schedule();
+      }, delay);
+    };
+    schedule();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [documentHidden, load, socketConnected]);
+  useEffect(() => {
+    const onVisibility = () => {
+      const hidden = document.hidden;
+      setDocumentHidden(hidden);
+      if (!hidden) void load();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [load]);
+  useEffect(() => {
+    if (socketStatus === "reconnected" && previousSocketStatus.current !== "reconnected") void load();
+    previousSocketStatus.current = socketStatus;
+  }, [load, socketStatus]);
+  useEffect(() => {
+    if (realtimeEvent?.type !== "submission_updated") return;
+    const payload = realtimeEvent.payload;
+    if (!payload?.team_id || !payload.submission) {
+      if (payload?.action) void load();
+      return;
+    }
+    const revision = ++realtimeRevision.current;
+    pendingDeltas.current.set(payload.team_id, { payload, revision });
+    setData((current) => applySubmissionUpdate(current, payload));
+  }, [load, realtimeEvent]);
+  const run = async (operation, success) => { setWorking(true); setError(""); setNotice(""); try { const result = await operation(); realtimeRevision.current += 1; pendingDeltas.current.clear(); setData(result); setNotice(success); } catch (cause) { setError(cause.message || "Action failed."); } finally { setWorking(false); } };
   const downloadFinalExport = async () => {
     setWorking(true); setError(""); setNotice("");
     try {
@@ -673,7 +827,7 @@ function SubmissionAdminPage() {
   };
   const rows = (data?.rows || []).filter((row) => row.team_name.toLowerCase().includes(query.trim().toLowerCase()));
   if (!data) return <div className="loading-screen"><div className="loader" />Loading submissions…</div>;
-  return <section className="submission-admin"><header className="submission-admin__header"><div><span className="eyebrow">EVENT / SUBMISSION</span><h2>Submission monitor</h2><p>Open or close the window and track each team’s final GitHub repository.</p></div><div className="submission-admin__actions"><button className="secondary-button" disabled={working || !data.export_available} title={data.export_available ? "Download final event results" : "Available after submissions are closed"} onClick={() => void downloadFinalExport()}>{working ? "WORKING…" : "EXPORT EXCEL / CSV"}</button><button className={data.open ? "danger-button" : "primary-button"} disabled={working} onClick={() => run(data.open ? closeSubmissions : openSubmissions, data.open ? "Submissions closed." : "Submissions opened.")}>{data.open ? "Close submissions" : "Open submissions"}</button></div></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}{!data.export_available && <div className="admin-notice">Final export is available after submissions are closed.</div>}<div className="submission-stats"><Stat label="WINDOW" value={data.open ? "OPEN" : "CLOSED"} /><Stat label="TOTAL TEAMS" value={data.total} /><Stat label="SUBMITTED" value={data.submitted} /><Stat label="PENDING" value={data.pending} /></div><div className="submission-table-panel"><div className="submission-toolbar"><div><h3>Team repositories</h3><span>{data.open ? "Live monitoring every three seconds." : "Closed window checks every thirty seconds."}</span></div><input aria-label="Search teams" placeholder="Search team…" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>FINAL PROBLEM</th><th>STATUS</th><th>GITHUB URL</th><th>SUBMITTED BY</th><th>UPDATED</th></tr></thead><tbody>{rows.map((row) => <tr key={row.team_id}><td><strong>{row.team_name}</strong></td><td>{row.final_problem ? `#${row.final_problem.ps_number} · ${row.final_problem.title}` : "—"}</td><td><span className={`table-status ${row.status === "SUBMITTED" ? "active" : "pending"}`}>{row.status}</span></td><td>{row.github_url ? <a href={row.github_url} target="_blank" rel="noreferrer">Open repository ↗</a> : "—"}</td><td>{row.submitted_by || "—"}</td><td>{row.updated_at || row.submitted_at ? new Date(row.updated_at || row.submitted_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div></div></section>;
+  return <section className="submission-admin"><header className="submission-admin__header"><div><span className="eyebrow">EVENT / SUBMISSION</span><h2>Submission monitor</h2><p>Open or close the window and track each team’s final GitHub repository.</p></div><div className="submission-admin__actions"><button className="secondary-button" disabled={working || !data.export_available} title={data.export_available ? "Download final event results" : "Available after submissions are closed"} onClick={() => void downloadFinalExport()}>{working ? "WORKING…" : "EXPORT EXCEL / CSV"}</button><button className={data.open ? "danger-button" : "primary-button"} disabled={working} onClick={() => run(data.open ? closeSubmissions : openSubmissions, data.open ? "Submissions closed." : "Submissions opened.")}>{data.open ? "Close submissions" : "Open submissions"}</button></div></header>{error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}{!data.export_available && <div className="admin-notice">Final export is available after submissions are closed.</div>}<div className="submission-stats"><Stat label="WINDOW" value={data.open ? "OPEN" : "CLOSED"} /><Stat label="TOTAL TEAMS" value={data.total} /><Stat label="SUBMITTED" value={data.submitted} /><Stat label="PENDING" value={data.pending} /></div><div className="submission-table-panel"><div className="submission-toolbar"><div><h3>Team repositories</h3><span>{socketConnected ? "Live WebSocket updates with 60-second reconciliation." : "Connection unavailable; checking every thirty seconds."}</span></div><input aria-label="Search teams" placeholder="Search team…" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>FINAL PROBLEM</th><th>STATUS</th><th>GITHUB URL</th><th>SUBMITTED BY</th><th>UPDATED</th></tr></thead><tbody>{rows.map((row) => <tr key={row.team_id}><td><strong>{row.team_name}</strong></td><td>{row.final_problem ? `#${row.final_problem.ps_number} · ${row.final_problem.title}` : "—"}</td><td><span className={`table-status ${row.status === "SUBMITTED" ? "active" : "pending"}`}>{row.status}</span></td><td>{row.github_url ? <a href={row.github_url} target="_blank" rel="noreferrer">Open repository ↗</a> : "—"}</td><td>{row.submitted_by || "—"}</td><td>{row.updated_at || row.submitted_at ? new Date(row.updated_at || row.submitted_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div></div></section>;
 }
 
 function SearchableTeamSelector({ label, teams, value, onChange, disabled }) {

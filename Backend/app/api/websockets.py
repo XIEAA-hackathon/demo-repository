@@ -260,6 +260,10 @@ class ConnectionManager:
         exclude: set[WebSocket] | None,
         roles: set[str] | None,
     ) -> None:
+        if event_type == "lab_allocation_updated":
+            for change in (payload or {}).get("assignments", []):
+                await self._deliver_broadcast("lab_assignment_changed", change, exclude=None, roles={"admin", "lab_admin", "leader", "member"})
+            payload = {key: value for key, value in (payload or {}).items() if key != "assignments"}
         # The shared version tracks events every client is eligible to receive.
         # Admin-only presence messages must not create participant version gaps.
         if roles is None:
@@ -270,6 +274,8 @@ class ConnectionManager:
             for connection, identity in self.active_connections.items()
             if (not exclude or connection not in exclude)
             and (roles is None or identity.get("role") in roles)
+            and (event_type != "lab_assignment_changed" or identity.get("role") in {"admin", "lab_admin"}
+                 or identity.get("team_id") == (payload or {}).get("team_id"))
         ]
 
         async def send(connection: WebSocket) -> WebSocket | None:
@@ -348,7 +354,7 @@ def _authenticate_socket(
                     user.role,
                 )
                 return None, None
-            team = get_team_for_user(db, user) if user.role != "admin" else None
+            team = get_team_for_user(db, user) if user.role in PARTICIPANT_ROLES else None
             identity = {
                 "user_id": user.id,
                 "email": user.email,
@@ -421,6 +427,14 @@ def _touch_socket_identity(
     now = utc_now()
     last_seen_at = identity.get("session_last_seen_at")
     with session_factory() as db:
+        role = identity.get("role")
+        if role is not None and role not in PARTICIPANT_ROLES:
+            return db.query(User.id).filter(
+                User.id == int(identity["user_id"]),
+                User.role == str(role),
+                User.credentials_active.is_(True),
+                User.session_id == str(identity["session_id"]),
+            ).first() is not None
         if participant_session_needs_touch(last_seen_at, now=now):
             alive = touch_participant_session(
                 db,
@@ -506,15 +520,14 @@ async def websocket_auction(websocket: WebSocket):
                 message = await websocket.receive_text()
                 is_heartbeat, client_time = _heartbeat_frame(message)
                 if is_heartbeat:
-                    if identity["role"] in PARTICIPANT_ROLES:
-                        session_alive = await run_in_threadpool(
-                            _touch_socket_identity,
-                            identity,
-                            session_factory,
-                        )
-                        if not session_alive:
-                            await websocket.close(code=4401, reason="Session revoked")
-                            break
+                    session_alive = await run_in_threadpool(
+                        _touch_socket_identity,
+                        identity,
+                        session_factory,
+                    )
+                    if not session_alive:
+                        await websocket.close(code=4401, reason="Session revoked")
+                        break
                     await manager.send_event(
                         websocket,
                         "session_heartbeat",
@@ -532,15 +545,14 @@ async def websocket_auction(websocket: WebSocket):
                 )
                 is_heartbeat, client_time = _heartbeat_frame(message)
                 if is_heartbeat:
-                    if identity["role"] in PARTICIPANT_ROLES:
-                        session_alive = await run_in_threadpool(
-                            _touch_socket_identity,
-                            identity,
-                            session_factory,
-                        )
-                        if not session_alive:
-                            await websocket.close(code=4401, reason="Session revoked")
-                            break
+                    session_alive = await run_in_threadpool(
+                        _touch_socket_identity,
+                        identity,
+                        session_factory,
+                    )
+                    if not session_alive:
+                        await websocket.close(code=4401, reason="Session revoked")
+                        break
                     await manager.send_event(
                         websocket,
                         "session_heartbeat",

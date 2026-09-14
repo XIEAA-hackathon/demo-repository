@@ -314,10 +314,14 @@ async def start_bidding(round_slug: str, db: Session = Depends(get_db), current_
         raise HTTPException(status_code=409, detail="Use the Wildcard slot bidding control.")
     control = get_or_create_round_control(db, meta["type"])
     sync_expired_event_state(db)
-    db.refresh(control)
+    # Serialize admin clicks with expiry/bids, in the same round -> game order.
+    control = db.query(RoundControl).filter(RoundControl.id == control.id).with_for_update().populate_existing().one()
+    game = db.query(GameConfig).order_by(GameConfig.id).with_for_update().populate_existing().first()
     if control.status == "BIDDING":
         return _round_payload(db, meta)
-    if control.ended or not control.current_problem_id or control.status not in {"PREVIEW", "PREVIEW_EXPIRED", "READY"}:
+    if (control.ended or not control.current_problem_id
+            or control.status not in {"PREVIEW", "PREVIEW_EXPIRED"}
+            or not game or game.state != "ROUND1_PREVIEW"):
         raise HTTPException(status_code=409, detail="Preview a selected problem before starting bidding.")
     state = "ROUND1_BIDDING" if meta["number"] == 1 else "WILDCARD_BIDDING"
     transition_event_state(db, state, validate=False, commit=False)

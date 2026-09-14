@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -28,6 +29,9 @@ class Settings(BaseSettings):
     ADMIN_EMAIL: str = "admin@example.com"
     ADMIN_PASSWORD: str = ""
     ADMIN_NAME: str = "Event Admin"
+    LAB_ADMIN_EMAIL: str = "labadmin@bidtobuild.dev"
+    LAB_ADMIN_PASSWORD: str = ""
+    LAB_ADMIN_NAME: str = "Lab Admin"
     DEMO_ADMIN_EMAIL: str = "admin.demo@bidtobuild.example.com"
     DEMO_ADMIN_PASSWORD: str = ""
     DEMO_LEADER_EMAIL: str = "leader@demo.example.com"
@@ -37,7 +41,7 @@ class Settings(BaseSettings):
     LEADERBOARD_DISPLAY_PASSWORD: str = ""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=Path(__file__).resolve().parents[2] / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )

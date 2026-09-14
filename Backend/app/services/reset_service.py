@@ -12,6 +12,8 @@ from app.models.models import (
     ExchangeRequest,
     FinalResult,
     GameConfig,
+    LabAllocationState,
+    LabAssignment,
     Member,
     ProblemStatement,
     RegistrationImport,
@@ -185,6 +187,7 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
         "exchange_requests": db.query(ExchangeRequest).count(),
         "wallet_transactions": db.query(WalletTransaction).count(),
         "activity_entries": db.query(EventActivityLog).count(),
+        "lab_assignments": db.query(LabAssignment).count(),
     }
 
     # Delete dependent event records before uploaded problems. Registration,
@@ -199,9 +202,15 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
         Bid,
         ExchangeRequest,
         WalletTransaction,
+        LabAssignment,
     ):
         db.query(model).delete(synchronize_session=False)
     db.query(EventActivityLog).delete(synchronize_session=False)
+    allocation_state = db.query(LabAllocationState).filter(LabAllocationState.id == 1).one_or_none()
+    if allocation_state:
+        allocation_state.status = "NOT_READY"
+        allocation_state.allocated_at = None
+        allocation_state.finalized_at = None
 
     for team in locked_teams:
         team.coins = event.starting_coins

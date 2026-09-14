@@ -6,6 +6,9 @@ import type {
 import type { ParticipantService } from './participantService'
 
 interface RawDashboard {
+  lab?: { id: number; name: string } | null
+  labAllocationReady?: boolean
+  labAllocationStatus?: 'NOT_READY' | 'PENDING' | 'ASSIGNED' | 'UNAVAILABLE'
   user: { id: number; name: string; email: string; role: string }
   team: { id: number; team_name: string; coins: number; leader_id: number; members: Array<{ id: number; member_name: string; email?: string; is_leader: boolean }> }
   eventState: ParticipantEventState
@@ -32,7 +35,7 @@ interface RawDashboard {
     wildcard_slots: number; wildcard_application_seconds: number; wildcard_starting_bid: number; wildcard_bid_increment: number; wildcard_preview_seconds: number; wildcard_bid_seconds: number; wildcard_selection_seconds: number; coding_duration_seconds: number
     bid_cooldown_seconds: number
   }
-  timing: { server_time: string; started_at: string | null; ends_at: string | null; paused: boolean; paused_remaining_seconds: number | null }
+  timing: { server_time: string; started_at: string | null; ends_at: string | null; paused: boolean; paused_remaining_seconds: number | null; remaining_seconds?: number | null }
 }
 
 interface RawWinner {
@@ -105,7 +108,10 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
       id: String(raw.user.id), name: raw.user.name, loginId: raw.user.email,
       role: raw.isLeader ? 'leader' : 'member',
     },
-    eventState: raw.eventState,
+      eventState: raw.eventState,
+      lab: raw.lab ?? null,
+      labAllocationReady: Boolean(raw.labAllocationReady),
+      labAllocationStatus: raw.labAllocationStatus ?? (raw.lab ? 'ASSIGNED' : raw.labAllocationReady ? 'PENDING' : 'NOT_READY'),
     wallet: { teamId: String(raw.wallet.team_id), balance: raw.wallet.balance, currency: 'coins' },
     currentProblem, roundOneProblem, wildcardProblem, finalProblem, latestBid, wildcardBidAmount: raw.wildcardBidAmount,
     roundOneSettlement: raw.eventState === 'ROUND1_RESULT' ? {
@@ -161,6 +167,7 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
     timing: {
       serverTime: raw.timing.server_time, receivedAt: Date.now(), startedAt: raw.timing.started_at, endsAt: raw.timing.ends_at,
       paused: raw.timing.paused, pausedRemainingSeconds: raw.timing.paused_remaining_seconds,
+      remainingSeconds: raw.timing.remaining_seconds,
     },
   }
 }

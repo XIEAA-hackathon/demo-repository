@@ -50,7 +50,7 @@ export function parseBidDelta(payload: Record<string, unknown>): BidDelta | null
     || (typeof teamId !== 'string' && typeof teamId !== 'number')
     || (typeof payload.bid_id !== 'string' && typeof payload.bid_id !== 'number')
     || !Number.isFinite(amount)
-    || ![5, 10, 25].includes(increment)
+    || !Number.isInteger(increment) || increment < 1 || increment > 25
     || !Number.isFinite(cooldownSeconds)
     || typeof placedAt !== 'string'
   ) return null

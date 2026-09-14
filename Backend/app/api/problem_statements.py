@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import List
 from app.core.database import get_db
-from app.models.models import Bid, ProblemStatement, RoundControl, Submission, Team, Wildcard, WildcardSelectionPool
+from app.models.models import Bid, LabAssignment, ProblemStatement, RoundControl, Submission, Team, Wildcard, WildcardSelectionPool
 from app.schemas.schemas import AdminPSResponse, PSCreate, PSResponse, PSUpdate
 from app.api.auth import get_current_user, get_current_active_admin
 from app.api.websockets import manager
@@ -132,6 +132,7 @@ async def delete_ps(ps_id: int, db: Session = Depends(get_db), current_user = De
         db.query(Wildcard).filter(Wildcard.problem_id == ps_id).first(),
         db.query(WildcardSelectionPool).filter(WildcardSelectionPool.problem_id == ps_id).first(),
         db.query(Submission).filter(Submission.problem_id == ps_id).first(),
+        db.query(LabAssignment).filter(LabAssignment.effective_ps_id == ps_id).first(),
     ))
     if referenced:
         raise HTTPException(status_code=409, detail="Problem Statement is in use and cannot be deleted.")

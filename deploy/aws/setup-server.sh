@@ -27,6 +27,7 @@ if [[ ! -f $ENV_FILE ]]; then
   admin_password=$(openssl rand -hex 18)
   umask 077
   printf '%s\n' \
+    'APP_ENV=production' \
     'DATABASE_URL=' \
     "SECRET_KEY=$secret_key" \
     'ALGORITHM=HS256' \
@@ -34,8 +35,11 @@ if [[ ! -f $ENV_FILE ]]; then
     'CORS_ORIGINS=http://localhost' \
     'ADMIN_EMAIL=admin@example.com' \
     "ADMIN_PASSWORD=$admin_password" \
-    'ADMIN_NAME=Event Admin' > "$ENV_FILE"
-  echo "Created the production environment with generated secrets; set its PostgreSQL DATABASE_URL before deployment."
+    'ADMIN_NAME=Event Admin' \
+    'LAB_ADMIN_EMAIL=labadmin@bidtobuild.dev' \
+    'LAB_ADMIN_PASSWORD=' \
+    'LAB_ADMIN_NAME=Lab Admin' > "$ENV_FILE"
+  echo "Created the production environment; set DATABASE_URL and LAB_ADMIN_PASSWORD before deployment."
 else
   echo "Preserved existing $ENV_FILE."
 fi

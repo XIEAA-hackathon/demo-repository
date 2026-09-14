@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO_ROOT=/home/ec2-user/demo-repository
+DEPLOY_USER=${DEPLOY_USER:-ec2-user}
+REPO_ROOT=${REPO_ROOT:-/home/$DEPLOY_USER/demo-repository}
 BACKEND_ROOT="$REPO_ROOT/Backend"
 VENV_ROOT="$BACKEND_ROOT/venv"
 BACKEND_ENV=/etc/casino-hackathon/backend.env
-STATIC_ROOT=/opt/casino_hackathon/current/static
-STAGING_ROOT=/home/ec2-user/deploy-staging
-BACKUP_ROOT=/opt/casino_hackathon/main1-backups
-STATE_ROOT=/home/ec2-user/deploy-state
+STATIC_ROOT=${STATIC_ROOT:-/opt/casino_hackathon/current/static}
+STATIC_LAYOUT=${STATIC_LAYOUT:-split}
+STAGING_ROOT=${STAGING_ROOT:-/home/$DEPLOY_USER/deploy-staging}
+BACKUP_ROOT=${BACKUP_ROOT:-/opt/casino_hackathon/main1-backups}
+STATE_ROOT=${STATE_ROOT:-/home/$DEPLOY_USER/deploy-state}
 STATE_FILE="$STATE_ROOT/main1-deployed-sha"
 # Shared with deploy-release.sh so the main and main1 pipelines cannot mutate
 # the same service/static tree concurrently.
-LOCK_FILE=/var/lock/casino-hackathon-deploy.lock
+LOCK_FILE=${LOCK_FILE:-/var/lock/casino-hackathon-deploy.lock}
 LOG_FILE=/var/log/casino-hackathon-deploy.log
 SERVICE_NAME=casino-backend.service
 BACKUP_LIMIT=5
@@ -24,8 +26,8 @@ if [[ ! $deploy_sha =~ ^[0-9a-f]{40}$ ]]; then
   echo "Invalid deployment SHA." >&2
   exit 1
 fi
-if [[ $(id -un) != ec2-user ]]; then
-  echo "This deployment must run as ec2-user." >&2
+if [[ $(id -un) != "$DEPLOY_USER" ]]; then
+  echo "This deployment must run as $DEPLOY_USER." >&2
   exit 1
 fi
 if [[ ! -f $frontend_archive || $frontend_archive != "$STAGING_ROOT"/incoming-"$deploy_sha"/* ]]; then
@@ -83,7 +85,11 @@ restore_backend() {
 restore_frontend() {
   [[ -n $backup && -d $backup/static ]] || return 0
   log "Restoring previous static tree"
-  rsync -a --delete "$backup/static/" "$STATIC_ROOT/"
+  if [[ -w $STATIC_ROOT ]]; then
+    rsync -a --delete "$backup/static/" "$STATIC_ROOT/"
+  else
+    sudo -n rsync -a --delete "$backup/static/" "$STATIC_ROOT/"
+  fi
   sudo -n /usr/sbin/nginx -t || true
   sudo -n /usr/bin/systemctl reload nginx.service || true
 }
@@ -115,10 +121,16 @@ log "Checking production paths and tools"
 test -d "$REPO_ROOT/.git"
 test -d "$BACKEND_ROOT"
 test -x "$VENV_ROOT/bin/python"
-test -d "$STATIC_ROOT/public"
-test -d "$STATIC_ROOT/admin"
-test -d "$STATIC_ROOT/participant"
-test -w "$STATIC_ROOT"
+test -d "$STATIC_ROOT"
+if [[ $STATIC_LAYOUT == split ]]; then
+  test -d "$STATIC_ROOT/public"
+  test -d "$STATIC_ROOT/admin"
+  test -d "$STATIC_ROOT/participant"
+  test -w "$STATIC_ROOT"
+elif [[ $STATIC_LAYOUT != flat ]]; then
+  echo "STATIC_LAYOUT must be split or flat." >&2
+  exit 1
+fi
 command -v rsync >/dev/null
 command -v curl >/dev/null
 sudo -n /usr/sbin/nginx -t
@@ -169,7 +181,7 @@ fi
 stage="STAGING"
 log "Preparing isolated Backend and frontend trees"
 install -d -m 0700 "$source_root" "$frontend_root"
-install -d -m 0755 "$next_static/public" "$next_static/admin" "$next_static/participant"
+install -d -m 0755 "$next_static/public" "$next_static/admin" "$next_static/participant" "$next_static/lab-admin"
 git -C "$REPO_ROOT" archive "$deploy_sha" Backend | tar -x -C "$source_root"
 tar -xzf "$frontend_archive" -C "$frontend_root"
 test -s "$source_root/Backend/app/main.py"
@@ -185,8 +197,11 @@ if find "$source_root/Backend" -type f \( -name '*.db' -o -name '*.sqlite' -o -n
   exit 1
 fi
 rsync -a "$frontend_root/" "$next_static/public/"
+install -m 0644 "$frontend_root/index.html" "$next_static/index.html"
+rsync -a "$frontend_root/assets/" "$next_static/assets/"
 install -m 0644 "$frontend_root/index.html" "$next_static/admin/index.html"
 install -m 0644 "$frontend_root/index.html" "$next_static/participant/index.html"
+install -m 0644 "$frontend_root/index.html" "$next_static/lab-admin/index.html"
 
 stage="BACKUP"
 backup="$BACKUP_ROOT/$(date -u +'%Y%m%dT%H%M%SZ')-${previous_sha:0:12}"
@@ -227,15 +242,14 @@ from sqlalchemy.engine import make_url
 environment_file = Path(sys.argv[1])
 if not environment_file.is_file():
     raise SystemExit(f"Missing service environment file: {environment_file}")
-database_url = None
+configuration = {}
 for raw_line in environment_file.read_text(encoding="utf-8").splitlines():
     line = raw_line.strip()
     if not line or line.startswith("#") or "=" not in line:
         continue
     key, value = line.split("=", 1)
-    if key.strip() == "DATABASE_URL":
-        database_url = value.strip().strip("'\"")
-        break
+    configuration[key.strip()] = value.strip().strip("'\"")
+database_url = configuration.get("DATABASE_URL")
 if database_url:
     lowered = database_url.lower()
     if lowered.startswith("postgres://"):
@@ -249,7 +263,11 @@ if (
     or parsed_url.drivername != "postgresql+psycopg"
 ):
     raise SystemExit("The service DATABASE_URL must point to PostgreSQL before deployment.")
-environment = {**os.environ, "DATABASE_URL": database_url}
+if configuration.get("APP_ENV", "").lower() != "production":
+    raise SystemExit("APP_ENV=production is required in the service environment.")
+if not configuration.get("LAB_ADMIN_EMAIL") or not configuration.get("LAB_ADMIN_PASSWORD"):
+    raise SystemExit("LAB_ADMIN_EMAIL and LAB_ADMIN_PASSWORD are required in the service environment.")
+environment = {**os.environ, **configuration, "DATABASE_URL": database_url}
 subprocess.run([sys.executable, "-c", "from app.main import app; assert app is not None"], env=environment, check=True)
 subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], env=environment, check=True)
 PY
@@ -282,10 +300,17 @@ log "Backend service is active and healthy"
 
 stage="FRONTEND PROMOTION"
 frontend_changed=1
-log "Promoting umbrella build into public, admin, and participant static roots"
+log "Promoting umbrella build into public, admin, participant, and Lab Admin static roots"
+if [[ $STATIC_LAYOUT == flat ]]; then
+  sudo -n rsync -a --delete --delay-updates "$next_static/public/" "$STATIC_ROOT/"
+else
+install -m 0644 "$next_static/index.html" "$STATIC_ROOT/index.html"
+rsync -a --delete --delay-updates "$next_static/assets/" "$STATIC_ROOT/assets/"
 rsync -a --delete --delay-updates "$next_static/public/" "$STATIC_ROOT/public/"
 rsync -a --delete --delay-updates "$next_static/admin/" "$STATIC_ROOT/admin/"
 rsync -a --delete --delay-updates "$next_static/participant/" "$STATIC_ROOT/participant/"
+rsync -a --delete --delay-updates "$next_static/lab-admin/" "$STATIC_ROOT/lab-admin/"
+fi
 
 stage="NGINX VALIDATION"
 sudo -n /usr/sbin/nginx -t
@@ -295,7 +320,7 @@ log "Nginx configuration validated and reloaded"
 stage="HEALTH CHECK"
 test "$(curl --fail --silent --show-error http://127.0.0.1:8000/health)" = '{"status":"ok"}'
 test "$(curl --noproxy '*' --resolve 'bidtobuild.dev:443:127.0.0.1' --fail --silent --show-error https://bidtobuild.dev/api/health)" = '{"status":"ok"}'
-for path in / /admin/ /participant/ /leaderboard/problem; do
+for path in / /admin/ /participant/ /lab-admin/ /lab-admin/login /leaderboard/problem; do
   curl --noproxy '*' --resolve 'bidtobuild.dev:443:127.0.0.1' --fail --silent --show-error "https://bidtobuild.dev$path" | grep -qi '<div id="root"></div>'
 done
 

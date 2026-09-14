@@ -25,6 +25,8 @@ from app.models.models import (
     Wildcard,
     WildcardBid,
     WildcardSelectionPool,
+    LabAllocationState,
+    LabAssignment,
 )
 from app.services.activity_log import activity_payload, record_event
 from app.services.event_service import (
@@ -242,8 +244,13 @@ async def development_reset(
         raise HTTPException(status_code=422, detail="Enter RESET DEVELOPMENT EVENT to confirm the rehearsal reset.")
 
     event = get_or_create_event_config(db)
-    for model in (Submission, WildcardSelectionPool, WildcardBid, Wildcard, Bid, WalletTransaction):
+    for model in (Submission, WildcardSelectionPool, WildcardBid, Wildcard, Bid, WalletTransaction, LabAssignment):
         db.query(model).delete(synchronize_session=False)
+    allocation_state = db.query(LabAllocationState).filter(LabAllocationState.id == 1).one_or_none()
+    if allocation_state:
+        allocation_state.status = "NOT_READY"
+        allocation_state.allocated_at = None
+        allocation_state.finalized_at = None
     for team in db.query(Team).all():
         team.coins = event.starting_coins
         team.ps_id = None

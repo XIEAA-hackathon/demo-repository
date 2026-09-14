@@ -7,6 +7,7 @@ Bid to Build is a FastAPI/SQLAlchemy event backend with one React/Vite umbrella 
 | Public website | `frontend-website/src/pages/public` | `/` and `/event` |
 | Participant portal | `frontend-website/src/participant` | `/participant/*` |
 | Admin control center | `frontend-website/src/admin` | `/admin/*` |
+| Lab Admin allocation | `frontend-website/src/lab-admin` | `/lab-admin/*` |
 | Leaderboard display | `frontend-website/src/leaderboard` | `/leaderboard` |
 | FastAPI backend | `Backend` | `/api/` and `/ws/` |
 
@@ -24,6 +25,7 @@ and one build from `frontend-website`.
 |---|---|
 | `/` and `/event` | Public website |
 | `/admin/*` | Admin login and control center |
+| `/lab-admin/login` and `/lab-admin/*` | Dedicated Lab Admin login and allocation board |
 | `/participant/*` | Participant login and event workflow |
 | `/leaderboard` | Authenticated event leaderboard display |
 | `/api/*` | FastAPI HTTP API |
@@ -45,7 +47,20 @@ npm run typecheck
 npm run build
 ```
 
-Copy the relevant `.env.example` file for local overrides. Production frontends use same-origin `/api` and derive WebSocket protocol/host from the browser. Database credentials remain backend-only.
+Before running Alembic or starting the backend, copy `Backend/.env.example` to
+`Backend/.env` and set `DATABASE_URL` to an existing development PostgreSQL database.
+Settings load that file regardless of the shell's working directory. An empty
+database requires `alembic upgrade head` before startup. On Windows use
+`.venv\Scripts\python.exe -m pip`, `.venv\Scripts\python.exe -m alembic`, and
+`.venv\Scripts\python.exe -m uvicorn` in place of the Unix environment commands.
+Production frontends use same-origin `/api`; database credentials remain backend-only.
+
+Both bidding rounds accept whole-number increments from 1 to 25. The input previews
+the next bid and remaining wallet balance; the server calculates the accepted price
+from the latest bid and enforces the configured cooldown (five seconds by default).
+Run backend tests with `TEST_DATABASE_URL` pointing to a disposable database and
+`pip install -r requirements-dev.txt`, then `pytest tests`. Frontend checks are
+`npm test`, `npm run typecheck`, and `npm run build`.
 
 ## Optional Demo Accounts
 
@@ -65,9 +80,16 @@ No demo passwords are committed or enabled by default. When all values are suppl
 startup runs the idempotent provisioning logic in `Backend/app/services/demo_seed.py`.
 The standalone equivalent is `python -m scripts.seed_demo`, run from `Backend`.
 
+The single Lab Admin account is provisioned or repaired at backend startup from
+`LAB_ADMIN_EMAIL`, `LAB_ADMIN_PASSWORD`, and `LAB_ADMIN_NAME`. The password is
+backend-only and must be supplied in `Backend/.env` locally or the production
+service environment; tracked examples contain placeholders only.
+
 ## Automatic AWS Deployment
 
-Production deploys automatically from committed `origin/main1` through `.github/workflows/deploy.yml`:
+Pushing `origin/main1` runs the test/build workflow in `.github/workflows/deploy.yml`.
+Its legacy production runner is currently offline; use the existing deployment
+script over SSH with the Ubuntu paths documented in `deploy/aws/README.md`:
 
 ```bash
 git add -A
@@ -80,7 +102,9 @@ migration, validates the FastAPI runtime, type-checks and builds the umbrella fr
 then packages the production payload. The repository-scoped `casino-production` runner
 deploys that exact commit, validates the services and Nginx, and verifies public routes.
 
-The PostgreSQL connection is supplied only through `DATABASE_URL` in `/etc/casino-hackathon/backend.env`. No database credentials or database files are stored in a release.
+The PostgreSQL connection and Lab Admin password are supplied only through
+`DATABASE_URL` and `LAB_ADMIN_PASSWORD` in `/etc/casino-hackathon/backend.env`.
+No database credentials or database files are stored in a release.
 
 The deployed main1 SHA is recorded at:
 

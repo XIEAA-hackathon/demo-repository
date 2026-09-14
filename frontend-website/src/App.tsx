@@ -6,12 +6,14 @@ import LoginPage from './pages/public/LoginPage'
 import ParticipantRoute from './participant/ParticipantRoute'
 import AdminRoute from './admin/AdminRoute'
 import LeaderboardDashboard from './leaderboard/Dashboard'
+import LabAdminRoute from './lab-admin/LabAdminRoute'
 
 export default function App() {
   return (
     <Routes>
       <Route path="/participant/*" element={<ParticipantRoute />} />
       <Route path="/admin/*" element={<AdminRoute />} />
+      <Route path="/lab-admin/*" element={<LabAdminRoute />} />
       <Route path="/leaderboard" element={<LeaderboardDashboard />} />
       <Route path="/leaderboard/:round" element={<LeaderboardDashboard />} />
       <Route element={<PublicLayout />}>

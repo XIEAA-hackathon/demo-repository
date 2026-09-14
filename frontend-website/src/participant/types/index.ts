@@ -133,6 +133,9 @@ export interface FinalResults {
 }
 
 export interface ParticipantDashboard {
+  lab?: { id: number; name: string; assignment_id?: number; version?: number } | null
+  labAllocationReady?: boolean
+  labAllocationStatus?: 'NOT_READY' | 'PENDING' | 'ASSIGNED' | 'UNAVAILABLE'
   team: Team
   currentUserId: Id
   currentUser: {
@@ -183,6 +186,7 @@ export interface ParticipantDashboard {
 }
 
 export interface EventTiming {
+  remainingSeconds?: number | null
   serverTime: string
   receivedAt: number
   clockOffsetMs?: number | null
@@ -192,4 +196,4 @@ export interface EventTiming {
   pausedRemainingSeconds: number | null
 }
 
-export type BidIncrement = 5 | 10 | 25
+export type BidIncrement = number

@@ -33,6 +33,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql+psycopg://casino_test:casino_test@127.0.0.1:5432/casino_test
+      TEST_DATABASE_URL: postgresql+psycopg://casino_test:casino_test@127.0.0.1:5432/casino_test
     outputs:
       sha: ${{ steps.version.outputs.sha }}
     steps:
@@ -69,10 +70,11 @@ jobs:
         run: |
           set -Eeuo pipefail
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
           alembic upgrade head
           python -m compileall -q app scripts migrations
           python -c "from app.main import app; assert app"
+          pytest tests -q
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -90,6 +92,7 @@ jobs:
           set -Eeuo pipefail
           npm ci --no-audit --no-fund
           npm run typecheck
+          npm test
           npm run build
           test -s dist/index.html
           test -d dist/assets
@@ -163,6 +166,7 @@ jobs:
               && curl --noproxy '*' --resolve "$resolve" --max-time 15 --fail --silent --show-error "$base/" | grep -qi '<div id="root"></div>' \
               && curl --noproxy '*' --resolve "$resolve" --max-time 15 --fail --silent --show-error "$base/admin/" | grep -qi '<div id="root"></div>' \
               && curl --noproxy '*' --resolve "$resolve" --max-time 15 --fail --silent --show-error "$base/participant/" | grep -qi '<div id="root"></div>' \
+              && curl --noproxy '*' --resolve "$resolve" --max-time 15 --fail --silent --show-error "$base/lab-admin/login" | grep -qi '<div id="root"></div>' \
               && curl --noproxy '*' --resolve "$resolve" --max-time 15 --fail --silent --show-error "$base/leaderboard/problem" | grep -qi '<div id="root"></div>'; then
               verified=1
               break

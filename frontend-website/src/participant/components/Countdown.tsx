@@ -10,7 +10,7 @@ function format(seconds: number, showHours: boolean) {
 }
 
 export default function Countdown({ seconds = 0, showHours = false, timing }: { seconds?: number; showHours?: boolean; timing?: EventTiming }) {
-  const timerKey = timing ? `${timing.startedAt ?? ''}:${timing.endsAt ? 'active' : 'inactive'}` : 'fallback'
+  const timerKey = timing ? `${timing.startedAt ?? ''}:${timing.endsAt ?? ''}:${Boolean(timing.paused)}` : 'fallback'
   const remaining = useReconciledCountdown(timing, timerKey, seconds)
 
   return <time className="countdown" dateTime={`PT${remaining}S`}>{format(remaining, showHours)}</time>

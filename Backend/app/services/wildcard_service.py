@@ -397,6 +397,10 @@ def assign_wildcard_selection(
         db, control, active, problem, method=effective_method, actor=actor, now=check_time,
     )
     db.commit()
+    if result["next_team_id"] is None:
+        from app.services.lab_allocation import try_allocate_labs
+
+        result["lab_allocation_team_count"] = try_allocate_labs(db)
     return result
 
 
@@ -452,6 +456,10 @@ def reconcile_wildcard_selection(db: Session, *, now: datetime | None = None) ->
         raise WildcardSelectionConflict("No available Wildcard problem remains for automatic assignment.")
     result = _assign_locked_selection(db, control, active, problem, method="timeout", now=check_time)
     db.commit()
+    if result["next_team_id"] is None:
+        from app.services.lab_allocation import try_allocate_labs
+
+        result["lab_allocation_team_count"] = try_allocate_labs(db)
     return result
 
 

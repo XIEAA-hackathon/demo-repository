@@ -91,13 +91,12 @@ class AdminPSResponse(PSResponse):
     model_config = ConfigDict(from_attributes=True)
 
 # --- Bid Schemas ---
-class BidCreate(BaseModel):
-    ps_id: int
-    increment: Literal[5, 10, 25]
-
-
 class BidIncrementRequest(BaseModel):
-    increment: Literal[5, 10, 25]
+    increment: int = Field(strict=True, ge=1, le=25)
+
+
+class BidCreate(BidIncrementRequest):
+    ps_id: int
 
 class BidResponse(BaseModel):
     id: int
@@ -275,7 +274,17 @@ class EventTiming(BaseModel):
     paused_remaining_seconds: Optional[int]
     remaining_seconds: Optional[int] = None
 
+class DashboardLab(BaseModel):
+    id: int
+    name: str
+    assignment_id: int
+    version: int
+
+
 class ParticipantDashboardResponse(BaseModel):
+    lab: Optional[DashboardLab] = None
+    labAllocationReady: bool = False
+    labAllocationStatus: str = "NOT_READY"
     user: DashboardUser
     team: DashboardTeam
     leader: DashboardLeader

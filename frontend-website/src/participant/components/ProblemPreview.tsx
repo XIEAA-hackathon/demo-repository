@@ -14,13 +14,14 @@ export default function ProblemPreview({
   seconds: number
   timing?: EventTiming
 }) {
+  const previewComplete = Boolean(timing && !timing.endsAt && !timing.paused)
   return (
     <div className="stack">
       <PageHeading eyebrow={round} title={`Problem #${String(problem.number).padStart(2, '0')}`}>
-        Read the challenge. Bid controls unlock when the preview ends.
+        {previewComplete ? 'Preview complete. Waiting for admin to start bidding.' : 'Read the challenge. Bidding begins when the admin starts it.'}
       </PageHeading>
       <Card className="problem-card">
-        <div className="problem-card__timer"><span>Read the challenge</span><Countdown seconds={seconds} timing={timing} /></div>
+        <div className="problem-card__timer"><span>{previewComplete ? 'Preview complete' : 'Read the challenge'}</span><Countdown seconds={seconds} timing={timing} /></div>
         <h2>{problem.title}</h2>
         <p>{problem.description}</p>
       </Card>

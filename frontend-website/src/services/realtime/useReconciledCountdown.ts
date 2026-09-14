@@ -12,8 +12,11 @@ export function useReconciledCountdown(
   timerKey: unknown,
   fallbackSeconds = 0,
 ) {
+  const receivedTimingRef = useRef(Boolean(timing))
+  if (timing) receivedTimingRef.current = true
+  const initialFallback = receivedTimingRef.current ? 0 : fallbackSeconds
   const initialNow = Date.now()
-  const initialRemaining = deriveServerRemaining(timing, initialNow, fallbackSeconds)
+  const initialRemaining = deriveServerRemaining(timing, initialNow, initialFallback)
   const anchorRef = useRef<CountdownAnchor>({
     remaining: initialRemaining,
     localAt: initialNow,
@@ -24,7 +27,7 @@ export function useReconciledCountdown(
 
   useEffect(() => {
     const localNow = Date.now()
-    const serverRemaining = deriveServerRemaining(timing, localNow, fallbackSeconds)
+    const serverRemaining = deriveServerRemaining(timing, localNow, initialFallback)
     const expectedRemaining = projectCountdown(anchorRef.current, localNow)
     if (shouldApplyTimerSnapshot({
       previousTiming: snapshotRef.current.timing,
@@ -42,14 +45,19 @@ export function useReconciledCountdown(
       setRemaining(serverRemaining)
     }
     snapshotRef.current = { timing, timerKey }
-  }, [fallbackSeconds, timerKey, timing])
+  }, [initialFallback, timerKey, timing])
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
+    const tick = () => {
       const next = projectCountdown(anchorRef.current, Date.now())
       setRemaining((current) => current === next ? current : next)
-    }, 1_000)
-    return () => window.clearInterval(timer)
+    }
+    const timer = window.setInterval(tick, 1_000)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', tick)
+    }
   }, [])
 
   return remaining

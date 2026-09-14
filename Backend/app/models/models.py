@@ -1,16 +1,17 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Text, UniqueConstraint, Index
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("email"),)
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
-    role = Column(String, nullable=False) # 'admin', 'leader', 'member', or 'display'
+    role = Column(String, nullable=False) # admin, lab_admin, leader, member, or display
     team_id = Column(Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
     session_id = Column(String, nullable=True) # Used to track the active session
     session_created_at = Column(DateTime(timezone=True), nullable=True)
@@ -20,8 +21,17 @@ class User(Base):
     credentials_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+
+Index(
+    "uq_users_single_lab_admin",
+    User.role,
+    unique=True,
+    postgresql_where=User.role == "lab_admin",
+)
+
 class ProblemStatement(Base):
     __tablename__ = "problem_statements"
+    __table_args__ = (UniqueConstraint("ps_number"),)
 
     id = Column(Integer, primary_key=True, index=True)
     ps_number = Column(String, unique=True, index=True, nullable=False)
@@ -32,6 +42,7 @@ class ProblemStatement(Base):
 
 class RoundControl(Base):
     __tablename__ = "round_controls"
+    __table_args__ = (UniqueConstraint("round_type"),)
 
     id = Column(Integer, primary_key=True, index=True)
     round_type = Column(String, unique=True, index=True, nullable=False) # ROUND1 or WILDCARD
@@ -53,6 +64,7 @@ class RoundControl(Base):
 
 class Team(Base):
     __tablename__ = "teams"
+    __table_args__ = (UniqueConstraint("team_name"),)
 
     id = Column(Integer, primary_key=True, index=True)
     team_name = Column(String, unique=True, index=True, nullable=False)
@@ -71,6 +83,70 @@ class Team(Base):
     wildcard = relationship("Wildcard", back_populates="team", uselist=False, cascade="all, delete-orphan")
     transactions = relationship("WalletTransaction", back_populates="team", cascade="all, delete-orphan")
     submission = relationship("Submission", back_populates="team", uselist=False, cascade="all, delete-orphan")
+    lab_assignment = relationship("LabAssignment", uselist=False, viewonly=True)
+
+
+class Lab(Base):
+    __tablename__ = "labs"
+    __table_args__ = (
+        CheckConstraint("capacity > 0", name="ck_labs_capacity_positive"),
+        CheckConstraint("sort_order >= 0", name="ck_labs_sort_order_nonnegative"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(120), nullable=False)
+    capacity = Column(Integer, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+Index("uq_labs_name_ci", func.lower(Lab.name), unique=True)
+
+
+class LabAllocationState(Base):
+    __tablename__ = "lab_allocation_state"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('NOT_READY', 'READY', 'ALLOCATING', 'ALLOCATED', 'FINALIZED')",
+            name="ck_lab_allocation_state_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    status = Column(String(20), nullable=False, default="NOT_READY")
+    allocated_at = Column(DateTime(timezone=True), nullable=True)
+    finalized_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class LabAssignment(Base):
+    lab = relationship("Lab", foreign_keys="LabAssignment.current_lab_id", viewonly=True)
+    __tablename__ = "lab_assignments"
+    __table_args__ = (
+        UniqueConstraint("team_id", name="uq_lab_assignments_team"),
+        CheckConstraint(
+            "assignment_source IN ('AUTO', 'MANUAL_OVERRIDE')",
+            name="ck_lab_assignments_source",
+        ),
+        CheckConstraint("version > 0", name="ck_lab_assignments_version_positive"),
+        Index("ix_lab_assignments_current_lab", "current_lab_id"),
+        Index("ix_lab_assignments_effective_problem_lab", "effective_ps_id", "current_lab_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    original_lab_id = Column(Integer, ForeignKey("labs.id", ondelete="RESTRICT"), nullable=False)
+    current_lab_id = Column(Integer, ForeignKey("labs.id", ondelete="RESTRICT"), nullable=False)
+    assignment_source = Column(String(20), nullable=False, default="AUTO")
+    constraint_override = Column(Boolean, nullable=False, default=False)
+    effective_ps_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="RESTRICT"), nullable=False)
+    moved_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    moved_at = Column(DateTime(timezone=True), nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 class Member(Base):
     __tablename__ = "members"

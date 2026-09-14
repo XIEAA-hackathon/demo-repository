@@ -1,17 +1,27 @@
 # AWS production deployment
 
+The current host uses `ubuntu@bidtobuild.dev`, with the repository at
+`/home/ubuntu/demo-repository` and the existing Nginx SPA root at
+`/var/www/bidtobuild`. The legacy GitHub runner is offline. An operator can
+run the same tested `deploy-main1-remote.sh` over SSH with `DEPLOY_USER=ubuntu`,
+`STATIC_ROOT=/var/www/bidtobuild`, `STATIC_LAYOUT=flat`, and writable backup/lock
+paths. The script retains backups, migrations, systemd restart, and health checks;
+it does not install or change Nginx/SSL configuration.
+
 The legacy immutable-release path is `.github/workflows/deploy-aws.yml`. It is manual-only; its former automatic `main` trigger is disabled so it cannot compete with the live `main1` SSH pipeline for port 8000 or the Nginx static tree.
 
 Persistent state is outside releases:
 
 - Environment: `/etc/casino-hackathon/backend.env`
 - PostgreSQL URL: `DATABASE_URL` in `/etc/casino-hackathon/backend.env`
+- Production guard: `APP_ENV=production` in `/etc/casino-hackathon/backend.env`
+- Lab Admin credentials: `LAB_ADMIN_EMAIL` and a non-empty `LAB_ADMIN_PASSWORD` in the same file
 - Immutable releases: `/opt/casino_hackathon/releases/<git-sha>`
 - Active release: `/opt/casino_hackathon/current`
 
 The deployment script is `deploy/aws/deploy-release.sh`. It records `PUSH RECEIVED`, `FETCHING`, `RELEASE CREATED`, `INSTALLING`, `BUILDING`, `VALIDATING`, `PROMOTING`, `RESTARTING`, `HEALTH CHECK`, and `LIVE` in `/var/log/casino-hackathon-deploy.log`. A server-side `flock` on `/var/lock/casino-hackathon-deploy.lock` supplements GitHub Actions concurrency protection.
 
-The tested umbrella frontend build arrives at `static/index.html` in the artifact and serves `/`, `/participant/*`, and `/admin/*` through the same SPA fallback. Before promotion, the server installs backend dependencies with its actual Python interpreter and imports the FastAPI application through a transient systemd unit that uses `/etc/casino-hackathon/backend.env`. This catches runtime-version and production-configuration failures before `current` changes.
+The tested umbrella frontend build arrives at `static/index.html` in the artifact and serves `/`, `/participant/*`, `/admin/*`, and `/lab-admin/*` through the same SPA fallback. Before promotion, the server installs backend dependencies with its actual Python interpreter and imports the FastAPI application using `/etc/casino-hackathon/backend.env`. This catches runtime-version and production-configuration failures before `current` changes.
 
 Promotion uses an atomic temporary-symlink rename and immediately verifies `readlink -f /opt/casino_hackathon/current`. The deployment then restarts the real `casino-hackathon-backend.service`, confirms Uvicorn remains on `127.0.0.1:8000`, reloads Nginx after `nginx -t`, and checks internal health/version plus public-proxy and frontend routes. A release directory existing does not mean it is live.
 
@@ -70,8 +80,10 @@ legacy database, complete `Backend/POSTGRESQL_MIGRATION.md` before restarting.
 The single frontend build is materialized according to the live Nginx layout:
 
 - the complete bundle is deployed to `/opt/casino_hackathon/current/static/public`;
+- the current `index.html` and assets are deployed at the static root for the live Nginx fallback;
 - its `index.html` is also installed at `/opt/casino_hackathon/current/static/admin/index.html`;
 - its `index.html` is also installed at `/opt/casino_hackathon/current/static/participant/index.html`.
+- its `index.html` is also installed at `/opt/casino_hackathon/current/static/lab-admin/index.html`.
 
 This works because the repository now contains one BrowserRouter application and the live Nginx configuration serves `/assets` from `static/public` while using the Admin and participant files as route entry points.
 
@@ -107,6 +119,7 @@ sudo nginx -t
 curl --fail http://127.0.0.1/api/health
 curl --fail http://127.0.0.1/admin/
 curl --fail http://127.0.0.1/participant/
+curl --fail http://127.0.0.1/lab-admin/login
 ```
 
 For a failed deployment, open its Actions run and expand the failed step. Server-side details are also available with:

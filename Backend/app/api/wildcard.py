@@ -13,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.auth import BidAuthClaims, get_bid_auth_claims, get_current_active_admin, get_current_user
 from app.api.websockets import manager
+from app.services.lab_allocation import try_allocate_labs
 from app.core.database import SessionLocal, get_db
 from app.models.models import EventConfig, GameConfig, RoundControl, Team, User, Wildcard, WildcardBid
 from app.schemas.schemas import BidIncrementRequest, WildcardEndTurnRequest, WildcardSlotRequest
@@ -455,7 +456,16 @@ async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=De
         raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
     if control.status in {"PROBLEM_SELECTION", "COMPLETE"}:
         winners = finalize_slot_bidding(db, control)
-        return {"winners": winners, **wildcard_payload(db)}
+        lab_allocation_team_count = try_allocate_labs(db) if control.status == "COMPLETE" else None
+        response = {"winners": winners, **wildcard_payload(db)}
+        db.close()
+        if lab_allocation_team_count is not None:
+            manager.publish_event(
+                "lab_allocation_updated",
+                {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])},
+                roles={"admin", "lab_admin"},
+            )
+        return response
     if control.status != "BIDDING_CLOSED":
         raise HTTPException(status_code=409, detail="Close Wildcard bidding before finalizing the ranking.")
     game = get_or_create_game_config(db)
@@ -464,17 +474,20 @@ async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=De
     game.timer_paused_remaining_seconds = None
     try:
         winners = finalize_slot_bidding(db, control, commit=False)
-        transition_event_state(db, "WILDCARD_SELECTION", validate=False, commit=False)
+        transition_event_state(db, "CODING" if control.ended else "WILDCARD_SELECTION", validate=False, commit=False)
         record_event(db, "wildcard.bidding_finalized", actor=current_user, metadata={"winner_count": len(winners)})
         db.commit()
     except ValueError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    lab_allocation_team_count = try_allocate_labs(db) if control.ended else None
     snapshot = event_snapshot(db)
     response = {"winners": winners, **wildcard_payload(db)}
     db.close()
     await manager.broadcast_event("wildcard_updated", {"action": "bidding_finalized", "winners": winners})
     await manager.broadcast_event("event_state_changed", snapshot)
+    if lab_allocation_team_count is not None:
+        manager.publish_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])}, roles={"admin", "lab_admin"})
     return response
 
 
@@ -502,6 +515,7 @@ async def end_wildcard(db: Session = Depends(get_db), current_user=Depends(get_c
         "completed_selection_count": selections,
     })
     db.commit()
+    lab_allocation_team_count = try_allocate_labs(db)
     snapshot = event_snapshot(db)
     response = wildcard_payload(db)
     db.close()
@@ -512,6 +526,12 @@ async def end_wildcard(db: Session = Depends(get_db), current_user=Depends(get_c
         "completed_selection_count": selections,
     })
     await manager.broadcast_event("event_state_changed", snapshot)
+    if lab_allocation_team_count is not None:
+        manager.publish_event(
+            "lab_allocation_updated",
+            {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])},
+            roles={"admin", "lab_admin"},
+        )
     return response
 
 
@@ -558,6 +578,12 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
     })
     if snapshot is not None:
         await manager.broadcast_event("event_state_changed", snapshot)
+    if result.get("lab_allocation_team_count") is not None:
+        manager.publish_event(
+            "lab_allocation_updated",
+            {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": db.info.pop("lab_assignment_changes", [])},
+            roles={"admin", "lab_admin"},
+        )
     return response
 
 
@@ -600,4 +626,10 @@ async def end_wildcard_selection_turn(
     })
     if snapshot is not None:
         await manager.broadcast_event("event_state_changed", snapshot)
+    if result.get("lab_allocation_team_count") is not None:
+        manager.publish_event(
+            "lab_allocation_updated",
+            {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": db.info.pop("lab_assignment_changes", [])},
+            roles={"admin", "lab_admin"},
+        )
     return response

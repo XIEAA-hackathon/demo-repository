@@ -28,10 +28,11 @@ export interface CountdownAnchor {
 
 const valueFrom = <T>(timing: TimerTiming | null | undefined, snakeKey: keyof TimerTiming, camelKey: keyof TimerTiming): T | null | undefined => {
   const snakeValue = timing?.[snakeKey]
-  return (snakeValue ?? timing?.[camelKey]) as T | null | undefined
+  return (snakeValue !== undefined ? snakeValue : timing?.[camelKey]) as T | null | undefined
 }
 
 const finiteSeconds = (value: unknown) => {
+  if (value == null) return null
   const seconds = Number(value)
   return Number.isFinite(seconds) ? Math.max(0, seconds) : null
 }
@@ -70,20 +71,23 @@ export function deriveServerRemaining(timing: TimerTiming | null | undefined, lo
   }
 
   const endsAt = Date.parse(valueFrom<string>(timing, 'ends_at', 'endsAt') ?? '')
-  const measuredOffset = Number(valueFrom<number>(timing, 'clock_offset_ms', 'clockOffsetMs'))
+  // An authoritative snapshot without a deadline is inactive, even if a
+  // configured duration or a stale remaining-seconds value is still present.
+  if (!Number.isFinite(endsAt)) return 0
+  const rawOffset = valueFrom<number>(timing, 'clock_offset_ms', 'clockOffsetMs')
+  const measuredOffset = rawOffset == null ? NaN : Number(rawOffset)
   if (Number.isFinite(endsAt) && Number.isFinite(measuredOffset)) {
     return Math.max(0, Math.ceil((endsAt - (localNow + measuredOffset)) / 1000))
   }
   const serverTime = Date.parse(valueFrom<string>(timing, 'server_time', 'serverTime') ?? '')
-  const receivedAt = Number(valueFrom<number>(timing, 'received_at', 'receivedAt'))
+  const rawReceivedAt = valueFrom<number>(timing, 'received_at', 'receivedAt')
+  const receivedAt = rawReceivedAt == null ? NaN : Number(rawReceivedAt)
   if (Number.isFinite(endsAt) && Number.isFinite(serverTime) && Number.isFinite(receivedAt)) {
     const serverOffset = serverTime - receivedAt
     return Math.max(0, Math.ceil((endsAt - (localNow + serverOffset)) / 1000))
   }
 
-  return finiteSeconds(valueFrom(timing, 'remaining_seconds', 'remainingSeconds'))
-    ?? finiteSeconds(fallbackSeconds)
-    ?? 0
+  return Math.max(0, Math.ceil((endsAt - localNow) / 1000))
 }
 
 export function projectCountdown(anchor: CountdownAnchor | null, localNow = Date.now()) {

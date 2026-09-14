@@ -10,6 +10,15 @@ function problemLabel(problem) {
   return `#${problem.problem_number} ${problem.title}`;
 }
 
+function completionBoundaries(event) {
+  if (!["event_snapshot", "event_state_changed"].includes(event?.type)) return [];
+  const rounds = event.payload?.rounds;
+  return [
+    rounds?.ROUND1?.ended ? "ROUND1_COMPLETE" : null,
+    rounds?.WILDCARD?.ended ? "WILDCARD_COMPLETE" : null,
+  ].filter(Boolean);
+}
+
 function ProblemSelect({ problems, currentProblemId, value, onChange, id, disabled = false }) {
   const groups = [
     ["ROUND1", "Round 1 problems"],
@@ -121,7 +130,7 @@ function AssignmentDialog({ team, problems, initialProblemId, working, onCancel,
   );
 }
 
-export default function ChangeProblemPage({ revision = 0 }) {
+export default function ChangeProblemPage({ realtimeEvent = null }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -134,22 +143,39 @@ export default function ChangeProblemPage({ revision = 0 }) {
   const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
   const importInputRef = useRef(null);
+  const completedBoundaries = useRef(new Set(completionBoundaries(realtimeEvent)));
+  const loadInFlight = useRef(null);
 
-  const load = useCallback(async (quiet = false) => {
-    if (!quiet) setLoading(true);
-    else setRefreshing(true);
-    try {
-      setData(await getRoundOneAssignments());
-      setError("");
-    } catch (cause) {
-      setError(cause.message || "Round 1 assignments could not be loaded.");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+  const load = useCallback((quiet = false) => {
+    if (loadInFlight.current) return loadInFlight.current;
+    const request = (async () => {
+      if (!quiet) setLoading(true);
+      else setRefreshing(true);
+      try {
+        setData(await getRoundOneAssignments());
+        setError("");
+      } catch (cause) {
+        setError(cause.message || "Round 1 assignments could not be loaded.");
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    })();
+    loadInFlight.current = request;
+    void request.finally(() => { if (loadInFlight.current === request) loadInFlight.current = null; });
+    return request;
   }, []);
 
-  useEffect(() => { void load(Boolean(data)); }, [load, revision]);
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let refresh = false;
+    for (const boundary of completionBoundaries(realtimeEvent)) {
+      if (completedBoundaries.current.has(boundary)) continue;
+      completedBoundaries.current.add(boundary);
+      refresh = true;
+    }
+    if (refresh) void load(true);
+  }, [load, realtimeEvent]);
 
   const visibleTeams = useMemo(() => {
     const query = search.trim().toLowerCase();

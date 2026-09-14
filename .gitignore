@@ -34,9 +34,24 @@ dist-ssr/
 deploy/*.zip
 
 # Development artifacts live on the full-backup main branch, not main1.
-Backend/tests/
-Backend/requirements-dev.txt
+Backend/tests/*
+!Backend/tests/conftest.py
+!Backend/tests/test_lab_allocation.py
+!Backend/tests/test_bid_increment_input.py
+!Backend/tests/test_websocket_pool.py
+!Backend/tests/test_bid_concurrency_safety.py
+!Backend/tests/test_round1_preview_expiry.py
+!Backend/tests/test_submissions.py
+!Backend/requirements-dev.txt
 frontend-website/src/**/*.test.*
+!frontend-website/src/participant/components/BidIncrementForm.test.tsx
+!frontend-website/src/services/realtime/timerReconciliation.test.tsx
+!frontend-website/src/admin/RoundControlPage.test.jsx
+!frontend-website/src/participant/PreviewRealtime.test.tsx
+!frontend-website/src/labs/LabAllocationPanel.test.jsx
+!frontend-website/src/lab-admin/LabAdminApp.test.jsx
+!frontend-website/src/admin/SubmissionAdminPage.test.jsx
+!frontend-website/src/admin/pages/ChangeProblemPage.test.jsx
 load_test/
 outputs/
 .impeccable/

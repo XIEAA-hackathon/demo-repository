@@ -1,41 +1,20 @@
 import { API_URL } from "../../services/api/config";
+import { ApiError, authenticatedRequest } from "../../services/api/authenticatedClient";
 
 const TOKEN_KEY = "bid_to_build_admin_token";
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
 export const hasToken = () => Boolean(getToken());
 export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
-export class ApiError extends Error {
-  constructor(message, status, options) {
-    super(message, options);
-    this.status = status;
-  }
-}
+export { ApiError };
 
 async function request(path, options = {}) {
-  const { responseType, ...fetchOptions } = options;
-  const headers = new Headers(options.headers || {});
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (options.body && !(options.body instanceof FormData) && !(options.body instanceof URLSearchParams)) {
-    headers.set("Content-Type", "application/json");
-  }
-  let response;
   try {
-    response = await fetch(`${API_URL}${path}`, { ...fetchOptions, headers });
-  } catch (cause) {
-    throw new ApiError("Cannot reach the event server.", 0, { cause });
+    return await authenticatedRequest(API_URL, TOKEN_KEY, "admin:unauthorized", path, options);
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 409 || error.status === 503)) window.dispatchEvent(new Event("admin:resync"));
+    throw error;
   }
-  const data = response.ok && responseType === "blob" ? await response.blob() : await response.json().catch(() => null);
-  if (!response.ok) {
-    if (response.status === 401) {
-      clearToken();
-      window.dispatchEvent(new Event("admin:unauthorized"));
-    }
-    if (response.status === 409 || response.status === 503) window.dispatchEvent(new Event("admin:resync"));
-    throw new ApiError(data?.detail || data?.message || `Request failed (${response.status}).`, response.status);
-  }
-  return data;
 }
 
 export async function login(email, password) {
@@ -166,3 +145,10 @@ export const getManagedLeaderboardUsers = () => request("/admin/management/leade
 export const createManagedLeaderboardUser = (payload) => request("/admin/management/leaderboard-users", { method: "POST", body: JSON.stringify(payload) });
 export const resetManagedUserPassword = (userId, payload) => request(`/admin/management/users/${userId}/password`, { method: "PUT", body: JSON.stringify(payload) });
 export const resetManagedUsers = (confirmation) => request("/admin/management/reset", { method: "POST", body: JSON.stringify({ confirmation }) });
+export const getLabs = () => request("/admin/labs");
+export const createLab = (payload) => request("/admin/labs", { method: "POST", body: JSON.stringify(payload) });
+export const updateLab = (id, payload) => request(`/admin/labs/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+export const deleteLab = (id) => request(`/admin/labs/${id}`, { method: "DELETE" });
+export const getLabAllocation = () => request("/lab-allocation");
+export const generateLabAllocation = () => request("/admin/lab-allocation/allocate", { method: "POST" });
+export const moveLabAssignment = (id, payload) => request(`/lab-allocation/assignments/${id}/move`, { method: "PUT", body: JSON.stringify(payload) });

@@ -20,6 +20,13 @@ __pycache__/
 test_credentials.txt
 websocket_test.html
 
-# Development sources are preserved on the full-backup main branch.
-tests/
-requirements-dev.txt
+# Keep the focused production regression suite with this branch.
+tests/*
+!tests/conftest.py
+!tests/test_lab_allocation.py
+!tests/test_bid_increment_input.py
+!tests/test_websocket_pool.py
+!tests/test_bid_concurrency_safety.py
+!tests/test_round1_preview_expiry.py
+!tests/test_submissions.py
+!requirements-dev.txt

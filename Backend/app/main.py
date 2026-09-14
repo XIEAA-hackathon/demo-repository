@@ -8,13 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
-from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging, management
+from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging, management, labs
 from app.core.database import engine, initialize_database, SessionLocal
 from app.core.logging import install_sensitive_query_redaction
 from app.models import models
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.services.demo_seed import provision_demo_accounts
+from app.services.lab_admin import provision_lab_admin_account
+from app.services.lab_allocation import try_allocate_labs
 from app.services.event_service import (
     event_snapshot,
     event_timing,
@@ -45,6 +47,8 @@ def validate_startup_configuration() -> None:
             raise RuntimeError("A unique SECRET_KEY of at least 32 characters is required in production.")
         if settings.ENABLE_EVENT_RESET:
             raise RuntimeError("ENABLE_EVENT_RESET must be false in production.")
+        if not settings.LAB_ADMIN_EMAIL.strip() or not settings.LAB_ADMIN_PASSWORD:
+            raise RuntimeError("LAB_ADMIN_EMAIL and LAB_ADMIN_PASSWORD are required in production.")
 
 
 TIMER_SYNC_INTERVAL_SECONDS = 10
@@ -80,6 +84,7 @@ def _process_expiry_database_cycle(
         )
         if wildcard_assignment:
             actions.append("wildcard_selection_timeout")
+            wildcard_assignment["lab_assignment_changes"] = db.info.pop("lab_assignment_changes", [])
         if actions:
             snapshot = event_snapshot(db, config=config)
         elif include_timer_sync:
@@ -125,6 +130,16 @@ async def process_expiry_cycle(
                 "selection_ends_at": wildcard_assignment["selection_ends_at"],
             },
         )
+        if wildcard_assignment.get("lab_allocation_team_count") is not None:
+            connection_manager.publish_event(
+                "lab_allocation_updated",
+                {
+                    "action": "auto_allocated",
+                    "team_count": wildcard_assignment["lab_allocation_team_count"],
+                    "assignments": wildcard_assignment.get("lab_assignment_changes", []),
+                },
+                roles={"admin", "lab_admin"},
+            )
     if actions:
         await connection_manager.broadcast_event(
             "event_state_changed",
@@ -170,6 +185,7 @@ async def lifespan(app: FastAPI):
             db.add(admin_user)
         if admin_user:
             admin_user.is_system_account = True
+        provision_lab_admin_account(db)
         provision_demo_accounts(db)
         db.commit()
 
@@ -181,6 +197,9 @@ async def lifespan(app: FastAPI):
         upgraded_teams = upgrade_legacy_starting_coins(db)
         if upgraded_teams:
             logger.info("Upgraded %s legacy team wallets to 5,000 starting coins.", upgraded_teams)
+        allocated_teams = try_allocate_labs(db)
+        if allocated_teams is not None:
+            logger.info("Generated startup lab allocation for %s teams.", allocated_teams)
     finally:
         db.close()
 
@@ -216,6 +235,7 @@ app.include_router(websockets.router, tags=["WebSockets"])
 app.include_router(operations.router, tags=["Event Operations"])
 app.include_router(judging.router, tags=["Judging and Public Results"])
 app.include_router(management.router, tags=["Managed Users"])
+app.include_router(labs.router, tags=["Lab Allocation"])
 
 
 @app.exception_handler(SQLAlchemyError)

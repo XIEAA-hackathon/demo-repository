@@ -194,6 +194,7 @@ def _sync_expired_event_state(db: Session, config_id: int, round_type: str) -> l
         db.query(RoundControl)
         .filter(RoundControl.round_type == round_type)
         .with_for_update()
+        .populate_existing()
         .one_or_none()
     )
     if control is None:

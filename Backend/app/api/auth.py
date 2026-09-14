@@ -158,6 +158,18 @@ def get_current_active_admin(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+def get_current_active_lab_admin(current_user: User = Depends(get_current_user)):
+    if current_user.role != "lab_admin":
+        raise HTTPException(status_code=403, detail="Lab Admin access required")
+    return current_user
+
+
+def get_current_active_admin_or_lab_admin(current_user: User = Depends(get_current_user)):
+    if current_user.role not in ("admin", "lab_admin"):
+        raise HTTPException(status_code=403, detail="Event Admin or Lab Admin access required")
+    return current_user
+
+
 def get_current_active_participant(current_user: User = Depends(get_current_user)):
     if current_user.role not in ("leader", "member"):
         raise HTTPException(status_code=403, detail="Participant access required")
@@ -457,6 +469,29 @@ def leaderboard_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Sess
         )
     return _issue_session(user, db)
 
+
+@router.post("/lab-admin/login", response_model=Token)
+def lab_admin_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    login_id = form_data.username.strip().lower()
+    user = db.query(User).filter(func.lower(User.email) == login_id).first()
+    if (
+        not user
+        or user.role != "lab_admin"
+        or not user.credentials_active
+        or not verify_password(form_data.password, user.password_hash)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect Lab Admin ID or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return _issue_session(user, db)
+
+
+@router.get("/lab-admin/session")
+def lab_admin_session(current_user: User = Depends(get_current_active_lab_admin)):
+    return {"id": current_user.id, "name": current_user.name, "email": current_user.email, "role": current_user.role}
+
 @router.post("/logout")
 async def logout(
     request: Request,
@@ -483,8 +518,8 @@ async def logout(
     # Release request DB connection before WebSocket/network I/O.
     db.close()
 
+    await manager.disconnect_users({user_id})
     if participant_logout:
-        await manager.disconnect_users({user_id})
         session_factory = getattr(request.app.state, "session_factory", SessionLocal)
         manager.schedule_presence_refresh(session_factory)
     return {"message": "Successfully logged out"}

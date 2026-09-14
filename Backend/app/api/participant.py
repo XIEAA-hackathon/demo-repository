@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from app.core.database import get_db
 from app.models.models import (
     User, Team, Member, Bid, Wildcard, WildcardBid, Submission, FinalResult,
-    GameConfig, EventConfig, ProblemStatement, RoundControl, WildcardSelectionPool,
+    GameConfig, EventConfig, ProblemStatement, RoundControl, WildcardSelectionPool, LabAllocationState, LabAssignment,
 )
 from app.schemas.schemas import (
     ParticipantDashboardResponse, DashboardUser, DashboardTeam, DashboardMember,
@@ -62,6 +62,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         selectinload(Team.members),
         joinedload(Team.wildcard),
         joinedload(Team.submission),
+        joinedload(Team.lab_assignment).joinedload(LabAssignment.lab),
     )
     team = (
         team_query.filter(Team.id == current_user.team_id).first()
@@ -72,15 +73,16 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         raise HTTPException(status_code=404, detail="No team linked to this account")
 
     singleton_configs = (
-        db.query(GameConfig, EventConfig)
+        db.query(GameConfig, EventConfig, LabAllocationState)
         .select_from(GameConfig)
         .join(EventConfig, true())
+        .outerjoin(LabAllocationState, true())
         .order_by(GameConfig.id.asc(), EventConfig.id.asc())
         .first()
     )
     if singleton_configs is None:
         raise HTTPException(status_code=503, detail="Event configuration is temporarily unavailable.")
-    config, event_config = singleton_configs
+    config, event_config, lab_allocation_state = singleton_configs
     controls = {
         row.round_type: row
         for row in db.query(RoundControl)
@@ -253,8 +255,23 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         )
 
     is_leader = team.leader_id == current_user.id
+    lab_ready = bool(wildcard_control and wildcard_control.ended)
+    assignment = team.lab_assignment
+    allocated_lab = assignment.lab if lab_ready and assignment and assignment.effective_ps_id == team.ps_id else None
+    lab_status = "NOT_READY"
+    if lab_ready:
+        lab_status = "ASSIGNED" if allocated_lab and allocated_lab.active else "PENDING"
+        if lab_allocation_state and lab_allocation_state.status in {"ALLOCATED", "FINALIZED"} and lab_status != "ASSIGNED":
+            lab_status = "UNAVAILABLE"
+            logger.error(
+                "Lab assignment unavailable after completed allocation team_id=%d final_problem_id=%s assignment_id=%s",
+                team.id, team.ps_id, assignment.id if assignment else None,
+            )
 
     response = ParticipantDashboardResponse(
+        lab={"id": allocated_lab.id, "name": allocated_lab.name, "assignment_id": assignment.id, "version": assignment.version} if allocated_lab and allocated_lab.active else None,
+        labAllocationReady=lab_ready,
+        labAllocationStatus=lab_status,
         user=DashboardUser(id=current_user.id, name=current_user.name, email=current_user.email, role=current_user.role),
         team=DashboardTeam(
             id=team.id, team_name=team.team_name, coins=team.coins,
@@ -394,6 +411,18 @@ def get_leaderboard(db: Session = Depends(get_db), current_user: User = Depends(
 
 # ---------------------------------------------------------------- Submissions
 
+def _submission_realtime_payload(team_id: int, submission: Submission, submitted_by: str) -> dict:
+    return {
+        "team_id": team_id,
+        "submission": {
+            "git_url": submission.repository_url,
+            "submitted_at": submission.submitted_at.isoformat(),
+            "updated_at": submission.updated_at.isoformat() if submission.updated_at else None,
+            "submitted_by": submitted_by,
+            "status": "SUBMITTED",
+        },
+    }
+
 @router.post("/submissions/me", status_code=201)
 async def create_submission(
     submission: SubmissionCreate,
@@ -428,12 +457,9 @@ async def create_submission(
         submitted_at=new_submission.submitted_at, updated_at=new_submission.updated_at,
         submitted_by_user_id=current_user.id, submitted_by_name=current_user.name,
     )
-    team_name = team.team_name
+    event_payload = _submission_realtime_payload(team.id, new_submission, current_user.name)
     db.close()
-    await manager.broadcast_json({
-        "type": "submission_updated",
-        "team_name": team_name,
-    })
+    await manager.broadcast_event("submission_updated", event_payload)
     return response
 
 @router.put("/submissions/me")
@@ -473,12 +499,16 @@ async def update_submission(
         db.commit()
         db.refresh(existing)
         result = existing
-    return DashboardSubmission(
+    response = DashboardSubmission(
         id=result.id, problem_id=result.problem_id,
         repository_url=result.repository_url,
         submitted_at=result.submitted_at, updated_at=result.updated_at,
         submitted_by_user_id=current_user.id, submitted_by_name=current_user.name,
     )
+    event_payload = _submission_realtime_payload(team.id, result, current_user.name)
+    db.close()
+    await manager.broadcast_event("submission_updated", event_payload)
+    return response
 
 @router.get("/submissions/me")
 def get_my_submission(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):

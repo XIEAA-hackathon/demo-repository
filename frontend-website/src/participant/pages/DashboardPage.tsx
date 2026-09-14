@@ -3,6 +3,7 @@ import { useParticipant } from '../ParticipantContext'
 import { getStageRoute } from '../routeConfig'
 import type { ParticipantEventState } from '../types'
 import { Card, PageHeading } from '../components/ui'
+import AllocatedLab from '../components/AllocatedLab'
 
 const roundLabel: Record<ParticipantEventState, string> = {
   WAITING: 'Not started',
@@ -47,6 +48,7 @@ export default function DashboardPage() {
   if (loading || !dashboard) return <p className="muted">Loading dashboard…</p>
   const leader = dashboard.team.members.find((member) => member.id === dashboard.team.leaderId)
   const stage = getStageRoute(dashboard.eventState)
+  const problem = dashboard.finalProblem ?? dashboard.currentProblem
 
   return (
     <div className="stack">
@@ -69,12 +71,13 @@ export default function DashboardPage() {
       <div className="two-column">
         <Card className="dash-problem">
           <span className="eyebrow">Current problem</span>
-          <h2>{dashboard.currentProblem?.title ?? 'Waiting for auction'}</h2>
-          {dashboard.currentProblem ? (
-            <p>{dashboard.currentProblem.summary}</p>
+          <h2>{problem ? `#${problem.number} · ${problem.title}` : 'Waiting for auction'}</h2>
+          {problem ? (
+            <p>{problem.summary}</p>
           ) : (
             <p className="muted">A problem will appear here once the auction for your round begins.</p>
           )}
+          <AllocatedLab dashboard={dashboard} />
         </Card>
 
         <Card className="dash-next">

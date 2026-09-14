@@ -1,0 +1,17 @@
+.lab-admin-shell .page-content { max-width: 1500px; }
+.lab-admin-sidebar .sidebar-nav { flex: 1; }
+.lab-connection { display: flex; align-items: center; gap: 8px; color: #a99ab1; font-size: 10px; font-weight: 750; }
+.lab-admin-shell .lab-workspace { animation: lab-board-enter 420ms cubic-bezier(.16,1,.3,1) both; }
+
+@keyframes lab-board-enter {
+  from { opacity: .72; transform: translateY(5px); filter: blur(2px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lab-admin-shell .lab-workspace { animation: none; }
+}
+
+@media (max-width: 760px) {
+  .lab-admin-shell .logout-button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; }
+}

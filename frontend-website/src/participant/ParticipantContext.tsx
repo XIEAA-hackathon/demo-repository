@@ -73,6 +73,9 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     refreshInFlight.current = request
     void request.finally(() => {
       if (refreshInFlight.current === request) refreshInFlight.current = null
+      // Bootstrap still needs a complete dashboard if the first HTTP result
+      // lost a race with a socket snapshot (including in a background tab).
+      if (!dashboardRef.current && requestRevision !== realtimeRevision.current) void refresh()
     })
     return request
   }, [])
@@ -207,6 +210,23 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       }
       setRealtimeEvent(message)
 
+      if (message.type === 'lab_assignment_changed') {
+        if (String(message.payload.team_id) !== dashboardRef.current?.team.id) return
+        const lab = message.payload.lab as ParticipantDashboard['lab']
+        const previousLab = dashboardRef.current?.lab
+        if (lab?.assignment_id && previousLab?.assignment_id && (lab.assignment_id < previousLab.assignment_id
+          || (lab.assignment_id === previousLab.assignment_id && (lab.version ?? 0) < (previousLab.version ?? 0)))) return
+        realtimeRevision.current += 1
+        setDashboard(current => {
+          if (!current) return current
+          const next = { ...current, lab: lab ?? null, labAllocationReady: Boolean(message.payload.labAllocationReady), labAllocationStatus: lab ? 'ASSIGNED' as const : 'PENDING' as const }
+          dashboardRef.current = next
+          return next
+        })
+        setLastSyncAt(Date.now())
+        return
+      }
+
       if (message.type === 'event_snapshot' || message.type === 'event_state_changed' || message.type === 'timer_sync') {
         realtimeRevision.current += 1
         const rawState = message.payload.event_state
@@ -220,6 +240,9 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
             const next = {
               ...current,
               eventState: nextState ?? current.eventState,
+              labAllocationReady: message.payload.rounds
+                ? Boolean((message.payload.rounds as { WILDCARD?: { ended?: boolean } }).WILDCARD?.ended)
+                : current.labAllocationReady,
               timing: rawTiming ? {
                 serverTime: String(rawTiming.server_time ?? message.server_time),
                 receivedAt: Number(rawTiming.received_at ?? Date.now()),
@@ -228,6 +251,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
                 endsAt: rawTiming.ends_at == null ? null : String(rawTiming.ends_at),
                 paused: Boolean(rawTiming.paused),
                 pausedRemainingSeconds: rawTiming.paused_remaining_seconds == null ? null : Number(rawTiming.paused_remaining_seconds),
+                remainingSeconds: rawTiming.remaining_seconds == null ? null : Number(rawTiming.remaining_seconds),
               } : current.timing,
             }
             dashboardRef.current = next
