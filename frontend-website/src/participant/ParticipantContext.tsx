@@ -26,6 +26,8 @@ interface ParticipantContextValue {
 
 const ParticipantContext = createContext<ParticipantContextValue | null>(null)
 
+type RefreshRunner = (showPending?: boolean) => Promise<ParticipantDashboard | null>
+
 export function ParticipantProvider({ children }: { children: ReactNode }) {
   const [dashboard, setDashboard] = useState<ParticipantDashboard | null>(null)
   const [loading, setLoading] = useState(true)
@@ -35,12 +37,20 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
   const [documentHidden, setDocumentHidden] = useState(() => document.hidden)
   const [refreshPending, setRefreshPending] = useState(false)
+
+  // Only bidding screens consume realtimeEvent. Keeping every websocket message
+  // here caused the entire participant tree (dashboard/layout/navigation) to
+  // rerender for timer syncs, presence updates and unrelated broadcasts.
   const [realtimeEvent, setRealtimeEvent] = useState<EventMessage | null>(null)
 
   const refreshInFlight = useRef<Promise<ParticipantDashboard | null> | null>(null)
+  const refreshRunnerRef = useRef<RefreshRunner | null>(null)
   const dashboardRef = useRef<ParticipantDashboard | null>(null)
   const lastSuccessfulRefreshStartedAt = useRef(0)
   const lastEventVersion = useRef(0)
+
+  // This revision only tracks realtime mutations that could make an HTTP
+  // response stale. Timer-only sync messages intentionally do not increment it.
   const realtimeRevision = useRef(0)
   const socketStatusRef = useRef('connecting')
 
@@ -54,8 +64,8 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
 
   const navigateToStageIfAllowed = useCallback(
     (state: ParticipantEventState) => {
-      // The dashboard is intentionally persistent. Organizer stage changes
-      // should never kick a participant out of /participant/dashboard.
+      // Dashboard is a persistent participant view. Organizer transitions must
+      // not kick a participant out of it.
       if (pathnameRef.current === '/participant/dashboard') return
 
       const target = getStageRoute(state).path
@@ -66,14 +76,14 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     [navigate],
   )
 
-  const refresh = useCallback(() => {
+  const runRefresh = useCallback<RefreshRunner>((showPending = false) => {
     if (refreshInFlight.current) return refreshInFlight.current
 
     const startedAt = Date.now()
     const requestRevision = realtimeRevision.current
 
     const request = (async () => {
-      setRefreshPending(true)
+      if (showPending) setRefreshPending(true)
 
       try {
         setError(null)
@@ -81,9 +91,12 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         const next = await participantService.getParticipantDashboard()
 
         if (shouldApplyHttpSnapshot(requestRevision, realtimeRevision.current)) {
-          setDashboard(next)
           dashboardRef.current = next
+          setDashboard(next)
           lastSuccessfulRefreshStartedAt.current = startedAt
+
+          // lastSyncAt is deliberately API-only. Previously websocket timer
+          // messages updated it too, which caused unnecessary layout rerenders.
           setLastSyncAt(Date.now())
         }
 
@@ -95,7 +108,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         return null
       } finally {
         setLoading(false)
-        setRefreshPending(false)
+        if (showPending) setRefreshPending(false)
       }
     })()
 
@@ -104,15 +117,26 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     void request.finally(() => {
       if (refreshInFlight.current === request) refreshInFlight.current = null
 
-      // Bootstrap still needs a complete dashboard if the first HTTP result
-      // lost a race with a socket snapshot (including in a background tab).
+      // If the initial HTTP snapshot lost a race with an authoritative realtime
+      // mutation, silently retry once the in-flight request has been released.
       if (!dashboardRef.current && requestRevision !== realtimeRevision.current) {
-        void refresh()
+        window.setTimeout(() => {
+          void refreshRunnerRef.current?.(false)
+        }, 0)
       }
     })
 
     return request
   }, [])
+
+  refreshRunnerRef.current = runRefresh
+
+  // Public/manual refreshes expose pending state. Automatic background refreshes
+  // below are silent so they do not make the participant board flash.
+  const refresh = useCallback(
+    () => runRefresh(true),
+    [runRefresh],
+  )
 
   const applyOwnBid = useCallback((bid: AcceptedBid) => {
     realtimeRevision.current += 1
@@ -143,8 +167,6 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       dashboardRef.current = next
       return next
     })
-
-    setLastSyncAt(Date.now())
   }, [])
 
   useEffect(() => {
@@ -153,7 +175,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     let retryDelay = 1_000
 
     const loadInitialSnapshot = async () => {
-      const next = await refresh()
+      const next = await runRefresh(true)
       if (next || stopped) return
 
       timer = window.setTimeout(() => {
@@ -168,16 +190,16 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       stopped = true
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [refresh])
+  }, [runRefresh])
 
   useEffect(() => {
     const resync = () => {
-      void refresh()
+      void runRefresh(false)
     }
 
     window.addEventListener('participant:resync', resync)
     return () => window.removeEventListener('participant:resync', resync)
-  }, [refresh])
+  }, [runRefresh])
 
   useEffect(() => {
     let stopped = false
@@ -188,7 +210,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       timer = window.setTimeout(async () => {
         if (stopped) return
 
-        const next = await refresh()
+        const next = await runRefresh(false)
         failures = next ? 0 : failures + 1
         const connected = ['connected', 'reconnected'].includes(socketStatusRef.current)
 
@@ -217,7 +239,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       }
 
       void (async () => {
-        const next = await refresh()
+        const next = await runRefresh(false)
         failures = next ? 0 : failures + 1
         const connected = ['connected', 'reconnected'].includes(socketStatusRef.current)
 
@@ -239,7 +261,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       if (timer !== undefined) window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [refresh])
+  }, [runRefresh])
 
   useEffect(() => {
     let timer: number | undefined
@@ -248,8 +270,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     const queueRefresh = () => {
       latestEventAt = Date.now()
 
-      // Hidden tabs will be reconciled through the visibility handler when
-      // they become visible again instead of generating unnecessary traffic.
+      // Hidden tabs reconcile when visible instead of creating background load.
       if (document.hidden) return
 
       if (timer !== undefined) window.clearTimeout(timer)
@@ -261,7 +282,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         latestEventAt = 0
 
         if (lastSuccessfulRefreshStartedAt.current < eventAt) {
-          await refresh()
+          await runRefresh(false)
         }
       }, jitterMilliseconds(250, 900))
     }
@@ -278,7 +299,28 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           window.dispatchEvent(new Event('participant:leaderboard-resync'))
         }
 
-        setRealtimeEvent(message)
+        // Bidding components are the only current consumers of realtimeEvent.
+        // Do not invalidate the entire ParticipantContext for every timer,
+        // presence, lab or organizer message.
+        if (message.type === 'bid_updated' || message.type === 'wildcard_bid_updated') {
+          setRealtimeEvent(message)
+
+          const delta = parseBidDelta(message.payload)
+          if (delta && delta.teamId === dashboardRef.current?.team.id) {
+            applyOwnBid({
+              bidId: delta.bidId,
+              problemId: delta.problemId,
+              amount: delta.amount,
+              increment: delta.increment,
+              round: delta.round,
+              placedAt: delta.placedAt,
+              cooldownSeconds: delta.cooldownSeconds,
+              serverTime: message.server_time,
+            })
+          }
+
+          return
+        }
 
         if (message.type === 'lab_assignment_changed') {
           if (String(message.payload.team_id) !== dashboardRef.current?.team.id) return
@@ -305,18 +347,40 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           setDashboard((current) => {
             if (!current) return current
 
+            const nextReady = message.payload.labAllocationReady == null
+              ? current.labAllocationReady
+              : Boolean(message.payload.labAllocationReady)
+
+            const nextStatus = lab
+              ? 'ASSIGNED' as const
+              : nextReady
+                ? 'PENDING' as const
+                : current.labAllocationStatus
+
+            const sameLab =
+              current.lab?.id === lab?.id
+              && current.lab?.assignment_id === lab?.assignment_id
+              && current.lab?.version === lab?.version
+
+            if (
+              sameLab
+              && current.labAllocationReady === nextReady
+              && current.labAllocationStatus === nextStatus
+            ) {
+              return current
+            }
+
             const next = {
               ...current,
               lab: lab ?? null,
-              labAllocationReady: Boolean(message.payload.labAllocationReady),
-              labAllocationStatus: lab ? 'ASSIGNED' as const : 'PENDING' as const,
+              labAllocationReady: nextReady,
+              labAllocationStatus: nextStatus,
             }
 
             dashboardRef.current = next
             return next
           })
 
-          setLastSyncAt(Date.now())
           return
         }
 
@@ -325,8 +389,6 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           || message.type === 'event_state_changed'
           || message.type === 'timer_sync'
         ) {
-          realtimeRevision.current += 1
-
           const rawState = message.payload.event_state
           const nextState = typeof rawState === 'string'
             && participantEventStates.includes(rawState as ParticipantEventState)
@@ -342,85 +404,118 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           } | undefined
           const wildcardRound = rounds?.WILDCARD
 
+          const isAuthoritativeStageChange =
+            message.type === 'event_state_changed' && nextState !== null
+
+          // A pure timer sync is useless on the participant dashboard and used
+          // to recreate the dashboard object on every sync. Ignore it there.
+          if (
+            message.type === 'timer_sync'
+            && pathnameRef.current === '/participant/dashboard'
+          ) {
+            return
+          }
+
+          if (isAuthoritativeStageChange) {
+            realtimeRevision.current += 1
+          }
+
           if (nextState || rawTiming || wildcardRound) {
             setDashboard((current) => {
               if (!current) return current
 
+              // event_snapshot/timer_sync must not change eventState because an
+              // EventRoute would then redirect even without event_state_changed.
+              const resolvedState = isAuthoritativeStageChange
+                ? nextState
+                : current.eventState
+
+              const resolvedApplicationsOpen =
+                wildcardRound?.applications_open == null
+                  ? current.wildcardApplicationsOpen
+                  : Boolean(wildcardRound.applications_open)
+
+              const resolvedLabReady =
+                wildcardRound?.ended == null
+                  ? current.labAllocationReady
+                  : Boolean(wildcardRound.ended)
+
+              // The dashboard itself does not render countdown timing. Avoid
+              // replacing timing there for snapshot traffic as well.
+              const shouldApplyTiming =
+                pathnameRef.current !== '/participant/dashboard'
+                && Boolean(rawTiming)
+
+              const nextTiming = shouldApplyTiming && rawTiming
+                ? {
+                    serverTime: String(rawTiming.server_time ?? message.server_time),
+                    receivedAt: Number(rawTiming.received_at ?? Date.now()),
+                    clockOffsetMs:
+                      rawTiming.clock_offset_ms == null
+                        ? current.timing.clockOffsetMs
+                        : Number(rawTiming.clock_offset_ms),
+                    startedAt:
+                      rawTiming.started_at == null
+                        ? null
+                        : String(rawTiming.started_at),
+                    endsAt:
+                      rawTiming.ends_at == null
+                        ? null
+                        : String(rawTiming.ends_at),
+                    paused: Boolean(rawTiming.paused),
+                    pausedRemainingSeconds:
+                      rawTiming.paused_remaining_seconds == null
+                        ? null
+                        : Number(rawTiming.paused_remaining_seconds),
+                    remainingSeconds:
+                      rawTiming.remaining_seconds == null
+                        ? null
+                        : Number(rawTiming.remaining_seconds),
+                  }
+                : current.timing
+
+              const stateChanged = resolvedState !== current.eventState
+              const applicationsChanged =
+                resolvedApplicationsOpen !== current.wildcardApplicationsOpen
+              const labReadyChanged =
+                resolvedLabReady !== current.labAllocationReady
+              const timingChanged = nextTiming !== current.timing
+
+              if (
+                !stateChanged
+                && !applicationsChanged
+                && !labReadyChanged
+                && !timingChanged
+              ) {
+                return current
+              }
+
               const next = {
                 ...current,
-                eventState: nextState ?? current.eventState,
-
-                // Socket payloads can be partial. Preserve the last known value
-                // when a field is omitted instead of coercing undefined to false.
-                wildcardApplicationsOpen:
-                  wildcardRound?.applications_open == null
-                    ? current.wildcardApplicationsOpen
-                    : Boolean(wildcardRound.applications_open),
-
-                labAllocationReady:
-                  wildcardRound?.ended == null
-                    ? current.labAllocationReady
-                    : Boolean(wildcardRound.ended),
-
-                timing: rawTiming
-                  ? {
-                      serverTime: String(rawTiming.server_time ?? message.server_time),
-                      receivedAt: Number(rawTiming.received_at ?? Date.now()),
-                      clockOffsetMs:
-                        rawTiming.clock_offset_ms == null
-                          ? current.timing.clockOffsetMs
-                          : Number(rawTiming.clock_offset_ms),
-                      startedAt:
-                        rawTiming.started_at == null
-                          ? null
-                          : String(rawTiming.started_at),
-                      endsAt:
-                        rawTiming.ends_at == null
-                          ? null
-                          : String(rawTiming.ends_at),
-                      paused: Boolean(rawTiming.paused),
-                      pausedRemainingSeconds:
-                        rawTiming.paused_remaining_seconds == null
-                          ? null
-                          : Number(rawTiming.paused_remaining_seconds),
-                      remainingSeconds:
-                        rawTiming.remaining_seconds == null
-                          ? null
-                          : Number(rawTiming.remaining_seconds),
-                    }
-                  : current.timing,
+                eventState: resolvedState,
+                wildcardApplicationsOpen: resolvedApplicationsOpen,
+                labAllocationReady: resolvedLabReady,
+                timing: nextTiming,
               }
 
               dashboardRef.current = next
-              setLastSyncAt(Date.now())
-              setApiStatus('healthy')
               return next
             })
           }
 
-          // Only authoritative stage-change events may move a participant.
-          // event_snapshot and timer_sync update state/timing only.
-          if (nextState && message.type === 'event_state_changed') {
+          if (isAuthoritativeStageChange && nextState) {
             navigateToStageIfAllowed(nextState)
           }
 
-          return
-        }
-
-        if (message.type === 'bid_updated' || message.type === 'wildcard_bid_updated') {
-          const delta = parseBidDelta(message.payload)
-
-          if (delta && delta.teamId === dashboardRef.current?.team.id) {
-            applyOwnBid({
-              bidId: delta.bidId,
-              problemId: delta.problemId,
-              amount: delta.amount,
-              increment: delta.increment,
-              round: delta.round,
-              placedAt: delta.placedAt,
-              cooldownSeconds: delta.cooldownSeconds,
-              serverTime: message.server_time,
-            })
+          // When Wildcard is complete, the participant should not wait for the
+          // 60–90 second safety poll if their lab-assignment websocket event is
+          // delayed or dropped. Recover within the existing 250–900 ms jitter.
+          if (
+            message.type === 'event_state_changed'
+            && wildcardRound?.ended === true
+            && !dashboardRef.current?.lab
+          ) {
+            queueRefresh()
           }
 
           return
@@ -446,13 +541,25 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
             setDashboard((current) => {
               if (!current?.wildcard) return current
 
+              const nextStatus = ownWinner ? 'qualified' : 'eliminated'
+              const nextRank = ownWinner ? Number(ownWinner.rank) : null
+              const nextWinningBid = ownWinner ? Number(ownWinner.winning_bid) : null
+
+              if (
+                current.wildcard.status === nextStatus
+                && current.wildcard.rank === nextRank
+                && current.wildcard.winningBid === nextWinningBid
+              ) {
+                return current
+              }
+
               const next = {
                 ...current,
                 wildcard: {
                   ...current.wildcard,
-                  status: ownWinner ? 'qualified' : 'eliminated',
-                  rank: ownWinner ? Number(ownWinner.rank) : null,
-                  winningBid: ownWinner ? Number(ownWinner.winning_bid) : null,
+                  status: nextStatus,
+                  rank: nextRank,
+                  winningBid: nextWinningBid,
                 },
               }
 
@@ -475,27 +582,39 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
             setDashboard((current) => {
               if (!current?.wildcard) return current
 
+              const nextRank = message.payload.next_rank == null
+                ? null
+                : Number(message.payload.next_rank)
+              const nextTeam = message.payload.next_team == null
+                ? null
+                : String(message.payload.next_team)
+              const nextStartedAt = message.payload.selection_started_at == null
+                ? null
+                : String(message.payload.selection_started_at)
+              const nextEndsAt = message.payload.selection_ends_at == null
+                ? null
+                : String(message.payload.selection_ends_at)
+              const isSelectionTurn = nextTeamId === current.team.id
+
+              if (
+                current.wildcard.currentSelectionRank === nextRank
+                && current.wildcard.currentSelectionTeam === nextTeam
+                && current.wildcard.isSelectionTurn === isSelectionTurn
+                && current.wildcard.selectionStartedAt === nextStartedAt
+                && current.wildcard.selectionEndsAt === nextEndsAt
+              ) {
+                return current
+              }
+
               const next = {
                 ...current,
                 wildcard: {
                   ...current.wildcard,
-                  currentSelectionRank:
-                    message.payload.next_rank == null
-                      ? null
-                      : Number(message.payload.next_rank),
-                  currentSelectionTeam:
-                    message.payload.next_team == null
-                      ? null
-                      : String(message.payload.next_team),
-                  isSelectionTurn: nextTeamId === current.team.id,
-                  selectionStartedAt:
-                    message.payload.selection_started_at == null
-                      ? null
-                      : String(message.payload.selection_started_at),
-                  selectionEndsAt:
-                    message.payload.selection_ends_at == null
-                      ? null
-                      : String(message.payload.selection_ends_at),
+                  currentSelectionRank: nextRank,
+                  currentSelectionTeam: nextTeam,
+                  isSelectionTurn,
+                  selectionStartedAt: nextStartedAt,
+                  selectionEndsAt: nextEndsAt,
                 },
               }
 
@@ -507,6 +626,23 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
               queueRefresh()
             }
 
+            return
+          }
+
+          // Test/final-choice branch compatibility. These actions affect fields
+          // only present in the full participant dashboard, so reconcile once
+          // through the jittered HTTP path rather than constructing partial data.
+          if (
+            [
+              'final_choice_opened',
+              'final_problem_confirmed',
+              'final_choice_completed',
+              'final_choice_ended',
+              'final_choice_timeout',
+            ].includes(action)
+          ) {
+            realtimeRevision.current += 1
+            queueRefresh()
             return
           }
 
@@ -538,7 +674,9 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
                 title: String(rawProblem.title),
                 summary: String(rawProblem.description ?? ''),
                 description: String(rawProblem.description ?? ''),
-                startingBid: Number(rawProblem.starting_bid ?? current.gameConfig.round1BaseBidPrice),
+                startingBid: Number(
+                  rawProblem.starting_bid ?? current.gameConfig.round1BaseBidPrice,
+                ),
               }
 
               const amount = Number(winner.amount)
@@ -574,10 +712,11 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           return
         }
 
+        // Unknown/low-frequency stateful events are reconciled silently.
         queueRefresh()
       },
       (status) => {
-        setSocketStatus(status)
+        setSocketStatus((current) => current === status ? current : status)
         socketStatusRef.current = status
 
         if (status === 'reconnected') {
@@ -592,7 +731,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       if (timer !== undefined) window.clearTimeout(timer)
       disconnect()
     }
-  }, [applyOwnBid, navigateToStageIfAllowed, refresh])
+  }, [applyOwnBid, navigateToStageIfAllowed, runRefresh])
 
   const value = useMemo(
     () => ({
