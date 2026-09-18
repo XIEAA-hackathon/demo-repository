@@ -20,5 +20,6 @@ export interface ParticipantService {
   getWildcardProblems(): Promise<WildcardProblem[]>
   placeWildcardBid(increment: BidIncrement): Promise<AcceptedBid>
   selectWildcardProblem(problemId: Id): Promise<WildcardProblem>
+  confirmFinalProblemChoice(choice: 'ROUND1' | 'WILDCARD'): Promise<void>
   submitGitHubRepository(repositoryUrl: string): Promise<Submission>
 }

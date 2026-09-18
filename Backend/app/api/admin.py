@@ -158,6 +158,8 @@ async def update_event_config_admin(
             raise HTTPException(status_code=400, detail=f"{field} must be > 0")
     if "wildcard_selection_seconds" in data and not 5 <= data["wildcard_selection_seconds"] <= 300:
         raise HTTPException(status_code=400, detail="wildcard_selection_seconds must be between 5 and 300")
+    if "wildcard_final_choice_seconds" in data and not 5 <= data["wildcard_final_choice_seconds"] <= 600:
+        raise HTTPException(status_code=400, detail="wildcard_final_choice_seconds must be between 5 and 600")
     if "round1_winner_count" in data and data["round1_winner_count"] != ROUND1_WINNER_COUNT:
         raise HTTPException(status_code=400, detail=f"round1_winner_count must be exactly {ROUND1_WINNER_COUNT}")
     if "round1_minimum_bid" in data and data["round1_minimum_bid"] < 0:

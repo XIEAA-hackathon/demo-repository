@@ -38,7 +38,7 @@ export default function WildcardSelectionPage() {
       await service.selectWildcardProblem(selected)
       await refresh()
       setPendingChange(false)
-      setMessage('Final problem confirmed.')
+      setMessage('Wildcard problem selected.')
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : 'Problem selection failed.')
     } finally { setWorking(false) }
@@ -50,7 +50,7 @@ export default function WildcardSelectionPage() {
   const selectionActive = dashboard.eventState === 'WILDCARD_SELECTION' && Boolean(wildcard?.isSelectionTurn)
   if (wildcard?.status === 'selected' && dashboard.wildcardProblem) {
     const automatic = wildcard.selectionMethod === 'timeout' || wildcard.selectionMethod === 'admin_end_turn'
-    return <div className="stack"><PageHeading eyebrow="Wildcard · Problem selection" title={wildcard.selectionMethod === 'timeout' ? 'Time expired' : automatic ? 'Selection turn ended' : 'Final problem confirmed'} /><Card className="center-card"><span className="confirmation-mark">{automatic ? '!' : '✓'}</span>{automatic && <p className="eyebrow">Problem automatically assigned</p>}<h2>Problem #{String(dashboard.wildcardProblem.number).padStart(2, '0')}</h2><p>{dashboard.wildcardProblem.title}</p><p className="muted">{dashboard.wildcardProblem.description}</p></Card></div>
+    return <div className="stack"><PageHeading eyebrow="Wildcard · Problem selection" title={wildcard.selectionMethod === 'timeout' ? 'Time expired' : automatic ? 'Selection turn ended' : 'Wildcard problem selected'} /><Card className="center-card"><span className="confirmation-mark">{automatic ? '!' : '✓'}</span>{automatic && <p className="eyebrow">Problem automatically assigned</p>}<h2>Problem #{String(dashboard.wildcardProblem.number).padStart(2, '0')}</h2><p>{dashboard.wildcardProblem.title}</p><p className="muted">{dashboard.wildcardProblem.description}</p><p className="muted">Your final problem choice opens after every winner selects.</p></Card></div>
   }
   if (wildcard?.status === 'eliminated') return <div className="stack"><PageHeading eyebrow="Wildcard · Result" title="Outside the qualifying slots" /><Card className="center-card"><p>Your slot bid did not finish in the top {wildcard.slotCount ?? dashboard.gameConfig.wildcardSlots}.</p></Card></div>
   if (wildcard?.status !== 'qualified') return <div className="stack"><PageHeading eyebrow="Wildcard · Problem selection" title="Selection in progress" /><Card className="center-card"><WaitingState text="Qualified teams are selecting their problems in rank order." /></Card></div>
@@ -58,7 +58,7 @@ export default function WildcardSelectionPage() {
   const selectionTiming = { ...dashboard.timing, startedAt: wildcard.selectionStartedAt, endsAt: wildcard.selectionEndsAt }
   return (
     <div className="stack">
-      <PageHeading eyebrow={`Wildcard · Rank #${wildcard.rank}`} title="Choose your final problem">It is your turn. Once confirmed, the next ranked team can choose.</PageHeading>
+      <PageHeading eyebrow={`Wildcard · Rank #${wildcard.rank}`} title="Choose your wildcard problem">It is your turn. Once confirmed, the next ranked team can choose.</PageHeading>
       <Card className={`wildcard-selection-timer${(wildcard.selectionRemainingSeconds ?? 99) <= 10 ? ' is-warning' : ''}`}><span>Time remaining</span><Countdown timing={selectionTiming} />{(wildcard.selectionRemainingSeconds ?? 99) <= 10 && <small>10 seconds remaining — choose now.</small>}</Card>
       <div className="problem-grid">
         {problems.map((item) => (
@@ -72,12 +72,12 @@ export default function WildcardSelectionPage() {
       {!loadingProblems && problemError && <Card className="center-card"><p className="error" role="alert">{problemError}</p><Button variant="secondary" onClick={() => void loadProblems()}>Retry</Button></Card>}
       {!loadingProblems && !problemError && !problems.length && <Card className="center-card"><p className="notice">No available problems remain. Ask the organizer to verify the Wildcard problem bank.</p><Button variant="secondary" onClick={() => void loadProblems()}>Retry</Button></Card>}
       <Card className="action-row">
-        <Button onClick={() => setPendingChange(true)} disabled={!permissions.canSelectWildcardProblem || !selectionActive || !selected}>Choose final problem</Button>
+        <Button onClick={() => setPendingChange(true)} disabled={!permissions.canSelectWildcardProblem || !selectionActive || !selected}>Choose wildcard problem</Button>
         {!permissions.canSelectWildcardProblem && <p className="notice">Only your team leader can confirm the problem. Teammates can view the available choices.</p>}
       </Card>
       {message && <p className={message.includes('confirmed') ? 'success' : 'error'} role="status">{message}</p>}
-      <Modal open={pendingChange} onClose={() => setPendingChange(false)} title="Confirm final problem?">
-        <div className="problem-swap"><div><span className="problem-swap__tag">Round 1 history</span><strong>{dashboard.roundOneProblem?.title ?? 'No assignment'}</strong></div><span className="problem-swap__arrow">→</span><div><span className="problem-swap__tag">Final</span><strong>{problems.find((problem) => problem.id === selected)?.title ?? '—'}</strong></div></div>
+      <Modal open={pendingChange} onClose={() => setPendingChange(false)} title="Confirm wildcard problem?">
+        <div className="problem-swap"><div><span className="problem-swap__tag">Round 1 history</span><strong>{dashboard.roundOneProblem?.title ?? 'No assignment'}</strong></div><span className="problem-swap__arrow">→</span><div><span className="problem-swap__tag">Wildcard</span><strong>{problems.find((problem) => problem.id === selected)?.title ?? '—'}</strong></div></div>
         <p className="notice">This choice cannot be changed after confirmation.</p><div className="modal__actions"><Button variant="secondary" onClick={() => setPendingChange(false)}>Cancel</Button><Button variant="gold" onClick={() => void confirm()} disabled={working}>{working ? 'Confirming…' : 'Confirm problem'}</Button></div>
       </Modal>
     </div>

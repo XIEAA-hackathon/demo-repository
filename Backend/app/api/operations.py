@@ -249,6 +249,9 @@ async def development_reset(
         team.ps_id = None
         team.round1_problem_id = None
         team.wildcard_problem_id = None
+        team.final_problem_choice = None
+        team.final_problem_confirmed_at = None
+        team.final_problem_defaulted = False
         team.round1_assignment_type = None
         team.round1_assignment_cost = None
     db.query(ProblemStatement).update({ProblemStatement.status: "available"}, synchronize_session=False)

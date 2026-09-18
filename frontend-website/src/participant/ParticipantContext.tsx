@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { participantService } from './services/apiParticipantService'
 import type { ParticipantService } from './services/participantService'
 import { connectEventSocket } from './services/eventSocket'
@@ -43,7 +43,24 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
   const realtimeRevision = useRef(0)
   const socketStatusRef = useRef('connecting')
   const navigate = useNavigate()
+  const location = useLocation()
+  const pathnameRef = useRef(location.pathname)
 
+  useEffect(() => {
+    pathnameRef.current = location.pathname
+  }, [location.pathname])
+  const navigateToStageIfAllowed = useCallback(
+  (state: ParticipantEventState) => {
+    if (pathnameRef.current === '/participant/dashboard') return
+
+    const target = getStageRoute(state).path
+
+    if (pathnameRef.current !== target) {
+      navigate(target, { replace: true })
+    }
+  },
+  [navigate],
+)
   const refresh = useCallback(() => {
     if (refreshInFlight.current) return refreshInFlight.current
     const startedAt = Date.now()
@@ -73,6 +90,9 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     refreshInFlight.current = request
     void request.finally(() => {
       if (refreshInFlight.current === request) refreshInFlight.current = null
+      // Bootstrap still needs a complete dashboard if the first HTTP result
+      // lost a race with a socket snapshot (including in a background tab).
+      if (!dashboardRef.current && requestRevision !== realtimeRevision.current) void refresh()
     })
     return request
   }, [])
@@ -194,7 +214,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         const next = lastSuccessfulRefreshStartedAt.current >= eventAt
           ? dashboardRef.current
           : await refresh()
-        if (next && shouldNavigateNow) navigate(getStageRoute(next.eventState).path, { replace: true })
+        if (next && shouldNavigateNow) navigateToStageIfAllowed(next.eventState)
       }, jitterMilliseconds(250, 900))
     }
     const disconnect = connectEventSocket((message) => {
@@ -207,6 +227,23 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       }
       setRealtimeEvent(message)
 
+      if (message.type === 'lab_assignment_changed') {
+        if (String(message.payload.team_id) !== dashboardRef.current?.team.id) return
+        const lab = message.payload.lab as ParticipantDashboard['lab']
+        const previousLab = dashboardRef.current?.lab
+        if (lab?.assignment_id && previousLab?.assignment_id && (lab.assignment_id < previousLab.assignment_id
+          || (lab.assignment_id === previousLab.assignment_id && (lab.version ?? 0) < (previousLab.version ?? 0)))) return
+        realtimeRevision.current += 1
+        setDashboard(current => {
+          if (!current) return current
+          const next = { ...current, lab: lab ?? null, labAllocationReady: Boolean(message.payload.labAllocationReady), labAllocationStatus: lab ? 'ASSIGNED' as const : 'PENDING' as const }
+          dashboardRef.current = next
+          return next
+        })
+        setLastSyncAt(Date.now())
+        return
+      }
+
       if (message.type === 'event_snapshot' || message.type === 'event_state_changed' || message.type === 'timer_sync') {
         realtimeRevision.current += 1
         const rawState = message.payload.event_state
@@ -214,12 +251,31 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           ? rawState as ParticipantEventState
           : null
         const rawTiming = message.payload.timing as Record<string, unknown> | undefined
-        if (nextState || rawTiming) {
+        const wildcardRound = (
+          message.payload.rounds as {
+            WILDCARD?: {
+              status?: string
+              ended?: boolean
+              applications_open?: boolean
+            }
+          } | undefined
+        )?.WILDCARD
+        if (nextState || rawTiming || wildcardRound)  {
           setDashboard((current) => {
             if (!current) return current
             const next = {
               ...current,
               eventState: nextState ?? current.eventState,
+
+              wildcardApplicationsOpen:
+                wildcardRound?.applications_open == null
+                  ? current.wildcardApplicationsOpen
+                  : Boolean(wildcardRound.applications_open),
+
+              labAllocationReady:
+                wildcardRound?.ended == null
+                  ? current.labAllocationReady
+                  : Boolean(wildcardRound.ended),
               timing: rawTiming ? {
                 serverTime: String(rawTiming.server_time ?? message.server_time),
                 receivedAt: Number(rawTiming.received_at ?? Date.now()),
@@ -228,6 +284,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
                 endsAt: rawTiming.ends_at == null ? null : String(rawTiming.ends_at),
                 paused: Boolean(rawTiming.paused),
                 pausedRemainingSeconds: rawTiming.paused_remaining_seconds == null ? null : Number(rawTiming.paused_remaining_seconds),
+                remainingSeconds: rawTiming.remaining_seconds == null ? null : Number(rawTiming.remaining_seconds),
               } : current.timing,
             }
             dashboardRef.current = next
@@ -235,7 +292,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
             setApiStatus('healthy')
             return next
           })
-          if (nextState) navigate(getStageRoute(nextState).path, { replace: true })
+          if (nextState && message.type === 'event_state_changed') navigateToStageIfAllowed(nextState)
         }
         return
       }
@@ -304,6 +361,11 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           if (selectedTeamId === ownTeamId || nextTeamId === ownTeamId) queueRefresh()
           return
         }
+        if (['final_choice_opened', 'final_problem_confirmed', 'final_choice_completed', 'final_choice_ended', 'final_choice_timeout'].includes(action)) {
+          realtimeRevision.current += 1
+          queueRefresh()
+          return
+        }
         return
       }
       if (message.type === 'participant_presence_changed') return
@@ -361,7 +423,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       if (timer !== undefined) window.clearTimeout(timer)
       disconnect()
     }
-  }, [applyOwnBid, navigate, refresh])
+  }, [applyOwnBid, navigateToStageIfAllowed, refresh])
 
   const value = useMemo(
     () => ({ dashboard, loading, error, socketStatus, apiStatus, lastSyncAt, documentHidden, refreshPending, realtimeEvent, service: participantService, refresh, recordAcceptedBid: applyOwnBid }),

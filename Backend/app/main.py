@@ -8,16 +8,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
-from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging, management
-from app.core.database import initialize_database, SessionLocal
+from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging, management, labs
+from app.core.database import engine, initialize_database, SessionLocal
 from app.core.logging import install_sensitive_query_redaction
 from app.models import models
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.services.demo_seed import provision_demo_accounts
-from app.services.event_service import event_snapshot, event_timing, get_or_create_event_config, get_or_create_game_config, upgrade_legacy_starting_coins
+from app.services.lab_admin import provision_lab_admin_account
+from app.services.event_service import (
+    event_snapshot,
+    event_timing,
+    get_or_create_event_config,
+    get_or_create_game_config,
+    get_or_create_round_control,
+    upgrade_legacy_starting_coins,
+)
 from app.services.event_service import sync_expired_event_state
-from app.services.wildcard_service import reconcile_wildcard_selection
+from app.services.wildcard_service import reconcile_final_choice, reconcile_wildcard_selection
 from app.api.websockets import manager
 
 logger = logging.getLogger("uvicorn.error")
@@ -38,6 +46,8 @@ def validate_startup_configuration() -> None:
             raise RuntimeError("A unique SECRET_KEY of at least 32 characters is required in production.")
         if settings.ENABLE_EVENT_RESET:
             raise RuntimeError("ENABLE_EVENT_RESET must be false in production.")
+        if not settings.LAB_ADMIN_EMAIL.strip() or not settings.LAB_ADMIN_PASSWORD:
+            raise RuntimeError("LAB_ADMIN_EMAIL and LAB_ADMIN_PASSWORD are required in production.")
 
 
 TIMER_SYNC_INTERVAL_SECONDS = 10
@@ -46,6 +56,7 @@ TIMER_SYNC_STATES = {
     "ROUND1_BIDDING",
     "WILDCARD_APPLICATION",
     "WILDCARD_BIDDING",
+    "WILDCARD_FINAL_CHOICE",
 }
 
 
@@ -53,23 +64,44 @@ def _process_expiry_database_cycle(
     session_factory,
     *,
     include_timer_sync: bool = False,
-) -> tuple[list[str], dict | None, dict | None, dict | None]:
+) -> tuple[list[str], dict | None, dict | None, dict | None, dict | None]:
     """Run synchronous SQLAlchemy expiry work outside the asyncio event loop."""
     actions: list[str] = []
     wildcard_assignment = None
+    final_choice_timeout = None
     snapshot = None
     timer_sync = None
     db = session_factory()
     try:
-        actions = sync_expired_event_state(db)
-        wildcard_assignment = reconcile_wildcard_selection(db)
+        # One singleton read is the complete ordinary one-second cycle. Extra
+        # queries are reserved for an observed expiry or an active selection.
+        config = db.query(models.GameConfig).order_by(models.GameConfig.id.asc()).first()
+        if config is None:
+            return actions, wildcard_assignment, final_choice_timeout, snapshot, timer_sync
+        actions = sync_expired_event_state(db, config=config)
+        wildcard_assignment = (
+            reconcile_wildcard_selection(db)
+            if config.state == "WILDCARD_SELECTION" else None
+        )
         if wildcard_assignment:
             actions.append("wildcard_selection_timeout")
+            wildcard_assignment["lab_assignment_changes"] = db.info.pop("lab_assignment_changes", [])
+        final_choice_timeout = (
+            reconcile_final_choice(db)
+            if config.state == "WILDCARD_FINAL_CHOICE" else None
+        )
+        if final_choice_timeout:
+            actions.append("wildcard_final_choice_timeout")
+            if final_choice_timeout.get("completed"):
+                from app.services.lab_allocation import try_allocate_labs
+
+                lab_count = try_allocate_labs(db)
+                final_choice_timeout["lab_allocation_team_count"] = lab_count
+                final_choice_timeout["lab_assignment_changes"] = db.info.pop("lab_assignment_changes", [])
         if actions:
-            snapshot = event_snapshot(db)
+            snapshot = event_snapshot(db, config=config)
         elif include_timer_sync:
-            config = db.query(models.GameConfig).order_by(models.GameConfig.id.asc()).first()
-            if config and config.state in TIMER_SYNC_STATES and (
+            if config.state in TIMER_SYNC_STATES and (
                 config.timer_paused or config.auction_timer_end is not None
             ):
                 timer_sync = {"event_state": config.state, "timing": event_timing(config)}
@@ -78,7 +110,7 @@ def _process_expiry_database_cycle(
         raise
     finally:
         db.close()
-    return actions, wildcard_assignment, snapshot, timer_sync
+    return actions, wildcard_assignment, final_choice_timeout, snapshot, timer_sync
 
 
 async def process_expiry_cycle(
@@ -88,13 +120,33 @@ async def process_expiry_cycle(
     emit_timer_sync: bool = False,
 ) -> list[str]:
     """Persist one expiry cycle, then publish its committed authoritative snapshot."""
-    actions, wildcard_assignment, snapshot, timer_sync = await run_in_threadpool(
+    actions, wildcard_assignment, final_choice_timeout, snapshot, timer_sync = await run_in_threadpool(
         _process_expiry_database_cycle,
         session_factory,
         include_timer_sync=emit_timer_sync,
     )
 
     # All database work is committed and the session is closed before network I/O.
+    if final_choice_timeout:
+        await connection_manager.broadcast_event(
+            "wildcard_updated",
+            {
+                "action": "final_choice_timeout",
+                "reason": final_choice_timeout.get("reason"),
+                "defaulted": final_choice_timeout.get("defaulted", []),
+                "completed": final_choice_timeout.get("completed"),
+            },
+        )
+        if final_choice_timeout.get("lab_allocation_team_count") is not None:
+            connection_manager.publish_event(
+                "lab_allocation_updated",
+                {
+                    "action": "auto_allocated",
+                    "team_count": final_choice_timeout["lab_allocation_team_count"],
+                    "assignments": final_choice_timeout.get("lab_assignment_changes", []),
+                },
+                roles={"admin", "lab_admin"},
+            )
     if wildcard_assignment:
         await connection_manager.broadcast_event(
             "wildcard_updated",
@@ -111,6 +163,18 @@ async def process_expiry_cycle(
                 "selection_ends_at": wildcard_assignment["selection_ends_at"],
             },
         )
+        if wildcard_assignment.get("final_choice_opened"):
+            await connection_manager.broadcast_event("wildcard_updated", {"action": "final_choice_opened"})
+        if wildcard_assignment.get("lab_allocation_team_count") is not None:
+            connection_manager.publish_event(
+                "lab_allocation_updated",
+                {
+                    "action": "auto_allocated",
+                    "team_count": wildcard_assignment["lab_allocation_team_count"],
+                    "assignments": wildcard_assignment.get("lab_assignment_changes", []),
+                },
+                roles={"admin", "lab_admin"},
+            )
     if actions:
         await connection_manager.broadcast_event(
             "event_state_changed",
@@ -156,12 +220,15 @@ async def lifespan(app: FastAPI):
             db.add(admin_user)
         if admin_user:
             admin_user.is_system_account = True
+        provision_lab_admin_account(db)
         provision_demo_accounts(db)
         db.commit()
 
-        # Ensure singleton EventConfig + GameConfig rows exist
+        # Startup owns singleton creation so request and snapshot paths stay read-only.
         get_or_create_event_config(db)
         get_or_create_game_config(db)
+        get_or_create_round_control(db, "ROUND1")
+        get_or_create_round_control(db, "WILDCARD")
         upgraded_teams = upgrade_legacy_starting_coins(db)
         if upgraded_teams:
             logger.info("Upgraded %s legacy team wallets to 5,000 starting coins.", upgraded_teams)
@@ -200,6 +267,7 @@ app.include_router(websockets.router, tags=["WebSockets"])
 app.include_router(operations.router, tags=["Event Operations"])
 app.include_router(judging.router, tags=["Judging and Public Results"])
 app.include_router(management.router, tags=["Managed Users"])
+app.include_router(labs.router, tags=["Lab Allocation"])
 
 
 @app.exception_handler(SQLAlchemyError)
@@ -222,7 +290,18 @@ def readiness_check():
     db = SessionLocal()
     try:
         db.execute(text("SELECT 1"))
-        return {"status": "ready", "database": "healthy"}
+        pool = engine.pool
+        pool_diagnostics = {
+            "checked_out": pool.checkedout() if hasattr(pool, "checkedout") else None,
+            "size": pool.size() if hasattr(pool, "size") else None,
+            "overflow_in_use": max(0, pool.overflow()) if hasattr(pool, "overflow") else None,
+        }
+        return {
+            "status": "ready",
+            "database": "healthy",
+            "database_pool": pool_diagnostics,
+            "websocket": manager.diagnostics(),
+        }
     finally:
         db.close()
 

@@ -16,6 +16,7 @@ import RoundResultPage from './pages/RoundResultPage'
 import SubmissionPage from './pages/SubmissionPage'
 import WildcardApplicationPage from './pages/WildcardApplicationPage'
 import WildcardBiddingPage from './pages/WildcardBiddingPage'
+import WildcardFinalChoicePage from './pages/WildcardFinalChoicePage'
 import WildcardSelectionPage from './pages/WildcardSelectionPage'
 
 const eventPage = (state: Parameters<typeof EventRoute>[0]['state'], page: React.ReactNode) => (
@@ -36,6 +37,7 @@ export default function ParticipantApp() {
           <Route path="wildcard" element={eventPage('WILDCARD_APPLICATION', <WildcardApplicationPage />)} />
           <Route path="wildcard/bid" element={eventPage('WILDCARD_BIDDING', <WildcardBiddingPage />)} />
           <Route path="wildcard/select" element={eventPage('WILDCARD_SELECTION', <WildcardSelectionPage />)} />
+          <Route path="wildcard/choose" element={eventPage('WILDCARD_FINAL_CHOICE', <WildcardFinalChoicePage />)} />
           <Route path="coding" element={eventPage('CODING', <CodingPage />)} />
           <Route path="submission" element={eventPage('SUBMISSION', <SubmissionPage />)} />
           <Route path="judging" element={eventPage('JUDGING_WAIT', <JudgingWaitPage />)} />

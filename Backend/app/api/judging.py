@@ -199,6 +199,7 @@ def public_event_display(
         "ROUND1_RESULT": "Round 1 results",
         "WILDCARD_APPLICATION": "Wildcard applications",
         "WILDCARD_SELECTION": "Wildcard problem selection",
+        "WILDCARD_FINAL_CHOICE": "Wildcard final choice",
         "CODING": "Coding in progress",
         "SUBMISSION": "Submission window",
         "JUDGING_WAIT": "Judging in progress",
@@ -228,7 +229,7 @@ def public_event_display(
         "results": None,
         "timing": timing,
     }
-    if game.state == "WILDCARD_SELECTION":
+    if game.state in {"WILDCARD_SELECTION", "WILDCARD_FINAL_CHOICE"}:
         payload["available_wildcard_problems"] = [
             _public_problem_payload(available_problem)
             for available_problem in available_wildcard_problems(db)

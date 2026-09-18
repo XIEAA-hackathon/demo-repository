@@ -143,6 +143,7 @@ export const confirmWildcardSlots = (slots) => request("/admin/rounds/wildcard/s
 export const startWildcardSlotBidding = () => request("/admin/rounds/wildcard/bidding/start", { method: "POST" });
 export const closeWildcardSlotBidding = () => request("/admin/rounds/wildcard/bidding/close", { method: "POST" });
 export const endWildcardSelectionTurn = (expectedRank, expectedTeamId) => request("/admin/rounds/wildcard/selection/end-turn", { method: "POST", body: JSON.stringify({ expected_rank: expectedRank, expected_team_id: expectedTeamId }) });
+export const endWildcardFinalChoice = () => request("/admin/rounds/wildcard/final-choice/end", { method: "POST" });
 export const getAdminSubmissions = () => request("/admin/submissions");
 export const openSubmissions = () => request("/admin/submissions/open", { method: "POST" });
 export const closeSubmissions = () => request("/admin/submissions/close", { method: "POST" });

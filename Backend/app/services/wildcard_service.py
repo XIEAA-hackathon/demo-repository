@@ -23,6 +23,7 @@ from app.services.event_service import (
     get_or_create_event_config,
     get_or_create_game_config,
     get_or_create_round_control,
+    transition_event_state,
 )
 
 WILDCARD_STATES = (
@@ -32,11 +33,16 @@ WILDCARD_STATES = (
     "BIDDING_OPEN",
     "BIDDING_CLOSED",
     "PROBLEM_SELECTION",
+    "FINAL_CHOICE",
     "COMPLETE",
 )
 
 
 class WildcardSelectionConflict(ValueError):
+    pass
+
+
+class FinalChoiceConflict(ValueError):
     pass
 
 
@@ -55,6 +61,33 @@ def clear_selection_timer(control: RoundControl) -> None:
     control.selection_started_at = None
     control.selection_ends_at = None
     control.selection_duration_seconds = None
+
+
+def clear_final_choice_timer(control: RoundControl) -> None:
+    control.final_choice_started_at = None
+    control.final_choice_ends_at = None
+    control.final_choice_duration_seconds = None
+
+
+def start_final_choice_timer(
+    db: Session,
+    control: RoundControl,
+    *,
+    now: datetime | None = None,
+) -> int:
+    started_at = now or utc_now()
+    duration = max(5, min(600, get_or_create_event_config(db).wildcard_final_choice_seconds or 60))
+    control.final_choice_started_at = started_at
+    control.final_choice_ends_at = started_at + timedelta(seconds=duration)
+    control.final_choice_duration_seconds = duration
+    return duration
+
+
+def final_choice_remaining_seconds(control: RoundControl, *, now: datetime | None = None) -> int | None:
+    ends_at = as_utc(control.final_choice_ends_at)
+    if ends_at is None:
+        return None
+    return max(0, ceil((ends_at - (now or utc_now())).total_seconds()))
 
 
 def start_selection_timer(
@@ -83,6 +116,322 @@ def selection_remaining_seconds(control: RoundControl, *, now: datetime | None =
     if ends_at is None:
         return None
     return max(0, ceil((ends_at - (now or utc_now())).total_seconds()))
+
+
+def enter_final_choice_or_complete(db: Session, control: RoundControl, *, now: datetime | None = None) -> str:
+    """Open the final problem choice period once ranked selection is done.
+
+    Called after the last ranked Wildcard problem selection (or when no
+    selection turn remains). Never touches winner payment: coins were
+    already deducted exactly once at bid finalization.
+    """
+    opened_at = now or utc_now()
+    selected_count = db.query(Wildcard).filter(Wildcard.status == "selected").count()
+    clear_selection_timer(control)
+    if selected_count:
+        control.status = "FINAL_CHOICE"
+        control.ended = False
+        start_final_choice_timer(db, control, now=opened_at)
+        transition_event_state(db, "WILDCARD_FINAL_CHOICE", validate=False, commit=False)
+        record_event(
+            db,
+            "wildcard.final_choice_opened",
+            actor_type="system",
+            metadata={"team_count": selected_count},
+        )
+        return "FINAL_CHOICE"
+    control.status = "COMPLETE"
+    control.ended = True
+    clear_final_choice_timer(control)
+    record_event(db, "wildcard.completed_without_winners", actor_type="system")
+    return "COMPLETE"
+
+
+def pending_final_choice_teams(db: Session) -> list[tuple[Wildcard, Team]]:
+    return (
+        db.query(Wildcard, Team)
+        .join(Team, Team.id == Wildcard.team_id)
+        .filter(Wildcard.status == "selected", Team.final_problem_choice.is_(None))
+        .order_by(Wildcard.rank.asc())
+        .all()
+    )
+
+
+def complete_final_choice_if_ready(db: Session, control: RoundControl, *, now: datetime | None = None) -> bool:
+    """Mark Wildcard COMPLETE once every winner confirmed/defaulted.
+
+    Lab allocation is the caller's responsibility so broadcasts can include
+    the assignment payload, matching the existing selection flow.
+    """
+    if pending_final_choice_teams(db):
+        return False
+    control.status = "COMPLETE"
+    control.ended = True
+    clear_final_choice_timer(control)
+    record_event(db, "wildcard.final_choice_completed", actor_type="system")
+    return True
+
+
+def _final_choice_problems(db: Session, team: Team) -> tuple[ProblemStatement | None, ProblemStatement | None]:
+    round1_problem = (
+        db.query(ProblemStatement).filter(ProblemStatement.id == team.round1_problem_id).first()
+        if team.round1_problem_id else None
+    )
+    wildcard_problem = (
+        db.query(ProblemStatement).filter(ProblemStatement.id == team.wildcard_problem_id).first()
+        if team.wildcard_problem_id else None
+    )
+    return round1_problem, wildcard_problem
+
+
+def confirm_final_problem_choice(
+    db: Session,
+    *,
+    team_id: int,
+    choice: str,
+    actor=None,
+    now: datetime | None = None,
+) -> dict:
+    """Persist one Wildcard winner's final problem choice.
+
+    Financial invariant: this function never reads or writes team.coins,
+    Wildcard.winning_bid, Wildcard.coins_paid, or WalletTransaction. The
+    winning bid was already deducted exactly once at bid finalization.
+    """
+    if choice not in ("ROUND1", "WILDCARD"):
+        raise FinalChoiceConflict('Final choice must be "ROUND1" or "WILDCARD".')
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.round_type == "WILDCARD")
+        .with_for_update()
+        .one_or_none()
+    )
+    if control is None or control.status != "FINAL_CHOICE":
+        raise FinalChoiceConflict("Final problem choice is not open.")
+    team = (
+        db.query(Team)
+        .filter(Team.id == team_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    if team is None:
+        raise FinalChoiceConflict("Team not found.")
+    application = (
+        db.query(Wildcard)
+        .filter(Wildcard.team_id == team.id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    if application is None or application.status != "selected":
+        raise FinalChoiceConflict("Only Wildcard winners choose a final problem.")
+    if team.final_problem_choice is not None:
+        raise FinalChoiceConflict("Final problem is already confirmed.")
+    round1_problem, wildcard_problem = _final_choice_problems(db, team)
+    if choice == "ROUND1" and round1_problem is None:
+        raise FinalChoiceConflict("No Round 1 problem is available for this team.")
+    if choice == "WILDCARD" and wildcard_problem is None:
+        raise FinalChoiceConflict("No Wildcard problem is available for this team.")
+    confirmed_at = now or utc_now()
+    final_problem = round1_problem if choice == "ROUND1" else wildcard_problem
+    team.ps_id = final_problem.id
+    team.final_problem_choice = choice
+    team.final_problem_confirmed_at = confirmed_at
+    team.final_problem_defaulted = False
+    db.flush()
+    record_event(
+        db,
+        "wildcard.final_problem_confirmed",
+        actor=actor,
+        actor_type="system" if actor is None else None,
+        entity_type="team",
+        entity_id=team.id,
+        metadata={
+            "team_id": team.id,
+            "choice": choice,
+            "round1_problem_id": team.round1_problem_id,
+            "wildcard_problem_id": team.wildcard_problem_id,
+            "final_problem_id": final_problem.id,
+            "winning_bid": application.winning_bid,
+            "coins_paid": application.coins_paid,
+        },
+    )
+    completed = complete_final_choice_if_ready(db, control, now=confirmed_at)
+    return {
+        "team_id": team.id,
+        "team_name": team.team_name,
+        "choice": choice,
+        "final_problem": problem_payload(final_problem),
+        "round1_problem": problem_payload(round1_problem) if round1_problem else None,
+        "wildcard_problem": problem_payload(wildcard_problem) if wildcard_problem else None,
+        "confirmed_at": confirmed_at,
+        "defaulted": False,
+        "winning_bid": application.winning_bid,
+        "coins_paid": application.coins_paid,
+        "completed": completed,
+    }
+
+
+def default_pending_final_choices(
+    db: Session,
+    control: RoundControl,
+    *,
+    reason: str,
+    actor=None,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Default every unconfirmed winner to their Round 1 problem.
+
+    The Wildcard slot payment is never refunded: coins, winning_bid,
+    coins_paid, and wallet history are left untouched.
+    """
+    defaulted_at = now or utc_now()
+    results = []
+    for application, team in pending_final_choice_teams(db):
+        locked_team = (
+            db.query(Team)
+            .filter(Team.id == team.id)
+            .with_for_update()
+            .populate_existing()
+            .one()
+        )
+        round1_problem, wildcard_problem = _final_choice_problems(db, locked_team)
+        # Teams without a Round 1 assignment keep the Wildcard problem they
+        # already earned; every other pending team defaults to Round 1.
+        if round1_problem is not None:
+            locked_team.ps_id = round1_problem.id
+            locked_team.final_problem_choice = "ROUND1"
+        else:
+            locked_team.ps_id = wildcard_problem.id if wildcard_problem else locked_team.ps_id
+            locked_team.final_problem_choice = "WILDCARD"
+        locked_team.final_problem_confirmed_at = defaulted_at
+        locked_team.final_problem_defaulted = True
+        db.flush()
+        record_event(
+            db,
+            "wildcard.final_problem_defaulted",
+            actor=actor,
+            actor_type="system" if actor is None else None,
+            entity_type="team",
+            entity_id=locked_team.id,
+            metadata={
+                "team_id": locked_team.id,
+                "choice": locked_team.final_problem_choice,
+                "reason": reason,
+                "round1_problem_id": locked_team.round1_problem_id,
+                "wildcard_problem_id": locked_team.wildcard_problem_id,
+                "final_problem_id": locked_team.ps_id,
+                "winning_bid": application.winning_bid,
+                "coins_paid": application.coins_paid,
+            },
+        )
+        results.append({
+            "team_id": locked_team.id,
+            "team_name": locked_team.team_name,
+            "choice": locked_team.final_problem_choice,
+            "reason": reason,
+            "confirmed_at": defaulted_at,
+            "defaulted": True,
+            "winning_bid": application.winning_bid,
+            "coins_paid": application.coins_paid,
+        })
+    complete_final_choice_if_ready(db, control, now=defaulted_at)
+    return results
+
+
+def reconcile_final_choice(db: Session, *, now: datetime | None = None) -> dict | None:
+    """Default unconfirmed winners once the server-owned choice timer expires.
+
+    The ordinary path is a cheap non-locking projection; the shared control
+    row is locked only after an expiry is observed, mirroring selection
+    reconciliation.
+    """
+    check_time = now or utc_now()
+    candidate = (
+        db.query(RoundControl.id, RoundControl.status, RoundControl.final_choice_ends_at)
+        .filter(RoundControl.round_type == "WILDCARD")
+        .one_or_none()
+    )
+    if (
+        candidate is None
+        or candidate.status != "FINAL_CHOICE"
+        or candidate.final_choice_ends_at is None
+        or as_utc(candidate.final_choice_ends_at) > check_time
+    ):
+        return None
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.id == candidate.id)
+        .with_for_update()
+        .populate_existing()
+        .one()
+    )
+    if (
+        control.status != "FINAL_CHOICE"
+        or control.final_choice_ends_at is None
+        or as_utc(control.final_choice_ends_at) > check_time
+    ):
+        return None
+    pending = pending_final_choice_teams(db)
+    if not pending:
+        complete_final_choice_if_ready(db, control, now=check_time)
+        db.commit()
+        return {"completed": True, "defaulted": [], "reason": "timeout"}
+    results = default_pending_final_choices(db, control, reason="timeout", now=check_time)
+    db.commit()
+    return {"completed": control.status == "COMPLETE", "defaulted": results, "reason": "timeout"}
+
+
+def final_choice_payload(db: Session, control: RoundControl | None = None) -> dict:
+    control = control or get_or_create_round_control(db, "WILDCARD")
+    rows = (
+        db.query(Wildcard, Team)
+        .join(Team, Team.id == Wildcard.team_id)
+        .filter(Wildcard.status == "selected")
+        .order_by(Wildcard.rank.asc())
+        .all()
+    )
+    problem_ids = {
+        problem_id
+        for _, team in rows
+        for problem_id in (team.round1_problem_id, team.wildcard_problem_id, team.ps_id)
+        if problem_id is not None
+    }
+    problems_by_id = (
+        {problem.id: problem for problem in db.query(ProblemStatement).filter(ProblemStatement.id.in_(problem_ids)).all()}
+        if problem_ids else {}
+    )
+    entries = []
+    for application, team in rows:
+        if team.final_problem_choice is None:
+            status = "WAITING"
+        elif team.final_problem_defaulted:
+            status = "DEFAULTED TO ROUND1"
+        else:
+            status = team.final_problem_choice
+        entries.append({
+            "rank": application.rank,
+            "team_id": team.id,
+            "team_name": team.team_name,
+            "round1_problem": problem_payload(problems_by_id[team.round1_problem_id]) if team.round1_problem_id in problems_by_id else None,
+            "wildcard_problem": problem_payload(problems_by_id[team.wildcard_problem_id]) if team.wildcard_problem_id in problems_by_id else None,
+            "winning_bid": application.winning_bid,
+            "coins_paid": application.coins_paid,
+            "final_choice": team.final_problem_choice,
+            "status": status,
+            "confirmed_at": team.final_problem_confirmed_at,
+        })
+    return {
+        "open": control.status == "FINAL_CHOICE",
+        "pending_count": sum(1 for _, team in rows if team.final_problem_choice is None),
+        "confirmed_count": sum(1 for _, team in rows if team.final_problem_choice is not None),
+        "started_at": control.final_choice_started_at,
+        "ends_at": control.final_choice_ends_at,
+        "duration_seconds": control.final_choice_duration_seconds,
+        "remaining_seconds": final_choice_remaining_seconds(control),
+        "entries": entries,
+    }
 
 
 def display_problem_number(problem: ProblemStatement) -> str:
@@ -194,7 +543,7 @@ def ranked_wildcard_bids(db: Session) -> list[tuple[WildcardBid, Team, Wildcard]
 
 def ranking_payload(db: Session, control: RoundControl | None = None) -> list[dict]:
     control = control or get_or_create_round_control(db, "WILDCARD")
-    finalized = control.status in {"PROBLEM_SELECTION", "COMPLETE"}
+    finalized = control.status in {"PROBLEM_SELECTION", "FINAL_CHOICE", "COMPLETE"}
     rows = []
     for position, (bid, team, application) in enumerate(ranked_wildcard_bids(db), start=1):
         rows.append({
@@ -304,11 +653,17 @@ def _assign_locked_selection(
         previous = db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first()
         if previous and previous.round == 1:
             team.round1_problem_id = previous.id
+    # The Wildcard problem is recorded as history only. Team.ps_id keeps
+    # pointing at the Round 1 problem until the winner confirms a final
+    # problem choice (or the choice period defaults them to Round 1).
     team.wildcard_problem_id = problem.id
-    team.ps_id = problem.id
 
     db.flush()
-    next_active = start_selection_timer(db, control, now=assigned_at)
+    if current_selection(db) is None:
+        enter_final_choice_or_complete(db, control, now=assigned_at)
+        next_active = None
+    else:
+        next_active = start_selection_timer(db, control, now=assigned_at)
     action = "wildcard.problem_selected" if method == "manual" else "wildcard.problem_auto_assigned"
     record_event(
         db,
@@ -358,8 +713,7 @@ def assign_wildcard_selection(
     active = _locked_current_selection(db)
     if not active:
         clear_selection_timer(control)
-        control.status = "COMPLETE"
-        control.ended = True
+        enter_final_choice_or_complete(db, control, now=check_time)
         raise WildcardSelectionConflict("No Wildcard selection turn is active.")
     record, active_team = active
     if expected_rank is not None and (record.rank != expected_rank or active_team.id != expected_team_id):
@@ -396,7 +750,13 @@ def assign_wildcard_selection(
     result = _assign_locked_selection(
         db, control, active, problem, method=effective_method, actor=actor, now=check_time,
     )
+    result["final_choice_opened"] = control.status == "FINAL_CHOICE"
+    result["wildcard_complete"] = control.status == "COMPLETE"
     db.commit()
+    if control.status == "COMPLETE":
+        from app.services.lab_allocation import try_allocate_labs
+
+        result["lab_allocation_team_count"] = try_allocate_labs(db)
     return result
 
 
@@ -437,8 +797,7 @@ def reconcile_wildcard_selection(db: Session, *, now: datetime | None = None) ->
     active = _locked_current_selection(db)
     if not active:
         clear_selection_timer(control)
-        control.status = "COMPLETE"
-        control.ended = True
+        enter_final_choice_or_complete(db, control, now=check_time)
         db.commit()
         return None
     if control.current_selection_rank != active[0].rank or control.selection_ends_at is None:
@@ -451,7 +810,13 @@ def reconcile_wildcard_selection(db: Session, *, now: datetime | None = None) ->
     if not problem:
         raise WildcardSelectionConflict("No available Wildcard problem remains for automatic assignment.")
     result = _assign_locked_selection(db, control, active, problem, method="timeout", now=check_time)
+    result["final_choice_opened"] = control.status == "FINAL_CHOICE"
+    result["wildcard_complete"] = control.status == "COMPLETE"
     db.commit()
+    if control.status == "COMPLETE":
+        from app.services.lab_allocation import try_allocate_labs
+
+        result["lab_allocation_team_count"] = try_allocate_labs(db)
     return result
 
 
@@ -461,7 +826,7 @@ def finalize_slot_bidding(db: Session, control: RoundControl, *, commit: bool = 
     Ordering is bid amount descending, then the earlier timestamp at which the
     team's final amount was reached, then team id as a stable final fallback.
     """
-    if control.status in {"PROBLEM_SELECTION", "COMPLETE"}:
+    if control.status in {"PROBLEM_SELECTION", "FINAL_CHOICE", "COMPLETE"}:
         return [
             {
                 "rank": application.rank,
@@ -634,9 +999,11 @@ def wildcard_payload(db: Session) -> dict:
             "bidding_seconds": config.wildcard_bid_seconds,
             "bid_cooldown_seconds": config.bid_cooldown_seconds,
             "selection_seconds": config.wildcard_selection_seconds,
+            "final_choice_seconds": config.wildcard_final_choice_seconds,
             "base_price": config.wildcard_starting_bid,
             "wildcard_slots": control.slot_count or config.wildcard_slots,
         },
+        "final_choice": final_choice_payload(db, control),
         "event": event_snapshot(
             db,
             config=game,

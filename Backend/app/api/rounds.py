@@ -824,7 +824,7 @@ def public_round_leaderboard(
             "round": "WILDCARD",
             "label": "Wildcard Slot Auction",
             "slot_count": control.slot_count,
-            "finalized": control.status in {"PROBLEM_SELECTION", "COMPLETE"},
+            "finalized": control.status in {"PROBLEM_SELECTION", "FINAL_CHOICE", "COMPLETE"},
             "active": control.status == "BIDDING_OPEN",
             "base_price": event_config.wildcard_starting_bid,
             "rows": ranking_payload(db, control),

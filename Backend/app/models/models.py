@@ -45,6 +45,9 @@ class RoundControl(Base):
     selection_started_at = Column(DateTime(timezone=True), nullable=True)
     selection_ends_at = Column(DateTime(timezone=True), nullable=True)
     selection_duration_seconds = Column(Integer, nullable=True)
+    final_choice_started_at = Column(DateTime(timezone=True), nullable=True)
+    final_choice_ends_at = Column(DateTime(timezone=True), nullable=True)
+    final_choice_duration_seconds = Column(Integer, nullable=True)
     final_auto_assignment_problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
     final_auto_assignment_price = Column(Integer, nullable=True)
     final_auto_assignment_team_count = Column(Integer, nullable=True)
@@ -61,6 +64,9 @@ class Team(Base):
     ps_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
     round1_problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
     wildcard_problem_id = Column(Integer, ForeignKey("problem_statements.id", ondelete="SET NULL"), nullable=True)
+    final_problem_choice = Column(String, nullable=True) # ROUND1, WILDCARD, or NULL when unconfirmed
+    final_problem_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    final_problem_defaulted = Column(Boolean, nullable=False, default=False)
     round1_assignment_type = Column(String, nullable=True) # BID_WINNER, MANUAL_ASSIGNMENT
     round1_assignment_cost = Column(Integer, nullable=True)
     is_approved = Column(Boolean, default=True)
@@ -275,6 +281,7 @@ class EventConfig(Base):
     wildcard_preview_seconds = Column(Integer, default=120)
     wildcard_bid_seconds = Column(Integer, default=180)
     wildcard_selection_seconds = Column(Integer, default=30)
+    wildcard_final_choice_seconds = Column(Integer, default=60)
     wildcard_starting_bid = Column(Integer, default=150)
     wildcard_bid_increment = Column(Integer, default=1)
 

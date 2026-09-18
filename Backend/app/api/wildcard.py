@@ -15,7 +15,7 @@ from app.api.auth import BidAuthClaims, get_bid_auth_claims, get_current_active_
 from app.api.websockets import manager
 from app.core.database import SessionLocal, get_db
 from app.models.models import EventConfig, GameConfig, RoundControl, Team, User, Wildcard, WildcardBid
-from app.schemas.schemas import BidIncrementRequest, WildcardEndTurnRequest, WildcardSlotRequest
+from app.schemas.schemas import BidIncrementRequest, WildcardEndTurnRequest, WildcardFinalChoiceRequest, WildcardSlotRequest
 from app.services.event_service import (
     _remaining_seconds,
     ensure_leader,
@@ -30,10 +30,14 @@ from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_rejection
 from app.services.participant_session import participant_session_needs_touch
 from app.services.wildcard_service import (
+    FinalChoiceConflict,
     WildcardSelectionConflict,
     assign_wildcard_selection,
     available_wildcard_problems,
+    confirm_final_problem_choice,
     current_selection,
+    default_pending_final_choices,
+    final_choice_payload,
     finalize_slot_bidding,
     ranked_wildcard_bids,
     selection_remaining_seconds,
@@ -286,6 +290,7 @@ def get_wildcard_status(db: Session = Depends(get_db), current_user=Depends(get_
     team = get_team_for_user(db, current_user)
     record = db.query(Wildcard).filter(Wildcard.team_id == team.id).first() if team else None
     active = current_selection(db)
+    final_choice = final_choice_payload(db) if record and record.status == "selected" else None
     return {
         "visible": control.status != "NOT_STARTED",
         "enabled": bool((db.query(EventConfig).order_by(EventConfig.id.asc()).first() or EventConfig()).wildcard_enabled),
@@ -305,6 +310,10 @@ def get_wildcard_status(db: Session = Depends(get_db), current_user=Depends(get_
         "selection_ends_at": control.selection_ends_at,
         "selection_duration_seconds": control.selection_duration_seconds,
         "selection_remaining_seconds": selection_remaining_seconds(control),
+        "final_problem_choice": team.final_problem_choice if team else None,
+        "final_problem_confirmed_at": team.final_problem_confirmed_at if team else None,
+        "final_problem_defaulted": bool(team.final_problem_defaulted) if team else False,
+        "final_choice": final_choice,
     }
 
 
@@ -419,7 +428,7 @@ async def close_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
     )
     if control is None:
         raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
-    if control.status in {"BIDDING_CLOSED", "PROBLEM_SELECTION", "COMPLETE"}:
+    if control.status in {"BIDDING_CLOSED", "PROBLEM_SELECTION", "FINAL_CHOICE", "COMPLETE"}:
         logger.info(
             "Duplicate Wildcard bidding close ignored user_id=%s status=%s",
             current_user.id,
@@ -453,7 +462,7 @@ async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=De
     )
     if control is None:
         raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
-    if control.status in {"PROBLEM_SELECTION", "COMPLETE"}:
+    if control.status in {"PROBLEM_SELECTION", "FINAL_CHOICE", "COMPLETE"}:
         winners = finalize_slot_bidding(db, control)
         return {"winners": winners, **wildcard_payload(db)}
     if control.status != "BIDDING_CLOSED":
@@ -488,6 +497,10 @@ async def end_wildcard(db: Session = Depends(get_db), current_user=Depends(get_c
     applications = db.query(Wildcard).filter(Wildcard.status.in_(("applied", "qualified", "selected", "eliminated"))).count()
     winners = db.query(Wildcard).filter(Wildcard.status.in_(("qualified", "selected"))).count()
     selections = db.query(Wildcard).filter(Wildcard.status == "selected", Wildcard.problem_id.is_not(None)).count()
+    if control.status == "FINAL_CHOICE":
+        # Unconfirmed winners keep their paid slot and default to Round 1.
+        # This never refunds the winning bid.
+        default_pending_final_choices(db, control, reason="admin_end", actor=current_user)
     control.ended = True
     control.status = "COMPLETE"
     control.applications_open = False
@@ -535,12 +548,13 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
 
     control = get_or_create_round_control(db, "WILDCARD")
     control_status = control.status
-    snapshot = event_snapshot(db) if control_status == "COMPLETE" else None
+    snapshot = event_snapshot(db) if control_status in {"FINAL_CHOICE", "COMPLETE"} else None
     response = {
         "message": f"Wildcard Problem {result['problem']['problem_number']} selected.",
         "problem": result["problem"],
         "selection_method": result["method"],
         "wildcard_status": control_status,
+        "final_choice_opened": bool(result.get("final_choice_opened")),
     }
     team_name = team.team_name
     db.close()
@@ -556,8 +570,98 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
         "selection_started_at": result["selection_started_at"],
         "selection_ends_at": result["selection_ends_at"],
     })
+    if result.get("final_choice_opened"):
+        await manager.broadcast_event("wildcard_updated", {"action": "final_choice_opened"})
     if snapshot is not None:
         await manager.broadcast_event("event_state_changed", snapshot)
+    return response
+
+
+@router.post("/wildcard/final-choice")
+async def confirm_wildcard_final_choice(
+    request: WildcardFinalChoiceRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Confirm whether the paid Wildcard slot or the Round 1 problem is final.
+
+    The winning Wildcard bid was already deducted at bid finalization and is
+    never refunded or charged again here.
+    """
+    team = ensure_leader(db, current_user)
+    try:
+        result = confirm_final_problem_choice(db, team_id=team.id, choice=request.choice, actor=current_user)
+        db.commit()
+    except FinalChoiceConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    lab_allocation_team_count = try_allocate_labs(db) if result["completed"] else None
+    snapshot = event_snapshot(db) if result["completed"] else None
+    team_name = team.team_name
+    response = {
+        "message": f"Final problem confirmed as {request.choice}. Your Wildcard slot payment is unchanged.",
+        "team_id": result["team_id"],
+        "choice": result["choice"],
+        "final_problem": result["final_problem"],
+        "round1_problem": result["round1_problem"],
+        "wildcard_problem": result["wildcard_problem"],
+        "confirmed_at": result["confirmed_at"],
+        "winning_bid": result["winning_bid"],
+        "coins_paid": result["coins_paid"],
+    }
+    db.close()
+    await manager.broadcast_event("wildcard_updated", {
+        "team_id": result["team_id"],
+        "team_name": team_name,
+        "choice": result["choice"],
+        "action": "final_problem_confirmed",
+    })
+    if result["completed"]:
+        await manager.broadcast_event("wildcard_updated", {"action": "final_choice_completed"})
+    if snapshot is not None:
+        await manager.broadcast_event("event_state_changed", snapshot)
+    if lab_allocation_team_count is not None:
+        manager.publish_event(
+            "lab_allocation_updated",
+            {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])},
+            roles={"admin", "lab_admin"},
+        )
+    return response
+
+
+@router.post("/admin/rounds/wildcard/final-choice/end")
+async def end_wildcard_final_choice(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
+    """End the final-choice period; pending winners default to Round 1.
+
+    Defaulting never refunds the already-paid Wildcard slot bid.
+    """
+    control = (
+        db.query(RoundControl)
+        .filter(RoundControl.round_type == "WILDCARD")
+        .with_for_update()
+        .one_or_none()
+    )
+    if control is None:
+        raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
+    if control.status == "COMPLETE":
+        return {"defaulted": [], **wildcard_payload(db)}
+    if control.status != "FINAL_CHOICE":
+        raise HTTPException(status_code=409, detail="Final problem choice is not open.")
+    results = default_pending_final_choices(db, control, reason="admin_end", actor=current_user)
+    db.commit()
+    lab_allocation_team_count = try_allocate_labs(db) if control.status == "COMPLETE" else None
+    snapshot = event_snapshot(db) if control.status == "COMPLETE" else None
+    response = {"defaulted": results, **wildcard_payload(db)}
+    db.close()
+    await manager.broadcast_event("wildcard_updated", {"action": "final_choice_ended", "defaulted": results})
+    if snapshot is not None:
+        await manager.broadcast_event("event_state_changed", snapshot)
+    if lab_allocation_team_count is not None:
+        manager.publish_event(
+            "lab_allocation_updated",
+            {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])},
+            roles={"admin", "lab_admin"},
+        )
     return response
 
 
@@ -583,7 +687,7 @@ async def end_wildcard_selection_turn(
         raise HTTPException(status_code=409, detail="The Wildcard turn changed concurrently.") from exc
 
     control = get_or_create_round_control(db, "WILDCARD")
-    snapshot = event_snapshot(db) if control.status == "COMPLETE" else None
+    snapshot = event_snapshot(db) if control.status in {"FINAL_CHOICE", "COMPLETE"} else None
     response = {"assignment": result, **wildcard_payload(db)}
     db.close()
     await manager.broadcast_event("wildcard_updated", {
@@ -598,6 +702,8 @@ async def end_wildcard_selection_turn(
         "selection_started_at": result["selection_started_at"],
         "selection_ends_at": result["selection_ends_at"],
     })
+    if result.get("final_choice_opened"):
+        await manager.broadcast_event("wildcard_updated", {"action": "final_choice_opened"})
     if snapshot is not None:
         await manager.broadcast_event("event_state_changed", snapshot)
     return response

@@ -27,9 +27,13 @@ interface RawDashboard {
   wildcardEligible: boolean
   wildcardApplicationsOpen: boolean
   submissionsOpen: boolean
+  finalProblemChoice: 'ROUND1' | 'WILDCARD' | null
+  finalProblemConfirmedAt: string | null
+  wildcardWinningBid: number | null
+  wildcardCoinsPaid: number | null
   gameConfig: {
     starting_coins: number; round1_winner_count: number; round1_minimum_bid: number; round1_bid_increment: number; round1_preview_seconds: number; round1_bid_seconds: number
-    wildcard_slots: number; wildcard_application_seconds: number; wildcard_starting_bid: number; wildcard_bid_increment: number; wildcard_preview_seconds: number; wildcard_bid_seconds: number; wildcard_selection_seconds: number; coding_duration_seconds: number
+    wildcard_slots: number; wildcard_application_seconds: number; wildcard_starting_bid: number; wildcard_bid_increment: number; wildcard_preview_seconds: number; wildcard_bid_seconds: number; wildcard_selection_seconds: number; wildcard_final_choice_seconds: number; coding_duration_seconds: number
     bid_cooldown_seconds: number
   }
   timing: { server_time: string; started_at: string | null; ends_at: string | null; paused: boolean; paused_remaining_seconds: number | null }
@@ -145,6 +149,10 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
     wildcardEligible: raw.wildcardEligible,
     wildcardApplicationsOpen: raw.wildcardApplicationsOpen,
     submissionsOpen: raw.submissionsOpen,
+    finalProblemChoice: raw.finalProblemChoice ?? null,
+    finalProblemConfirmedAt: raw.finalProblemConfirmedAt ?? null,
+    wildcardWinningBid: raw.wildcardWinningBid ?? null,
+    wildcardCoinsPaid: raw.wildcardCoinsPaid ?? null,
     gameConfig: {
       startingCoins: raw.gameConfig.starting_coins,
       round1WinnerCount: raw.gameConfig.round1_winner_count, round1BaseBidPrice: raw.gameConfig.round1_minimum_bid,
@@ -155,6 +163,7 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
       wildcardApplicationSeconds: raw.gameConfig.wildcard_application_seconds,
       wildcardPreviewSeconds: raw.gameConfig.wildcard_preview_seconds, wildcardBidSeconds: raw.gameConfig.wildcard_bid_seconds,
       wildcardSelectionSeconds: raw.gameConfig.wildcard_selection_seconds,
+      wildcardFinalChoiceSeconds: raw.gameConfig.wildcard_final_choice_seconds ?? 60,
       codingDurationSeconds: raw.gameConfig.coding_duration_seconds,
       bidCooldownSeconds: raw.gameConfig.bid_cooldown_seconds,
     },
@@ -210,6 +219,10 @@ class ApiParticipantService implements ParticipantService {
     const problem = (await this.getParticipantDashboard()).currentProblem
     if (!problem) throw new Error('The selected problem could not be reloaded.')
     return { ...problem, available: false }
+  }
+  async confirmFinalProblemChoice(choice: 'ROUND1' | 'WILDCARD') {
+    await apiRequest('/wildcard/final-choice', { method: 'POST', body: JSON.stringify({ choice }) })
+    await this.getParticipantDashboard()
   }
   async submitGitHubRepository(repositoryUrl: string) {
     const raw = await apiRequest<{ id: number; problem_id: number; repository_url: string; submitted_at: string; updated_at: string | null; submitted_by_name: string | null }>('/submissions/me', {

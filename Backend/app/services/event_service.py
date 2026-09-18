@@ -73,6 +73,7 @@ def _duration_for_state(event_config: EventConfig, state: str) -> int | None:
         "ROUND1_BIDDING": event_config.round1_bid_seconds,
         "WILDCARD_APPLICATION": event_config.wildcard_application_seconds,
         "WILDCARD_BIDDING": event_config.wildcard_bid_seconds,
+        "WILDCARD_FINAL_CHOICE": event_config.wildcard_final_choice_seconds,
         "CODING": event_config.coding_duration_seconds,
     }.get(state)
 

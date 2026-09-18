@@ -8,6 +8,7 @@ export const participantEventStates = [
   'WILDCARD_APPLICATION',
   'WILDCARD_BIDDING',
   'WILDCARD_SELECTION',
+  'WILDCARD_FINAL_CHOICE',
   'CODING',
   'SUBMISSION',
   'JUDGING_WAIT',
@@ -162,6 +163,10 @@ export interface ParticipantDashboard {
   wildcardEligible: boolean
   wildcardApplicationsOpen: boolean
   submissionsOpen: boolean
+  finalProblemChoice: 'ROUND1' | 'WILDCARD' | null
+  finalProblemConfirmedAt: string | null
+  wildcardWinningBid: number | null
+  wildcardCoinsPaid: number | null
   gameConfig: {
     startingCoins: number
     round1WinnerCount: number
@@ -176,6 +181,7 @@ export interface ParticipantDashboard {
     wildcardPreviewSeconds: number
     wildcardBidSeconds: number
     wildcardSelectionSeconds: number
+    wildcardFinalChoiceSeconds: number
     codingDurationSeconds: number
     bidCooldownSeconds: number
   }

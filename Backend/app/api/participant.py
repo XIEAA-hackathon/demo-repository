@@ -252,6 +252,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             wildcard_preview_seconds=event_config.wildcard_preview_seconds,
             wildcard_bid_seconds=event_config.wildcard_bid_seconds,
             wildcard_selection_seconds=event_config.wildcard_selection_seconds,
+            wildcard_final_choice_seconds=event_config.wildcard_final_choice_seconds,
             coding_duration_seconds=event_config.coding_duration_seconds,
             bid_cooldown_seconds=event_config.bid_cooldown_seconds,
         ),
@@ -262,6 +263,10 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         wildcardEligible=bool(team.is_approved),
         wildcardApplicationsOpen=bool(wildcard_control and wildcard_control.applications_open),
         submissionsOpen=bool(event_config.submissions_open),
+        finalProblemChoice=team.final_problem_choice,
+        finalProblemConfirmedAt=team.final_problem_confirmed_at,
+        wildcardWinningBid=wildcard.winning_bid if wildcard else None,
+        wildcardCoinsPaid=wildcard.coins_paid if wildcard else None,
     )
 
 @router.get("/event/snapshot")
