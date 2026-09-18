@@ -709,7 +709,7 @@ def assign_wildcard_selection(
     )
     if control.status != "PROBLEM_SELECTION":
         raise WildcardSelectionConflict(f"Wildcard problem selection is not open (state: {control.status}).")
-
+    check_time = now or utc_now()
     active = _locked_current_selection(db)
     if not active:
         clear_selection_timer(control)
@@ -721,7 +721,7 @@ def assign_wildcard_selection(
     if team_id is not None and active_team.id != team_id:
         raise WildcardSelectionConflict(f"Wait for {active_team.team_name} to select a problem.")
 
-    check_time = now or utc_now()
+    
     if control.current_selection_rank != record.rank or control.selection_ends_at is None:
         start_selection_timer(db, control, now=check_time)
     expired = as_utc(control.selection_ends_at) <= check_time
