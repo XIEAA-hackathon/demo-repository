@@ -140,7 +140,7 @@ def client(engine, session_factory):
 def admin_headers(client, db):
     _create_event_defaults(db)
     admin_user = _create_admin(db)
-    response = client.post("/login", data={"username": admin_user.email, "password": "admin123"})
+    response = client.post("/admin/login", data={"username": admin_user.email, "password": "admin123"})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 

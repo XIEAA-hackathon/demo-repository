@@ -5,7 +5,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
+from starlette.concurrency import run_in_threadpool
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -583,8 +584,7 @@ def _validate_participant_password(password: str, confirmation: str) -> None:
         raise HTTPException(status_code=422, detail="Password confirmation does not match.")
 
 
-def _participant_account_payload(db: Session, account: User) -> dict:
-    team = db.query(Team).filter(Team.id == account.team_id).first() if account.team_id else None
+def _participant_account_payload(account: User, team: Team | None) -> dict:
     return {
         "user_id": account.id,
         "name": account.name,
@@ -619,7 +619,7 @@ async def import_registrations(
         raise HTTPException(status_code=413, detail="File too large (max 10 MB).")
 
     parse_started_at = time.perf_counter()
-    parsed = parse_registration_file(filename, content)
+    parsed = await run_in_threadpool(parse_registration_file, filename, content)
     parser_timings = parsed.get("timings") or {}
     logger.info(
         "Registration import timing stage=%s duration=%.3fs",
@@ -907,10 +907,19 @@ async def import_registrations(
         )
         export_started_at = time.perf_counter()
         is_csv = filename.lower().endswith(".csv")
-        output_bytes = (
-            build_registration_credential_csv(content, leader_credentials)
-            if is_csv else build_registration_credential_workbook(filename, content, leader_credentials)
-        )
+        if is_csv:
+            output_bytes = await run_in_threadpool(
+                build_registration_credential_csv,
+                content,
+                leader_credentials,
+            )
+        else:
+            output_bytes = await run_in_threadpool(
+                build_registration_credential_workbook,
+                filename,
+                content,
+                leader_credentials,
+            )
         logger.info(
             "Registration import timing stage=%s duration=%.3fs",
             "credential_export",
@@ -1062,7 +1071,12 @@ def list_imported_participant_accounts(
         .order_by(func.lower(User.email).asc())
         .all()
     )
-    rows = [_participant_account_payload(db, account) for account in accounts]
+    team_ids = {account.team_id for account in accounts if account.team_id is not None}
+    teams_by_id = {
+        team.id: team
+        for team in (db.query(Team).filter(Team.id.in_(team_ids)).all() if team_ids else [])
+    }
+    rows = [_participant_account_payload(account, teams_by_id.get(account.team_id)) for account in accounts]
     rows.sort(key=lambda row: (row["team_name"].lower(), row["role"] != "leader", row["login_id"].lower()))
     return {"accounts": rows, "count": len(rows)}
 
@@ -1107,7 +1121,8 @@ async def set_imported_participant_password(
         participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
         roles={"admin"},
     )
-    return {"status": "password_set", "account": _participant_account_payload(db, account)}
+    team = db.query(Team).filter(Team.id == account.team_id).first() if account.team_id else None
+    return {"status": "password_set", "account": _participant_account_payload(account, team)}
 
 
 @router.get("/admin/registration/import/download/{download_token}")
@@ -1144,6 +1159,7 @@ def _assigned_problem_label(problem: ProblemStatement | None) -> str:
 
 
 def _assignment_export_data(db: Session) -> tuple[list[str], list[list[object]], str]:
+    started_at = time.perf_counter()
     latest_import = (
         db.query(RegistrationImport)
         .filter(RegistrationImport.status == "committed")
@@ -1158,6 +1174,17 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[object]],
         .all()
         if latest_import else []
     )
+    all_teams = db.query(Team).options(selectinload(Team.members)).order_by(Team.id.asc()).all()
+    all_users = db.query(User).order_by(User.id.asc()).all()
+    teams_by_id = {team.id: team for team in all_teams}
+    teams_by_leader_id = {team.leader_id: team for team in all_teams if team.leader_id is not None}
+    teams_by_name: dict[str, Team] = {}
+    users_by_email: dict[str, User] = {}
+    users_by_id = {user.id: user for user in all_users}
+    for team in all_teams:
+        teams_by_name.setdefault(team.team_name.lower(), team)
+    for user in all_users:
+        users_by_email.setdefault(user.email.lower(), user)
 
     if source_headers and stored_rows:
         headers = [str(header) for header in source_headers]
@@ -1165,24 +1192,27 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[object]],
         for stored in stored_rows:
             values = [str(value or "") for value in json.loads(stored.source_values_json or "[]")]
             values.extend([""] * (len(headers) - len(values)))
-            team = db.query(Team).filter(Team.id == stored.team_id).first() if stored.team_id else None
+            team = teams_by_id.get(stored.team_id) if stored.team_id else None
             if not team and stored.team_id is None and stored.leader_email:
-                leader = db.query(User).filter(func.lower(User.email) == stored.leader_email.lower()).first()
+                leader = users_by_email.get(stored.leader_email.lower())
                 if leader:
-                    team = db.query(Team).filter(or_(Team.id == leader.team_id, Team.leader_id == leader.id)).first()
+                    team = teams_by_id.get(leader.team_id) or teams_by_leader_id.get(leader.id)
             if not team and stored.team_id is None:
-                team = db.query(Team).filter(func.lower(Team.team_name) == stored.team_name.lower()).first()
+                team = teams_by_name.get(stored.team_name.lower())
             source_rows.append((values[:len(headers)], team, stored.leader_email))
         suffix = ".xlsx" if latest_import.filename.lower().endswith((".xlsx", ".xlsm")) else ".csv"
     else:
-        teams = db.query(Team).filter(Team.is_system_team.is_(False)).order_by(Team.team_name.asc()).all()
+        teams = sorted(
+            (team for team in all_teams if not team.is_system_team),
+            key=lambda team: team.team_name,
+        )
         max_members = max((len(team.members) for team in teams), default=0)
         headers = ["Team Name", "Leader Name", "Leader Email"]
         for position in range(1, max_members + 1):
             headers.extend([f"Member {position} Name", f"Member {position} Email"])
         source_rows = []
         for team in teams:
-            leader = db.query(User).filter(User.id == team.leader_id).first()
+            leader = users_by_id.get(team.leader_id)
             values = [team.team_name, leader.name if leader else "", leader.email if leader else ""]
             for member in team.members:
                 values.extend([member.member_name, member.email or ""])
@@ -1211,20 +1241,50 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[object]],
         or normalized.endswith("passwordhash")
     ]
 
+    export_teams = [team for _values, team, _leader_email in source_rows if team]
+    export_team_ids = {team.id for team in export_teams}
+    problem_ids = {
+        problem_id
+        for team in export_teams
+        for problem_id in (team.round1_problem_id, team.wildcard_problem_id)
+        if problem_id is not None
+    }
+    problems_by_id = {
+        problem.id: problem
+        for problem in (
+            db.query(ProblemStatement).filter(ProblemStatement.id.in_(problem_ids)).all()
+            if problem_ids else []
+        )
+    }
+    wildcards_by_team_id = {
+        wildcard.team_id: wildcard
+        for wildcard in (
+            db.query(Wildcard).filter(Wildcard.team_id.in_(export_team_ids)).all()
+            if export_team_ids else []
+        )
+    }
+    submissions_by_team_id = {
+        submission.team_id: submission
+        for submission in (
+            db.query(Submission).filter(Submission.team_id.in_(export_team_ids)).all()
+            if export_team_ids else []
+        )
+    }
+
     output_rows: list[list[object]] = []
     for source_values, team, leader_email in source_rows:
         values = [*source_values, *([""] * (len(headers) - len(source_values)))]
         values[login_index] = leader_email
-        leader_account = _user_by_login(db, leader_email) if leader_email else None
+        leader_account = users_by_email.get(leader_email.lower()) if leader_email else None
         values[credential_status_index] = (
             "PASSWORD SET" if leader_account and leader_account.credentials_active else "PASSWORD NOT SET"
         )
         for index in password_indexes:
             values[index] = "NOT EXPORTED"
-        round1 = db.query(ProblemStatement).filter(ProblemStatement.id == team.round1_problem_id).first() if team and team.round1_problem_id else None
-        wildcard = db.query(ProblemStatement).filter(ProblemStatement.id == team.wildcard_problem_id).first() if team and team.wildcard_problem_id else None
-        wildcard_assignment = db.query(Wildcard).filter(Wildcard.team_id == team.id).first() if team else None
-        submission = db.query(Submission).filter(Submission.team_id == team.id).first() if team else None
+        round1 = problems_by_id.get(team.round1_problem_id) if team else None
+        wildcard = problems_by_id.get(team.wildcard_problem_id) if team else None
+        wildcard_assignment = wildcards_by_team_id.get(team.id) if team else None
+        submission = submissions_by_team_id.get(team.id) if team else None
         final = wildcard or round1
         round1_price = team.round1_assignment_cost if team and round1 and team.round1_assignment_cost is not None else ""
         wildcard_price = (
@@ -1248,6 +1308,11 @@ def _assignment_export_data(db: Session) -> tuple[list[str], list[list[object]],
         for index, value in zip(assignment_indexes, assignment_values):
             values[index] = value
         output_rows.append(values)
+    logger.info(
+        "Assignment export data prepared rows=%s duration=%.3fs",
+        len(output_rows),
+        time.perf_counter() - started_at,
+    )
     return headers, output_rows, suffix
 
 
@@ -1335,7 +1400,7 @@ async def preview_registration_import(
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large (max 10 MB).")
 
-    parsed = parse_registration_file(file.filename or "upload", content)
+    parsed = await run_in_threadpool(parse_registration_file, file.filename or "upload", content)
     if parsed["errors"] and not parsed["rows"]:
         raise HTTPException(status_code=400, detail="; ".join(parsed["errors"]))
 

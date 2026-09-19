@@ -4,8 +4,6 @@ import type {
   LeaderboardEntry,
   ParticipantDashboard,
   Problem,
-  Submission,
-  WildcardApplication,
   WildcardProblem,
 } from '../types'
 
@@ -15,10 +13,10 @@ export interface ParticipantService {
   getProblems(round: 1 | 2): Promise<WildcardProblem[]>
   placeBid(problemId: Id, increment: BidIncrement): Promise<AcceptedBid>
   getLeaderboard(round?: Bid['round']): Promise<LeaderboardEntry[]>
-  applyForWildcard(): Promise<WildcardApplication>
+  applyForWildcard(): Promise<void>
   declineWildcard(): Promise<void>
   getWildcardProblems(): Promise<WildcardProblem[]>
   placeWildcardBid(increment: BidIncrement): Promise<AcceptedBid>
-  selectWildcardProblem(problemId: Id): Promise<WildcardProblem>
-  submitGitHubRepository(repositoryUrl: string): Promise<Submission>
+  selectWildcardProblem(problemId: Id): Promise<void>
+  submitGitHubRepository(repositoryUrl: string): Promise<void>
 }

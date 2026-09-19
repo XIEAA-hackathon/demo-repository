@@ -1,7 +1,7 @@
 import { apiRequest } from './apiClient'
 import type {
   AcceptedBid, Bid, BidIncrement, LeaderboardEntry, ParticipantDashboard, ParticipantEventState, Problem,
-  Submission, WildcardApplication, WildcardProblem,
+  WildcardProblem,
 } from '../types'
 import type { ParticipantService } from './participantService'
 
@@ -199,8 +199,6 @@ class ApiParticipantService implements ParticipantService {
   }
   async applyForWildcard() {
     await apiRequest('/wildcard/apply', { method: 'POST' })
-    const dashboard = await this.getParticipantDashboard()
-    return dashboard.wildcardApplication as WildcardApplication
   }
   async declineWildcard() { await apiRequest('/wildcard/decline', { method: 'POST' }) }
   async getWildcardProblems() { return (await this.getProblems(2)) as WildcardProblem[] }
@@ -214,19 +212,11 @@ class ApiParticipantService implements ParticipantService {
   }
   async selectWildcardProblem(problemId: string) {
     await apiRequest(`/wildcard/select/${encodeURIComponent(problemId)}`, { method: 'POST' })
-    const problem = (await this.getParticipantDashboard()).currentProblem
-    if (!problem) throw new Error('The selected problem could not be reloaded.')
-    return { ...problem, available: false }
   }
   async submitGitHubRepository(repositoryUrl: string) {
-    const raw = await apiRequest<{ id: number; problem_id: number; repository_url: string; submitted_at: string; updated_at: string | null; submitted_by_name: string | null }>('/submissions/me', {
+    await apiRequest('/submissions/me', {
       method: 'PUT', body: JSON.stringify({ repository_url: repositoryUrl.trim() }),
     })
-    const dashboard = await this.getParticipantDashboard()
-    return {
-      id: String(raw.id), teamId: dashboard.team.id, problemId: String(raw.problem_id), repositoryUrl: raw.repository_url,
-      submittedAt: raw.submitted_at, updatedAt: raw.updated_at, submittedByName: raw.submitted_by_name ?? dashboard.currentUser.name, status: 'SUBMITTED',
-    } as Submission
   }
 }
 

@@ -30,4 +30,6 @@ tests/*
 !tests/test_startup_safety.py
 !tests/test_round1_preview_expiry.py
 !tests/test_submissions.py
+!tests/test_auth_role_separation.py
+!tests/test_admin_export_performance.py
 !requirements-dev.txt

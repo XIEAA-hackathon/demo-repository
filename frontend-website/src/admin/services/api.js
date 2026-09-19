@@ -20,7 +20,7 @@ async function request(path, options = {}) {
 export async function login(email, password) {
   let token;
   try {
-    token = await request("/login", { method: "POST", body: new URLSearchParams({ username: email.trim(), password }) });
+    token = await request("/admin/login", { method: "POST", body: new URLSearchParams({ username: email.trim(), password }) });
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       throw new ApiError("Invalid username/email or password.", 401, { cause: error });

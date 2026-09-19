@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
-import posterImage from "../assets/poster.png";
+import posterImage from "../assets/poster.webp";
 import { login } from "../services/api";
 
 export default function Login({ onLogin, authenticate = login, variant = "admin" }) {

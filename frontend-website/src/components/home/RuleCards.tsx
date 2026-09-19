@@ -22,10 +22,10 @@ import {
   WandSparkles,
 } from 'lucide-react'
 import type { RuleIconKey } from '../../config/eventContent'
-import evaluationImg from './evaluation.png'
-import round1Img from './round1.png'
-import round2Img from './round2.png'
-import wildcardImg from './wildcard.png'
+import evaluationImg from './evaluation.webp'
+import round1Img from './round1.webp'
+import round2Img from './round2.webp'
+import wildcardImg from './wildcard.webp'
 
 const iconMap: Partial<Record<RuleIconKey, LucideIcon>> = {
   coins: Coins,

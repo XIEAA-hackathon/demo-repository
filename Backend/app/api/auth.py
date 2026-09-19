@@ -301,7 +301,8 @@ def _complete_login_claim(
     candidate_id: int,
     password_hash: str,
 ) -> tuple[dict, bool, int, str]:
-    """Re-read mutable account state and atomically claim the authenticated session."""
+    """Complete a PARTICIPANT login only."""
+
     with session_factory() as db:
         user = (
             db.query(User)
@@ -314,32 +315,65 @@ def _complete_login_claim(
             .populate_existing()
             .first()
         )
+
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect username or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        if user.role == "display":
-            raise HTTPException(status_code=403, detail="Use the dedicated leaderboard display login.")
 
-        participant = user.role in PARTICIPANT_ROLES
-        if participant:
-            if user.team_id:
-                team = db.query(Team).filter(Team.id == user.team_id).first()
-            else:
-                team = db.query(Team).filter(Team.leader_id == user.id).first()
-            if not team or not team.is_approved:
-                raise HTTPException(status_code=403, detail="Team is not approved by admin yet.")
+        # /login is PARTICIPANT ONLY.
+        if user.role not in PARTICIPANT_ROLES:
+            role_messages = {
+                "admin": "Use the dedicated Event Admin login.",
+                "lab_admin": "Use the dedicated Lab Admin login.",
+                "display": "Use the dedicated leaderboard display login.",
+            }
+
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=role_messages.get(
+                    user.role,
+                    "Participant access requires a participant account.",
+                ),
+            )
+
+        # From here onward the account is guaranteed to be leader/member.
+        if user.team_id:
+            team = (
+                db.query(Team)
+                .filter(Team.id == user.team_id)
+                .first()
+            )
+        else:
+            team = (
+                db.query(Team)
+                .filter(Team.leader_id == user.id)
+                .first()
+            )
+
+        if not team or not team.is_approved:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Team is not approved by admin yet.",
+            )
 
         user_id = user.id
         user_role = user.role
-        if participant:
-            token, replaced_stale_session = _acquire_participant_session(user, password_hash, db)
-        else:
-            token = _issue_session(user, db)
-            replaced_stale_session = False
-        return token, replaced_stale_session, user_id, user_role
+
+        token, replaced_stale_session = _acquire_participant_session(
+            user,
+            password_hash,
+            db,
+        )
+
+        return (
+            token,
+            replaced_stale_session,
+            user_id,
+            user_role,
+        )
 
 @router.post("/register")
 def register(user_data: UserCreate, team_data: TeamCreate, db: Session = Depends(get_db)):
@@ -470,6 +504,24 @@ def leaderboard_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Sess
     return _issue_session(user, db)
 
 
+@router.post("/admin/login", response_model=Token)
+def admin_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    login_id = form_data.username.strip().lower()
+    user = db.query(User).filter(func.lower(User.email) == login_id).first()
+    if (
+        not user
+        or user.role != "admin"
+        or not user.credentials_active
+        or not verify_password(form_data.password, user.password_hash)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect Admin ID or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return _issue_session(user, db)
+
+
 @router.post("/lab-admin/login", response_model=Token)
 def lab_admin_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     login_id = form_data.username.strip().lower()
@@ -486,6 +538,11 @@ def lab_admin_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Sessio
             headers={"WWW-Authenticate": "Bearer"},
         )
     return _issue_session(user, db)
+
+
+@router.get("/participant/session")
+def participant_session(current_user: User = Depends(get_current_active_participant)):
+    return {"id": current_user.id, "name": current_user.name, "email": current_user.email, "role": current_user.role}
 
 
 @router.get("/lab-admin/session")

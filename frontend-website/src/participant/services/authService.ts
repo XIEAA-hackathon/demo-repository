@@ -6,6 +6,13 @@ interface TokenResponse {
   token_type: string
 }
 
+export interface ParticipantSession {
+  id: number
+  name: string
+  email: string
+  role: 'leader' | 'member'
+}
+
 export async function login(email: string, password: string) {
   const body = new URLSearchParams({ username: email.trim(), password })
   try {
@@ -27,4 +34,12 @@ export async function login(email: string, password: string) {
 export async function logout() {
   await apiRequest('/logout', { method: 'POST' })
   clearAccessToken()
+}
+
+export async function validateParticipantSession() {
+  const session = await apiRequest<ParticipantSession>('/participant/session')
+  if (session.role !== 'leader' && session.role !== 'member') {
+    throw new ApiError('Participant access requires a participant account.', 403)
+  }
+  return session
 }
