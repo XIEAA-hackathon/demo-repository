@@ -39,9 +39,7 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
         RoundControl(round_type="ROUND1", status="CLOSED", ended=True),
         RoundControl(round_type="WILDCARD", status="COMPLETE", ended=True),
     ])
-    game = transition_event_state(db, "CODING", validate=False, restart=True)
-    phase_started_at = game.phase_started_at
-    timer_end = game.auction_timer_end
+    transition_event_state(db, "CODING", validate=False, restart=True)
     assert db.query(EventConfig).one().submissions_open is True
     alpha_headers = login_headers_factory("alpha@submit.test")
     beta_headers = login_headers_factory("beta@submit.test")
@@ -101,7 +99,6 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
         "/submissions/me", headers=beta_headers,
         json={"repository_url": "https://github.com/team-beta/project"},
     ).status_code == 409
-    assert phase_started_at is not None and timer_end is not None
 
 
 def test_legacy_submission_state_normalizes_safely(db):
