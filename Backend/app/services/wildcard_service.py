@@ -59,10 +59,96 @@ def clear_selection_timer(control: RoundControl) -> None:
     control.selection_duration_seconds = None
 
 
-def start_final_choice(db: Session, control: RoundControl, *, now: datetime | None = None) -> None:
+def start_final_choice(
+    db: Session,
+    control: RoundControl,
+    *,
+    now: datetime | None = None,
+) -> None:
     clear_selection_timer(control)
+
+    started_at = now or utc_now()
+
+    winners = (
+        db.query(Team)
+        .join(Wildcard, Wildcard.team_id == Team.id)
+        .filter(
+            Wildcard.status == "selected",
+            Wildcard.problem_id.is_not(None),
+        )
+        .order_by(Team.id.asc())
+        .with_for_update()
+        .all()
+    )
+
+    # Teams without a Round 1 problem have no real choice.
+    # Their selected Wildcard problem immediately becomes final.
+    for team in winners:
+        if team.final_problem_confirmed_at is not None:
+            continue
+
+        if team.round1_problem_id is None:
+            if team.wildcard_problem_id is None:
+                raise WildcardSelectionConflict(
+                    f"{team.team_name} has neither a Round 1 nor Wildcard problem assigned."
+                )
+
+            team.ps_id = team.wildcard_problem_id
+            team.final_problem_choice = "WILDCARD"
+            team.final_problem_confirmed_at = started_at
+            team.final_problem_defaulted = True
+
+            record_event(
+                db,
+                "wildcard.final_problem_auto_confirmed",
+                actor_type="system",
+                entity_type="team",
+                entity_id=team.id,
+                metadata={
+                    "choice": "WILDCARD",
+                    "problem_id": team.wildcard_problem_id,
+                    "reason": "no_round1_problem",
+                },
+            )
+
+    db.flush()
+
+    # Only teams that still have a genuine choice remain pending.
+    pending_count = (
+        db.query(Team.id)
+        .join(Wildcard, Wildcard.team_id == Team.id)
+        .filter(
+            Wildcard.status == "selected",
+            Wildcard.problem_id.is_not(None),
+            Team.final_problem_confirmed_at.is_(None),
+        )
+        .count()
+    )
+
+    # Everyone was Wildcard-only, so there is no need to enter Final Choice.
+    if pending_count == 0:
+        control.status = "COMPLETE"
+        control.ended = True
+        control.final_choice_started_at = None
+        control.final_choice_ends_at = None
+        control.final_choice_duration_seconds = None
+
+        record_event(
+            db,
+            "wildcard.final_choice_completed",
+            actor_type="system",
+            metadata={
+                "reason": "no_choices_required",
+            },
+        )
+
+        return
+
+    # At least one team has both Round 1 + Wildcard problems,
+    # so those teams get the normal Final Choice stage.
     control.status = "FINAL_CHOICE"
     control.ended = False
+
     game = transition_event_state(
         db,
         "WILDCARD_FINAL_CHOICE",
@@ -70,15 +156,31 @@ def start_final_choice(db: Session, control: RoundControl, *, now: datetime | No
         restart=True,
         commit=False,
     )
-    started_at = now or game.phase_started_at or utc_now()
-    duration = max(5, min(300, get_or_create_event_config(db).wildcard_final_choice_seconds or 60))
+
+    duration = max(
+        5,
+        min(
+            300,
+            get_or_create_event_config(db).wildcard_final_choice_seconds or 60,
+        ),
+    )
+
     game.phase_started_at = started_at
     game.auction_timer_end = started_at + timedelta(seconds=duration)
+
     control.final_choice_started_at = started_at
     control.final_choice_ends_at = game.auction_timer_end
     control.final_choice_duration_seconds = duration
-    record_event(db, "wildcard.final_choice_opened", actor_type="system", metadata={"duration_seconds": duration})
 
+    record_event(
+        db,
+        "wildcard.final_choice_opened",
+        actor_type="system",
+        metadata={
+            "duration_seconds": duration,
+            "pending_team_count": pending_count,
+        },
+    )
 
 def start_selection_timer(
     db: Session,
@@ -329,6 +431,25 @@ def _assign_locked_selection(
 
     db.flush()
     next_active = start_selection_timer(db, control, now=assigned_at)
+    lab_allocation_team_count = None
+
+    # start_selection_timer() calls start_final_choice() once the last
+    # Wildcard problem has been selected.
+    #
+    # If every winner was Wildcard-only, start_final_choice() will have
+    # completed the Wildcard immediately because nobody needs a choice.
+    if control.status == "COMPLETE":
+        from app.services.lab_allocation import try_allocate_labs
+
+        lab_allocation_team_count = try_allocate_labs(db)
+
+        transition_event_state(
+            db,
+            "CODING",
+            validate=False,
+            restart=True,
+            commit=False,
+        )
     action = "wildcard.problem_selected" if method == "manual" else "wildcard.problem_auto_assigned"
     record_event(
         db,
@@ -350,6 +471,7 @@ def _assign_locked_selection(
         "next_team": next_active[1].team_name if next_active else None,
         "selection_started_at": control.selection_started_at,
         "selection_ends_at": control.selection_ends_at,
+        "lab_allocation_team_count": lab_allocation_team_count,
     }
 
 
