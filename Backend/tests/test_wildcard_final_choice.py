@@ -48,10 +48,14 @@ def _finalize_and_select(db, team, wildcard_problem):
     control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
     winners = finalize_slot_bidding(db, control)
     assert winners[0]["winning_bid"] == 250
+    assert control.status == "PROBLEM_SELECTION"
     db.query(GameConfig).one().state = "WILDCARD_SELECTION"
     db.commit()
     result = assign_wildcard_selection(db, method="manual", team_id=team.id, problem_id=wildcard_problem.id)
     db.expire_all()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    assert control.status == "FINAL_CHOICE"
+    assert db.query(GameConfig).one().state == "WILDCARD_FINAL_CHOICE"
     return result
 
 

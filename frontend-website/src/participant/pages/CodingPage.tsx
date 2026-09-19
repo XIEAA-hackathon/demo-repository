@@ -15,6 +15,7 @@ export default function CodingPage() {
   const permissions = getParticipantPermissions(dashboard)
   const submitted = Boolean(dashboard.submission)
   const finalProblem = dashboard.finalProblem ?? dashboard.currentProblem
+  const submissionsActive = dashboard.eventState === 'CODING'
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -50,8 +51,8 @@ export default function CodingPage() {
         <form className="form" onSubmit={submit}>
           <label className={!permissions.canSubmitRepository ? 'is-locked' : ''}><span>GitHub repository URL</span><input type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/team/project" disabled={!permissions.canSubmitRepository} required pattern="https://github.com/.*" title="Enter a valid GitHub repository URL" /></label>
           <Button type="submit" disabled={!permissions.canSubmitRepository || working || !finalProblem}>{working ? 'Saving…' : submitted ? 'Update repository' : 'Submit repository'}</Button>
-          {!dashboard.submissionsOpen && <p className="notice">Repository submissions are closed. Any saved URL remains on record.</p>}
-          {dashboard.submissionsOpen && !permissions.isLeader && <p className="notice">Only your team leader can submit or update the final repository.</p>}
+          {!submissionsActive && <p className="notice">Repository submissions are closed. Any saved URL remains on record.</p>}
+          {submissionsActive && !permissions.isLeader && <p className="notice">Only your team leader can submit or update the final repository.</p>}
           {message && <p className={message.type === 'success' ? 'success' : 'error'} role="status">{message.text}</p>}
         </form>
       </Card>

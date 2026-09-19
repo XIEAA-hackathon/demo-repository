@@ -1,11 +1,9 @@
 from unittest.mock import AsyncMock
-from datetime import datetime, timedelta, timezone
-
 from app.api import participant
 from app.core.security import get_password_hash
 from app.models.models import EventConfig, GameConfig, ProblemStatement, RoundControl, Submission, Team, User
 from app.schemas.schemas import EVENT_STATES
-from app.services.event_service import get_or_create_game_config
+from app.services.event_service import get_or_create_game_config, transition_event_state
 
 
 def _team(db, name, email, problem):
@@ -41,31 +39,14 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
         RoundControl(round_type="ROUND1", status="CLOSED", ended=True),
         RoundControl(round_type="WILDCARD", status="COMPLETE", ended=True),
     ])
-    game = db.query(GameConfig).one()
-    game.state = "CODING"
-    game.phase_started_at = datetime.now(timezone.utc)
-    game.auction_timer_end = game.phase_started_at + timedelta(hours=3)
-    db.commit()
+    game = transition_event_state(db, "CODING", validate=False, restart=True)
     phase_started_at = game.phase_started_at
     timer_end = game.auction_timer_end
+    assert db.query(EventConfig).one().submissions_open is True
     alpha_headers = login_headers_factory("alpha@submit.test")
     beta_headers = login_headers_factory("beta@submit.test")
     member_headers = login_headers_factory("alpha-member@submit.test")
 
-    assert client.put(
-        "/submissions/me", headers=alpha_headers,
-        json={"repository_url": "https://github.com/team-alpha/project"},
-    ).status_code == 409
-    opened = client.post("/admin/submissions/open", headers=admin_headers)
-    assert opened.status_code == 200, opened.text
-    db.expire_all()
-    game = db.query(GameConfig).one()
-    assert game.state == "CODING"
-    assert game.phase_started_at == phase_started_at
-    assert game.auction_timer_end == timer_end
-    assert client.post("/admin/submissions/open", headers=admin_headers).status_code == 200
-    db.expire_all()
-    assert db.query(GameConfig).one().auction_timer_end == timer_end
     assert client.put(
         "/submissions/me", headers=member_headers,
         json={"repository_url": "https://github.com/team-alpha/member"},
@@ -111,6 +92,7 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
     assert client.post("/admin/submissions/close", headers=admin_headers).status_code == 200
     db.expire_all()
     assert db.query(GameConfig).first().state == "JUDGING_WAIT"
+    assert db.query(EventConfig).one().submissions_open is False
     assert client.put(
         "/submissions/me", headers=alpha_headers,
         json={"repository_url": "https://github.com/team-alpha/updated"},
@@ -119,6 +101,7 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
         "/submissions/me", headers=beta_headers,
         json={"repository_url": "https://github.com/team-beta/project"},
     ).status_code == 409
+    assert phase_started_at is not None and timer_end is not None
 
 
 def test_legacy_submission_state_normalizes_safely(db):

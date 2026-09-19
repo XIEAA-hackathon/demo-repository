@@ -115,8 +115,10 @@ def transition_event_state(
         )
 
     now = datetime.now(timezone.utc)
-    duration = _duration_for_state(get_or_create_event_config(db), state)
+    event_config = get_or_create_event_config(db)
+    duration = _duration_for_state(event_config, state)
     config.state = state
+    event_config.submissions_open = state == "CODING"
     if state == "WAITING" or state.startswith("ROUND1"):
         config.current_round = 1
     elif state.startswith("WILDCARD"):

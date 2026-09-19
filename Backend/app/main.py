@@ -217,10 +217,12 @@ async def lifespan(app: FastAPI):
         db.commit()
 
         # Startup owns singleton creation so request and snapshot paths stay read-only.
-        get_or_create_event_config(db)
-        get_or_create_game_config(db)
+        event_config = get_or_create_event_config(db)
+        game_config = get_or_create_game_config(db)
+        event_config.submissions_open = game_config.state == "CODING"
         get_or_create_round_control(db, "ROUND1")
         get_or_create_round_control(db, "WILDCARD")
+        db.commit()
         upgraded_teams = upgrade_legacy_starting_coins(db)
         if upgraded_teams:
             logger.info("Upgraded %s legacy team wallets to 5,000 starting coins.", upgraded_teams)

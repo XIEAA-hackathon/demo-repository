@@ -774,7 +774,7 @@ async def open_applications(db: Session = Depends(get_db), current_user=Depends(
         raise HTTPException(status_code=409, detail="End Round 1 before opening Wildcard applications.")
     if wildcard.status == "APPLICATIONS_OPEN":
         return _round_payload(db, ROUND_META["wildcard"])
-    if wildcard.status != "NOT_STARTED" or wildcard.slot_count is not None:
+    if wildcard.ended or wildcard.status != "NOT_STARTED" or wildcard.slot_count is not None:
         raise HTTPException(status_code=409, detail=f"Wildcard applications cannot open from {wildcard.status}.")
     wildcard.applications_open = True
     wildcard.status = "APPLICATIONS_OPEN"

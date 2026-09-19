@@ -318,7 +318,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         round1AssignmentCost=team.round1_assignment_cost,
         wildcardEligible=bool(team.is_approved),
         wildcardApplicationsOpen=bool(wildcard_control and wildcard_control.applications_open),
-        submissionsOpen=bool(event_config.submissions_open),
+        submissionsOpen=config.state == "CODING",
         finalProblemChoice=team.final_problem_choice,
         finalProblemConfirmedAt=team.final_problem_confirmed_at,
         finalProblemDefaulted=bool(team.final_problem_defaulted),
@@ -436,8 +436,8 @@ async def create_submission(
     current_user: User = Depends(get_current_active_participant),
 ):
     team = ensure_leader(db, current_user)
-    if not get_or_create_event_config(db).submissions_open:
-        raise HTTPException(status_code=409, detail="Submissions are closed.")
+    if get_or_create_game_config(db).state != "CODING":
+        raise HTTPException(status_code=409, detail="Repository submissions are only available during Coding.")
     if not team.ps_id:
         raise HTTPException(status_code=400, detail="Team has no allocated problem.")
     if not _valid_github_url(submission.repository_url):
@@ -475,8 +475,8 @@ async def update_submission(
     current_user: User = Depends(get_current_active_participant),
 ):
     team = ensure_leader(db, current_user)
-    if not get_or_create_event_config(db).submissions_open:
-        raise HTTPException(status_code=409, detail="Submissions are closed.")
+    if get_or_create_game_config(db).state != "CODING":
+        raise HTTPException(status_code=409, detail="Repository submissions are only available during Coding.")
     if not team.ps_id:
         raise HTTPException(status_code=400, detail="Team has no final problem.")
     if not _valid_github_url(submission.repository_url):
@@ -537,7 +537,7 @@ def get_my_submission(db: Session = Depends(get_db), current_user: User = Depend
 @router.get("/admin/submissions")
 def get_admin_submissions(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     del current_user
-    config = get_or_create_event_config(db)
+    game = get_or_create_game_config(db)
     rows = []
     teams = (
         db.query(Team)
@@ -594,8 +594,8 @@ def get_admin_submissions(db: Session = Depends(get_db), current_user: User = De
         })
     submitted = sum(row["status"] == "SUBMITTED" for row in rows)
     return {
-        "open": bool(config.submissions_open),
-        "export_available": not config.submissions_open and get_or_create_game_config(db).state in {"JUDGING_WAIT", "RESULTS"},
+        "open": game.state == "CODING",
+        "export_available": game.state in {"JUDGING_WAIT", "RESULTS"},
         "total": len(rows),
         "submitted": submitted,
         "pending": len(rows) - submitted,
