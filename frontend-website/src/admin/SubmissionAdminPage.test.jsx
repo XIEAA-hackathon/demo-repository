@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SubmissionAdminPage } from './App'
+import { CodingRoundAdminPage } from './App'
 import { getAdminSubmissions } from './services/api'
 
 vi.mock('./services/api', async (original) => ({ ...await original(), getAdminSubmissions: vi.fn() }))
@@ -13,7 +13,7 @@ const snapshot = {
   submitted: 0,
   pending: 2,
   rows: [
-    { team_id: 1, team_name: 'Team Alpha', status: 'PENDING', github_url: null, submitted_at: null, updated_at: null, submitted_by: null, final_problem: null },
+    { team_id: 1, team_name: 'Team Alpha', status: 'PENDING', github_url: null, submitted_at: null, updated_at: null, submitted_by: null, final_problem: null, allocated_lab: { id: 1, name: 'Lab Aurora' } },
     { team_id: 2, team_name: 'Team Beta', status: 'PENDING', github_url: null, submitted_at: null, updated_at: null, submitted_by: null, final_problem: null },
   ],
 }
@@ -22,9 +22,9 @@ let host
 let root
 let hidden
 
-const render = async (props) => act(async () => root.render(<SubmissionAdminPage {...props} />))
+const render = async (props) => act(async () => root.render(<CodingRoundAdminPage {...props} />))
 
-describe('SubmissionAdminPage refresh architecture', () => {
+describe('CodingRoundAdminPage refresh architecture', () => {
   beforeEach(() => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
     vi.useFakeTimers()
@@ -44,6 +44,8 @@ describe('SubmissionAdminPage refresh architecture', () => {
   it('loads once initially and reconciles connected sockets at 60 seconds', async () => {
     await render({ socketStatus: 'connected' })
     expect(getAdminSubmissions).toHaveBeenCalledTimes(1)
+    expect(host.textContent).toContain('CODING TIMER SETTINGS')
+    expect(host.textContent).toContain('Lab Aurora')
     getAdminSubmissions.mockClear()
 
     await act(async () => vi.advanceTimersByTimeAsync(59_000))
@@ -123,7 +125,7 @@ describe('SubmissionAdminPage refresh architecture', () => {
     await act(async () => {
       vi.advanceTimersByTime(1)
       document.dispatchEvent(new Event('visibilitychange'))
-      root.render(<SubmissionAdminPage socketStatus="reconnected" />)
+      root.render(<CodingRoundAdminPage socketStatus="reconnected" />)
     })
 
     expect(getAdminSubmissions).toHaveBeenCalledTimes(1)

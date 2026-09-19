@@ -161,6 +161,18 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 .submission-problem h2 { margin: .55rem 0 .7rem; font-size: clamp(1.35rem, 3vw, 2rem); }
 .submission-problem p { max-width: 70ch; margin: 0; color: var(--muted); line-height: 1.7; }
 .challenge-card { padding-block: 2rem; }.challenge-card h2 { font-size: clamp(1.4rem, 4vw, 2.2rem); }.challenge-card p:last-child { color: var(--muted); }
+.final-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.final-choice-card { display: grid; align-content: start; gap: .75rem; }
+.final-choice-card small { color: var(--gold-bright); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.final-choice-card h2, .final-choice-card p { margin: 0; }
+.final-choice-card p:not(.eyebrow) { min-height: 4.8rem; color: var(--muted); line-height: 1.6; }
+.final-choice-card .button { margin-top: auto; }
+.final-choice-timer { display: flex; align-items: center; justify-content: space-between; color: var(--gold-bright); font-size: .7rem; letter-spacing: .14em; text-transform: uppercase; }
+.repository-record { display: grid; gap: .8rem; margin: 1rem 0; }
+.repository-record dl { margin: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+.repository-record dl div { padding: .7rem; border: 1px solid rgba(255,255,255,.08); border-radius: .55rem; }
+.repository-record dt { color: var(--muted); font-size: .65rem; letter-spacing: .1em; text-transform: uppercase; }
+.repository-record dd { margin: .35rem 0 0; font-size: .78rem; }
 .details-list { display: grid; gap: 1rem; }.details-list span { padding-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,.08); }.details-list small, .details-list strong { display: block; }.details-list small { margin-bottom: .35rem; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; }
 .podium { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; align-items: end; }.podium .card { text-align: center; }.podium .card:first-child { min-height: 230px; order: 2; border-color: var(--gold); }.podium .card:nth-child(2) { min-height: 200px; order: 1; }.podium .card:nth-child(3) { min-height: 175px; order: 3; }.podium .card.is-team { border-color: var(--purple-neon); box-shadow: 0 0 30px rgba(218,50,255,.2); }.podium__rank { display: block; margin-bottom: 1.2rem; color: var(--gold-bright); font: 600 2rem 'JetBrains Mono', monospace; }.team-tag { display: inline-block; margin-top: .7rem; padding: .35rem .6rem; border-radius: 99px; background: rgba(130,0,255,.2); color: var(--purple-neon); font-size: .65rem; text-transform: uppercase; }.empty-state { max-width: 620px; text-align: center; }.empty-state .button { margin-top: 1rem; }
 
@@ -177,7 +189,8 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
   .top-status { width: 100%; justify-content: space-between; }
   .top-status__stage strong { display: none; }
   .workspace__main { padding: 1.1rem; }
-  .stats-grid, .two-column, .selection-grid, .problem-grid, .podium { grid-template-columns: 1fr; }
+  .stats-grid, .two-column, .selection-grid, .problem-grid, .final-choice-grid, .podium { grid-template-columns: 1fr; }
+  .repository-record dl { grid-template-columns: 1fr; }
   .dashboard-grid { grid-template-columns: 1fr 1fr; }
   .team-summary__grid { grid-template-columns: 1fr; gap: 1.1rem; }
   .podium .card { min-height: 0 !important; order: initial !important; }

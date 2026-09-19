@@ -43,6 +43,7 @@ Backend/tests/*
 !Backend/tests/test_startup_safety.py
 !Backend/tests/test_round1_preview_expiry.py
 !Backend/tests/test_submissions.py
+!Backend/tests/test_wildcard_final_choice.py
 !Backend/tests/test_auth_role_separation.py
 !Backend/tests/test_admin_export_performance.py
 !Backend/requirements-dev.txt
@@ -59,6 +60,7 @@ frontend-website/src/**/*.test.*
 !frontend-website/src/participant/auth/AuthContext.test.ts
 !frontend-website/src/authPortalEndpoints.test.ts
 !frontend-website/src/participant/services/apiParticipantService.test.ts
+!frontend-website/src/participant/CodingFlow.test.tsx
 load_test/
 outputs/
 .impeccable/

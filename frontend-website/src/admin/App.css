@@ -2521,6 +2521,10 @@ td strong {
 .submission-admin__header > button { min-height: 46px; }
 .submission-admin__actions { display: flex; flex-direction: column; gap: 10px; min-width: 220px; }
 .submission-admin__actions > button { min-height: 46px; }
+.coding-timer-panel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, .35fr) auto; align-items: end; gap: 20px; }
+.coding-timer-panel label { display: grid; gap: 7px; color: #bda9c5; font-size: 9px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.coding-timer-panel input { min-height: 41px; padding: 9px 12px; color: #f1e8f4; background: #0d0613; border: 1px solid rgba(190,91,243,.25); border-radius: 9px; }
+.wildcard-final-choice-control { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 22px; }
 .submission-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .submission-table-panel { padding: 24px; background: #100817; border: 1px solid rgba(190,91,243,.18); border-radius: 15px; }
 .submission-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
@@ -2528,7 +2532,7 @@ td strong {
 .submission-toolbar span { display: block; margin-top: 5px; color: #7f6e87; font-size: 9px; }
 .submission-toolbar input { width: min(260px,100%); min-height: 41px; padding: 9px 12px; color: #f1e8f4; background: rgba(255,255,255,.035); border: 1px solid rgba(190,91,243,.22); border-radius: 9px; }
 .submission-table-panel td a { color: #d17af7; text-decoration: none; }
-@media (max-width: 1100px) { .wildcard-settings-panel { grid-template-columns: 1fr; } .wildcard-settings-save { justify-self: start; } .wildcard-slots, .wildcard-live-bidding { grid-template-columns: 1fr; } .wildcard-slot-control, .wildcard-live-bidding .round-inline-actions { justify-content: flex-start; } .submission-stats { grid-template-columns: repeat(2,1fr); } }
+@media (max-width: 1100px) { .wildcard-settings-panel { grid-template-columns: 1fr; } .wildcard-settings-save { justify-self: start; } .wildcard-slots, .wildcard-live-bidding, .coding-timer-panel, .wildcard-final-choice-control { grid-template-columns: 1fr; } .wildcard-slot-control, .wildcard-live-bidding .round-inline-actions { justify-content: flex-start; } .submission-stats { grid-template-columns: repeat(2,1fr); } }
 @media (max-width: 760px) { .wildcard-stage-banner, .submission-admin__header, .submission-toolbar { align-items: flex-start; flex-direction: column; } .wildcard-tabs button { min-height: 58px; flex-direction: column; gap: 5px; font-size: 9px; line-height: 1.25; } .wildcard-stage-card { padding: 20px 17px; } .wildcard-settings-grid, .wildcard-current-turn { grid-template-columns: 1fr; } .wildcard-stage-card p, .wildcard-stage-banner h3 { line-height: 1.55; } .wildcard-rank-list > div { grid-template-columns: 34px 1fr auto; } .wildcard-rank-list em { grid-column: 2; } .submission-stats { grid-template-columns: 1fr 1fr; } .submission-table-panel { padding: 18px 15px; } .submission-toolbar input { width: 100%; } }
 
 .managed-users-page { display: grid; gap: 20px; }

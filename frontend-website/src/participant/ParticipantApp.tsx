@@ -13,14 +13,16 @@ import ResultsPage from './pages/ResultsPage'
 import RoundOneBiddingPage from './pages/RoundOneBiddingPage'
 import RoundOnePreviewPage from './pages/RoundOnePreviewPage'
 import RoundResultPage from './pages/RoundResultPage'
-import SubmissionPage from './pages/SubmissionPage'
 import WildcardApplicationPage from './pages/WildcardApplicationPage'
 import WildcardBiddingPage from './pages/WildcardBiddingPage'
 import WildcardSelectionPage from './pages/WildcardSelectionPage'
+import WildcardFinalChoicePage from './pages/WildcardFinalChoicePage'
 
 const eventPage = (state: Parameters<typeof EventRoute>[0]['state'], page: React.ReactNode) => (
   <EventRoute state={state}>{page}</EventRoute>
 )
+
+export const legacySubmissionRedirect = '/participant/coding'
 
 export default function ParticipantApp() {
   return (
@@ -36,8 +38,9 @@ export default function ParticipantApp() {
           <Route path="wildcard" element={eventPage('WILDCARD_APPLICATION', <WildcardApplicationPage />)} />
           <Route path="wildcard/bid" element={eventPage('WILDCARD_BIDDING', <WildcardBiddingPage />)} />
           <Route path="wildcard/select" element={eventPage('WILDCARD_SELECTION', <WildcardSelectionPage />)} />
+          <Route path="wildcard/choose" element={eventPage('WILDCARD_FINAL_CHOICE', <WildcardFinalChoicePage />)} />
           <Route path="coding" element={eventPage('CODING', <CodingPage />)} />
-          <Route path="submission" element={eventPage('SUBMISSION', <SubmissionPage />)} />
+          <Route path="submission" element={<Navigate to={legacySubmissionRedirect} replace />} />
           <Route path="judging" element={eventPage('JUDGING_WAIT', <JudgingWaitPage />)} />
           <Route path="results" element={eventPage('RESULTS', <ResultsPage />)} />
         </Route>

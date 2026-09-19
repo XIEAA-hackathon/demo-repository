@@ -120,9 +120,9 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       // If the initial HTTP snapshot lost a race with an authoritative realtime
       // mutation, silently retry once the in-flight request has been released.
       if (!dashboardRef.current && requestRevision !== realtimeRevision.current) {
-        window.setTimeout(() => {
+        queueMicrotask(() => {
           void refreshRunnerRef.current?.(false)
-        }, 0)
+        })
       }
     })
 
@@ -384,15 +384,42 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           return
         }
 
+        if (message.type === 'submission_updated') {
+          const action = String(message.payload.action ?? '')
+          if (action === 'submissions_opened' || action === 'submissions_closed') {
+            const submissionsOpen = action === 'submissions_opened'
+            realtimeRevision.current += 1
+            setDashboard((current) => {
+              if (!current || current.submissionsOpen === submissionsOpen) return current
+              const next = { ...current, submissionsOpen }
+              dashboardRef.current = next
+              return next
+            })
+            if (!submissionsOpen) queueRefresh()
+            return
+          }
+
+          if (String(message.payload.team_id ?? '') === dashboardRef.current?.team.id) {
+            realtimeRevision.current += 1
+            queueRefresh()
+          }
+          return
+        }
+
         if (
           message.type === 'event_snapshot'
           || message.type === 'event_state_changed'
           || message.type === 'timer_sync'
         ) {
+          // An initial socket snapshot can arrive before the first dashboard
+          // response. Make that response retry instead of accepting a snapshot
+          // which started before newer server state was observed.
+          if (!dashboardRef.current) realtimeRevision.current += 1
           const rawState = message.payload.event_state
-          const nextState = typeof rawState === 'string'
-            && participantEventStates.includes(rawState as ParticipantEventState)
-            ? rawState as ParticipantEventState
+          const normalizedState = rawState === 'SUBMISSION' ? 'CODING' : rawState
+          const nextState = typeof normalizedState === 'string'
+            && participantEventStates.includes(normalizedState as ParticipantEventState)
+            ? normalizedState as ParticipantEventState
             : null
 
           const rawTiming = message.payload.timing as Record<string, unknown> | undefined
@@ -595,6 +622,22 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
                 ? null
                 : String(message.payload.selection_ends_at)
               const isSelectionTurn = nextTeamId === current.team.id
+              const ownSelectionCompleted = selectedTeamId === current.team.id
+              const rawProblem = message.payload.problem as Record<string, unknown> | undefined
+              const selectedProblemId = ownSelectionCompleted && rawProblem?.id != null
+                ? String(rawProblem.id)
+                : current.wildcard.selectedProblemId
+              const wildcardProblem = ownSelectionCompleted && rawProblem?.id != null
+                ? {
+                    id: String(rawProblem.id),
+                    number: Number(String(rawProblem.problem_number ?? rawProblem.id).match(/\d+/)?.[0] ?? rawProblem.id),
+                    title: String(rawProblem.title ?? ''),
+                    summary: String(rawProblem.description ?? ''),
+                    description: String(rawProblem.description ?? ''),
+                    startingBid: 0,
+                    available: false,
+                  }
+                : current.wildcardProblem
 
               if (
                 current.wildcard.currentSelectionRank === nextRank
@@ -602,6 +645,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
                 && current.wildcard.isSelectionTurn === isSelectionTurn
                 && current.wildcard.selectionStartedAt === nextStartedAt
                 && current.wildcard.selectionEndsAt === nextEndsAt
+                && (!ownSelectionCompleted || current.wildcard.status === 'selected')
               ) {
                 return current
               }
@@ -610,12 +654,15 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
                 ...current,
                 wildcard: {
                   ...current.wildcard,
+                  status: ownSelectionCompleted ? 'selected' : current.wildcard.status,
+                  selectedProblemId,
                   currentSelectionRank: nextRank,
                   currentSelectionTeam: nextTeam,
                   isSelectionTurn,
                   selectionStartedAt: nextStartedAt,
                   selectionEndsAt: nextEndsAt,
                 },
+                wildcardProblem,
               }
 
               dashboardRef.current = next

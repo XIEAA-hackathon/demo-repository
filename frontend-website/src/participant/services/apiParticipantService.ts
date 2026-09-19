@@ -11,7 +11,7 @@ interface RawDashboard {
   labAllocationStatus?: 'NOT_READY' | 'PENDING' | 'ASSIGNED' | 'UNAVAILABLE'
   user: { id: number; name: string; email: string; role: string }
   team: { id: number; team_name: string; coins: number; leader_id: number; members: Array<{ id: number; member_name: string; email?: string; is_leader: boolean }> }
-  eventState: ParticipantEventState
+  eventState: ParticipantEventState | 'SUBMISSION'
   wallet: { team_id: number; balance: number; currency: 'coins' }
   currentProblem: RawProblem | null
   round1Problem: RawProblem | null
@@ -30,9 +30,12 @@ interface RawDashboard {
   wildcardEligible: boolean
   wildcardApplicationsOpen: boolean
   submissionsOpen: boolean
+  finalProblemChoice: 'ROUND1' | 'WILDCARD' | null
+  finalProblemConfirmedAt: string | null
+  finalProblemDefaulted: boolean
   gameConfig: {
     starting_coins: number; round1_winner_count: number; round1_minimum_bid: number; round1_bid_increment: number; round1_preview_seconds: number; round1_bid_seconds: number
-    wildcard_slots: number; wildcard_application_seconds: number; wildcard_starting_bid: number; wildcard_bid_increment: number; wildcard_preview_seconds: number; wildcard_bid_seconds: number; wildcard_selection_seconds: number; coding_duration_seconds: number
+    wildcard_slots: number; wildcard_application_seconds: number; wildcard_starting_bid: number; wildcard_bid_increment: number; wildcard_preview_seconds: number; wildcard_bid_seconds: number; wildcard_selection_seconds: number; wildcard_final_choice_seconds: number; coding_duration_seconds: number
     bid_cooldown_seconds: number
   }
   timing: { server_time: string; started_at: string | null; ends_at: string | null; paused: boolean; paused_remaining_seconds: number | null; remaining_seconds?: number | null }
@@ -86,6 +89,7 @@ const mapProblem = (problem: RawProblem): Problem => ({
 })
 
 function mapDashboard(raw: RawDashboard): ParticipantDashboard {
+  const eventState = raw.eventState === 'SUBMISSION' ? 'CODING' : raw.eventState
   const latestBid: Bid | null = raw.currentBid ? {
     id: String(raw.currentBid.id), teamId: String(raw.currentBid.team_id), teamName: raw.team.team_name,
     problemId: String(raw.currentBid.ps_id), amount: raw.currentBid.amount, placedAt: raw.currentBid.timestamp,
@@ -108,7 +112,7 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
       id: String(raw.user.id), name: raw.user.name, loginId: raw.user.email,
       role: raw.isLeader ? 'leader' : 'member',
     },
-      eventState: raw.eventState,
+      eventState,
       lab: raw.lab ?? null,
       labAllocationReady: Boolean(raw.labAllocationReady),
       labAllocationStatus: raw.labAllocationStatus ?? (raw.lab ? 'ASSIGNED' : raw.labAllocationReady ? 'PENDING' : 'NOT_READY'),
@@ -151,6 +155,9 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
     wildcardEligible: raw.wildcardEligible,
     wildcardApplicationsOpen: raw.wildcardApplicationsOpen,
     submissionsOpen: raw.submissionsOpen,
+    finalProblemChoice: raw.finalProblemChoice,
+    finalProblemConfirmedAt: raw.finalProblemConfirmedAt,
+    finalProblemDefaulted: raw.finalProblemDefaulted,
     gameConfig: {
       startingCoins: raw.gameConfig.starting_coins,
       round1WinnerCount: raw.gameConfig.round1_winner_count, round1BaseBidPrice: raw.gameConfig.round1_minimum_bid,
@@ -161,6 +168,7 @@ function mapDashboard(raw: RawDashboard): ParticipantDashboard {
       wildcardApplicationSeconds: raw.gameConfig.wildcard_application_seconds,
       wildcardPreviewSeconds: raw.gameConfig.wildcard_preview_seconds, wildcardBidSeconds: raw.gameConfig.wildcard_bid_seconds,
       wildcardSelectionSeconds: raw.gameConfig.wildcard_selection_seconds,
+      wildcardFinalChoiceSeconds: raw.gameConfig.wildcard_final_choice_seconds,
       codingDurationSeconds: raw.gameConfig.coding_duration_seconds,
       bidCooldownSeconds: raw.gameConfig.bid_cooldown_seconds,
     },
@@ -212,6 +220,9 @@ class ApiParticipantService implements ParticipantService {
   }
   async selectWildcardProblem(problemId: string) {
     await apiRequest(`/wildcard/select/${encodeURIComponent(problemId)}`, { method: 'POST' })
+  }
+  async confirmFinalProblem(choice: 'ROUND1' | 'WILDCARD') {
+    await apiRequest('/wildcard/final-choice', { method: 'POST', body: JSON.stringify({ choice }) })
   }
   async submitGitHubRepository(repositoryUrl: string) {
     await apiRequest('/submissions/me', {

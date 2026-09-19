@@ -25,7 +25,7 @@ from app.services.event_service import (
     upgrade_legacy_starting_coins,
 )
 from app.services.event_service import sync_expired_event_state
-from app.services.wildcard_service import reconcile_wildcard_selection
+from app.services.wildcard_service import reconcile_wildcard_final_choice, reconcile_wildcard_selection
 from app.api.websockets import manager
 
 logger = logging.getLogger("uvicorn.error")
@@ -56,6 +56,8 @@ TIMER_SYNC_STATES = {
     "ROUND1_BIDDING",
     "WILDCARD_APPLICATION",
     "WILDCARD_BIDDING",
+    "WILDCARD_FINAL_CHOICE",
+    "CODING",
 }
 
 
@@ -63,10 +65,11 @@ def _process_expiry_database_cycle(
     session_factory,
     *,
     include_timer_sync: bool = False,
-) -> tuple[list[str], dict | None, dict | None, dict | None]:
+) -> tuple[list[str], dict | None, dict | None, dict | None, dict | None]:
     """Run synchronous SQLAlchemy expiry work outside the asyncio event loop."""
     actions: list[str] = []
     wildcard_assignment = None
+    final_choice_completion = None
     snapshot = None
     timer_sync = None
     db = session_factory()
@@ -75,7 +78,7 @@ def _process_expiry_database_cycle(
         # queries are reserved for an observed expiry or an active selection.
         config = db.query(models.GameConfig).order_by(models.GameConfig.id.asc()).first()
         if config is None:
-            return actions, wildcard_assignment, snapshot, timer_sync
+            return actions, wildcard_assignment, final_choice_completion, snapshot, timer_sync
         actions = sync_expired_event_state(db, config=config)
         wildcard_assignment = (
             reconcile_wildcard_selection(db)
@@ -84,6 +87,13 @@ def _process_expiry_database_cycle(
         if wildcard_assignment:
             actions.append("wildcard_selection_timeout")
             wildcard_assignment["lab_assignment_changes"] = db.info.pop("lab_assignment_changes", [])
+        final_choice_completion = (
+            reconcile_wildcard_final_choice(db)
+            if config.state == "WILDCARD_FINAL_CHOICE" else None
+        )
+        if final_choice_completion:
+            actions.append("wildcard_final_choice_timeout")
+            final_choice_completion["lab_assignment_changes"] = db.info.pop("lab_assignment_changes", [])
         if actions:
             snapshot = event_snapshot(db, config=config)
         elif include_timer_sync:
@@ -96,7 +106,7 @@ def _process_expiry_database_cycle(
         raise
     finally:
         db.close()
-    return actions, wildcard_assignment, snapshot, timer_sync
+    return actions, wildcard_assignment, final_choice_completion, snapshot, timer_sync
 
 
 async def process_expiry_cycle(
@@ -106,7 +116,7 @@ async def process_expiry_cycle(
     emit_timer_sync: bool = False,
 ) -> list[str]:
     """Persist one expiry cycle, then publish its committed authoritative snapshot."""
-    actions, wildcard_assignment, snapshot, timer_sync = await run_in_threadpool(
+    actions, wildcard_assignment, final_choice_completion, snapshot, timer_sync = await run_in_threadpool(
         _process_expiry_database_cycle,
         session_factory,
         include_timer_sync=emit_timer_sync,
@@ -136,6 +146,24 @@ async def process_expiry_cycle(
                     "action": "auto_allocated",
                     "team_count": wildcard_assignment["lab_allocation_team_count"],
                     "assignments": wildcard_assignment.get("lab_assignment_changes", []),
+                },
+                roles={"admin", "lab_admin"},
+            )
+    if final_choice_completion:
+        await connection_manager.broadcast_event(
+            "wildcard_updated",
+            {
+                "action": "final_choice_timeout",
+                "defaulted_team_ids": final_choice_completion["defaulted_team_ids"],
+            },
+        )
+        if final_choice_completion.get("lab_allocation_team_count") is not None:
+            connection_manager.publish_event(
+                "lab_allocation_updated",
+                {
+                    "action": "auto_allocated",
+                    "team_count": final_choice_completion["lab_allocation_team_count"],
+                    "assignments": final_choice_completion.get("lab_assignment_changes", []),
                 },
                 roles={"admin", "lab_admin"},
             )

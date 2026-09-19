@@ -58,6 +58,22 @@ def get_or_create_event_config(db: Session) -> EventConfig:
         db.refresh(config)
     return config
 
+def normalize_legacy_submission_state(
+    db: Session,
+    config: GameConfig,
+    event_config: EventConfig | None = None,
+) -> GameConfig:
+    if config.state != "SUBMISSION":
+        return config
+    event_config = event_config or db.query(EventConfig).order_by(EventConfig.id.asc()).first()
+    config.state = "CODING" if event_config and event_config.submissions_open else "JUDGING_WAIT"
+    config.last_state_update = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(config)
+    logger.warning("Normalized legacy SUBMISSION event state to %s.", config.state)
+    return config
+
+
 def get_or_create_game_config(db: Session) -> GameConfig:
     config = db.query(GameConfig).first()
     if not config:
@@ -65,7 +81,7 @@ def get_or_create_game_config(db: Session) -> GameConfig:
         db.add(config)
         db.commit()
         db.refresh(config)
-    return config
+    return normalize_legacy_submission_state(db, config)
 
 def _duration_for_state(event_config: EventConfig, state: str) -> int | None:
     return {
@@ -73,6 +89,7 @@ def _duration_for_state(event_config: EventConfig, state: str) -> int | None:
         "ROUND1_BIDDING": event_config.round1_bid_seconds,
         "WILDCARD_APPLICATION": event_config.wildcard_application_seconds,
         "WILDCARD_BIDDING": event_config.wildcard_bid_seconds,
+        "WILDCARD_FINAL_CHOICE": event_config.wildcard_final_choice_seconds,
         "CODING": event_config.coding_duration_seconds,
     }.get(state)
 
@@ -327,6 +344,8 @@ def event_snapshot(
     """Return authoritative event state without performing transitions or writes."""
     config = config or db.query(GameConfig).order_by(GameConfig.id.asc()).first()
     event_config = event_config or db.query(EventConfig).order_by(EventConfig.id.asc()).first()
+    if config is not None:
+        config = normalize_legacy_submission_state(db, config, event_config)
     if round_controls is None:
         round_controls = {
             row.round_type: row

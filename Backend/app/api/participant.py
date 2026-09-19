@@ -22,6 +22,7 @@ from app.api.auth import get_current_active_admin, get_current_active_participan
 from app.services.event_service import (
     get_team_for_user, get_or_create_game_config, get_or_create_event_config, get_or_create_round_control,
     ensure_leader, event_snapshot, event_timing, transition_event_state,
+    normalize_legacy_submission_state,
 )
 from app.api.websockets import manager
 from app.services.wildcard_service import (
@@ -83,6 +84,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
     if singleton_configs is None:
         raise HTTPException(status_code=503, detail="Event configuration is temporarily unavailable.")
     config, event_config, lab_allocation_state = singleton_configs
+    config = normalize_legacy_submission_state(db, config, event_config)
     controls = {
         row.round_type: row
         for row in db.query(RoundControl)
@@ -306,6 +308,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
             wildcard_preview_seconds=event_config.wildcard_preview_seconds,
             wildcard_bid_seconds=event_config.wildcard_bid_seconds,
             wildcard_selection_seconds=event_config.wildcard_selection_seconds,
+            wildcard_final_choice_seconds=event_config.wildcard_final_choice_seconds,
             coding_duration_seconds=event_config.coding_duration_seconds,
             bid_cooldown_seconds=event_config.bid_cooldown_seconds,
         ),
@@ -316,6 +319,9 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         wildcardEligible=bool(team.is_approved),
         wildcardApplicationsOpen=bool(wildcard_control and wildcard_control.applications_open),
         submissionsOpen=bool(event_config.submissions_open),
+        finalProblemChoice=team.final_problem_choice,
+        finalProblemConfirmedAt=team.final_problem_confirmed_at,
+        finalProblemDefaulted=bool(team.final_problem_defaulted),
     )
     logger.info(
         "Participant dashboard timing user_id=%s team_id=%s state=%s duration_ms=%.2f",
@@ -535,7 +541,7 @@ def get_admin_submissions(db: Session = Depends(get_db), current_user: User = De
     rows = []
     teams = (
         db.query(Team)
-        .options(joinedload(Team.submission))
+        .options(joinedload(Team.submission), joinedload(Team.lab_assignment).joinedload(LabAssignment.lab))
         .order_by(Team.team_name.asc())
         .all()
     )
@@ -580,6 +586,11 @@ def get_admin_submissions(db: Session = Depends(get_db), current_user: User = De
             "updated_at": submission.updated_at if submission else None,
             "submitted_by": submitter.name if submitter else None,
             "final_problem": final_problem_payload,
+            "allocated_lab": (
+                {"id": team.lab_assignment.lab.id, "name": team.lab_assignment.lab.name}
+                if team.lab_assignment and team.lab_assignment.lab and team.lab_assignment.effective_ps_id == team.ps_id
+                else None
+            ),
         })
     submitted = sum(row["status"] == "SUBMITTED" for row in rows)
     return {
@@ -594,34 +605,29 @@ def get_admin_submissions(db: Session = Depends(get_db), current_user: User = De
 
 @router.post("/admin/submissions/open")
 async def open_submissions(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
-    if get_or_create_event_config(db).submissions_open:
-        return get_admin_submissions(db, None)
-    round_one = get_or_create_round_control(db, "ROUND1")
-    wildcard_control = get_or_create_round_control(db, "WILDCARD")
-    if not round_one.ended:
-        raise HTTPException(status_code=409, detail="End Round 1 before opening submissions.")
-    if wildcard_control.status not in {"NOT_STARTED", "COMPLETE"}:
-        raise HTTPException(status_code=409, detail="Complete Wildcard problem selection before opening submissions.")
+    game = get_or_create_game_config(db)
+    if game.state != "CODING":
+        raise HTTPException(status_code=409, detail="Submissions can only be opened during Coding.")
     event_config = get_or_create_event_config(db)
+    if event_config.submissions_open:
+        return get_admin_submissions(db, None)
     event_config.submissions_open = True
-    transition_event_state(db, "SUBMISSION", validate=False, commit=False)
     record_event(db, "submissions.opened", actor=current_user)
     db.commit()
-    snapshot = event_snapshot(db)
     response = get_admin_submissions(db, None)
     db.close()
-    await manager.broadcast_event("event_state_changed", snapshot)
+    await manager.broadcast_event("submission_updated", {"action": "submissions_opened"})
     return response
 
 
 @router.post("/admin/submissions/close")
 async def close_submissions(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
+    game = get_or_create_game_config(db)
     event_config = get_or_create_event_config(db)
     if event_config.submissions_open:
         event_config.submissions_open = False
         record_event(db, "submissions.closed", actor=current_user)
-    game = get_or_create_game_config(db)
-    if game.state == "SUBMISSION":
+    if game.state in {"CODING", "SUBMISSION"}:
         transition_event_state(db, "JUDGING_WAIT", commit=False)
         record_event(db, "judging.started", actor=current_user)
     db.commit()

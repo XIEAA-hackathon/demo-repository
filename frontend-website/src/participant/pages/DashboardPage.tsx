@@ -13,8 +13,8 @@ const roundLabel: Record<ParticipantEventState, string> = {
   WILDCARD_APPLICATION: 'Wildcard',
   WILDCARD_BIDDING: 'Wildcard',
   WILDCARD_SELECTION: 'Wildcard',
+  WILDCARD_FINAL_CHOICE: 'Wildcard',
   CODING: 'Coding',
-  SUBMISSION: 'Submission',
   JUDGING_WAIT: 'Judging',
   RESULTS: 'Results',
 }
@@ -27,8 +27,8 @@ const nextAction: Record<ParticipantEventState, string> = {
   WILDCARD_APPLICATION: 'Apply for a wildcard problem while you still can.',
   WILDCARD_BIDDING: 'Place one bid for a ranked wildcard slot.',
   WILDCARD_SELECTION: 'Choose your team’s wildcard problem.',
-  CODING: 'Build and commit your solution now.',
-  SUBMISSION: 'Submit the final repository for judging.',
+  WILDCARD_FINAL_CHOICE: 'Choose whether to build your Round 1 or Wildcard problem.',
+  CODING: 'Build your solution and submit its repository when the window opens.',
   JUDGING_WAIT: 'Sit tight while judges score your submission.',
   RESULTS: 'The final standings are in.',
 }

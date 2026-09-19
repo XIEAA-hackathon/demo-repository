@@ -214,8 +214,8 @@ def public_event_display(
         "ROUND1_RESULT": "Round 1 results",
         "WILDCARD_APPLICATION": "Wildcard applications",
         "WILDCARD_SELECTION": "Wildcard problem selection",
+        "WILDCARD_FINAL_CHOICE": "Wildcard final problem choice",
         "CODING": "Coding in progress",
-        "SUBMISSION": "Submission window",
         "JUDGING_WAIT": "Judging in progress",
         "RESULTS": "Waiting for results",
     }

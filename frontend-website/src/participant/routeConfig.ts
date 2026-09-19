@@ -14,14 +14,15 @@ export const participantStageRoutes: readonly ParticipantStageRoute[] = [
   { state: 'WILDCARD_APPLICATION', label: 'Wildcard application', path: '/participant/wildcard' },
   { state: 'WILDCARD_BIDDING', label: 'Wildcard slot bidding', path: '/participant/wildcard/bid' },
   { state: 'WILDCARD_SELECTION', label: 'Wildcard selection', path: '/participant/wildcard/select' },
+  { state: 'WILDCARD_FINAL_CHOICE', label: 'Final problem choice', path: '/participant/wildcard/choose' },
   { state: 'CODING', label: 'Coding round', path: '/participant/coding' },
-  { state: 'SUBMISSION', label: 'Final submission', path: '/participant/submission' },
   { state: 'JUDGING_WAIT', label: 'Waiting for judging', path: '/participant/judging' },
   { state: 'RESULTS', label: 'Final results', path: '/participant/results' },
 ] as const
 
-export function getStageRoute(state: ParticipantEventState): ParticipantStageRoute {
-  const route = participantStageRoutes.find((item) => item.state === state)
+export function getStageRoute(state: ParticipantEventState | 'SUBMISSION'): ParticipantStageRoute {
+  const normalizedState = state === 'SUBMISSION' ? 'CODING' : state
+  const route = participantStageRoutes.find((item) => item.state === normalizedState)
   if (!route) throw new Error(`Unknown participant event state: ${state}`)
   return route
 }

@@ -10,6 +10,7 @@ export interface ParticipantPermissions {
   canPlaceBid: boolean
   canPlaceWildcardBid: boolean
   canSelectWildcardProblem: boolean
+  canConfirmFinalProblem: boolean
   canSubmitRepository: boolean
 }
 
@@ -43,6 +44,7 @@ export function getParticipantPermissions(dashboard: ParticipantDashboard): Part
     canPlaceBid: isLeader,
     canPlaceWildcardBid: isLeader,
     canSelectWildcardProblem: isLeader,
+    canConfirmFinalProblem: isLeader,
     canSubmitRepository: isLeader && dashboard.submissionsOpen,
   }
 }

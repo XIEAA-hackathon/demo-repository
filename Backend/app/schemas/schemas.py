@@ -12,8 +12,8 @@ EVENT_STATES = [
     "WILDCARD_APPLICATION",
     "WILDCARD_BIDDING",
     "WILDCARD_SELECTION",
+    "WILDCARD_FINAL_CHOICE",
     "CODING",
-    "SUBMISSION",
     "JUDGING_WAIT",
     "RESULTS",
 ]
@@ -131,6 +131,7 @@ class EventConfigBase(BaseModel):
     wildcard_preview_seconds: int = 120
     wildcard_bid_seconds: int = 180
     wildcard_selection_seconds: int = 30
+    wildcard_final_choice_seconds: int = 60
     wildcard_starting_bid: int = 150
     wildcard_bid_increment: int = 1
     submissions_open: bool = False
@@ -153,6 +154,7 @@ class EventConfigUpdate(BaseModel):
     wildcard_preview_seconds: Optional[int] = None
     wildcard_bid_seconds: Optional[int] = None
     wildcard_selection_seconds: Optional[int] = None
+    wildcard_final_choice_seconds: Optional[int] = None
     wildcard_starting_bid: Optional[int] = None
     wildcard_bid_increment: Optional[int] = None
     submissions_open: Optional[bool] = None
@@ -263,6 +265,7 @@ class DashboardGameConfig(BaseModel):
     wildcard_preview_seconds: int
     wildcard_bid_seconds: int
     wildcard_selection_seconds: int = 30
+    wildcard_final_choice_seconds: int = 60
     coding_duration_seconds: int
     bid_cooldown_seconds: int = 5
 
@@ -309,6 +312,9 @@ class ParticipantDashboardResponse(BaseModel):
     wildcardEligible: bool = False
     wildcardApplicationsOpen: bool = False
     submissionsOpen: bool = False
+    finalProblemChoice: Optional[str] = None
+    finalProblemConfirmedAt: Optional[datetime] = None
+    finalProblemDefaulted: bool = False
 
 # --- Submission Schemas ---
 class SubmissionCreate(BaseModel):
@@ -325,6 +331,10 @@ class WildcardSlotRequest(BaseModel):
 class WildcardEndTurnRequest(BaseModel):
     expected_rank: int = Field(ge=1)
     expected_team_id: int = Field(ge=1)
+
+
+class WildcardFinalChoiceRequest(BaseModel):
+    choice: Literal["ROUND1", "WILDCARD"]
 
 # --- Leaderboard Schemas ---
 class LeaderboardEntry(BaseModel):

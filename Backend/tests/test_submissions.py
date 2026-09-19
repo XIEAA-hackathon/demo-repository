@@ -1,8 +1,11 @@
 from unittest.mock import AsyncMock
+from datetime import datetime, timedelta, timezone
 
 from app.api import participant
 from app.core.security import get_password_hash
-from app.models.models import GameConfig, ProblemStatement, RoundControl, Submission, Team, User
+from app.models.models import EventConfig, GameConfig, ProblemStatement, RoundControl, Submission, Team, User
+from app.schemas.schemas import EVENT_STATES
+from app.services.event_service import get_or_create_game_config
 
 
 def _team(db, name, email, problem):
@@ -32,13 +35,22 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
     db.flush()
     alpha = _team(db, "Team Alpha", "alpha@submit.test", problem)
     beta = _team(db, "Team Beta", "beta@submit.test", problem)
+    member = User(name="Alpha Member", email="alpha-member@submit.test", password_hash=get_password_hash("temp-pass"), role="member", team_id=alpha.id)
     db.add_all([
+        member,
         RoundControl(round_type="ROUND1", status="CLOSED", ended=True),
         RoundControl(round_type="WILDCARD", status="COMPLETE", ended=True),
     ])
+    game = db.query(GameConfig).one()
+    game.state = "CODING"
+    game.phase_started_at = datetime.now(timezone.utc)
+    game.auction_timer_end = game.phase_started_at + timedelta(hours=3)
     db.commit()
+    phase_started_at = game.phase_started_at
+    timer_end = game.auction_timer_end
     alpha_headers = login_headers_factory("alpha@submit.test")
     beta_headers = login_headers_factory("beta@submit.test")
+    member_headers = login_headers_factory("alpha-member@submit.test")
 
     assert client.put(
         "/submissions/me", headers=alpha_headers,
@@ -46,6 +58,18 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
     ).status_code == 409
     opened = client.post("/admin/submissions/open", headers=admin_headers)
     assert opened.status_code == 200, opened.text
+    db.expire_all()
+    game = db.query(GameConfig).one()
+    assert game.state == "CODING"
+    assert game.phase_started_at == phase_started_at
+    assert game.auction_timer_end == timer_end
+    assert client.post("/admin/submissions/open", headers=admin_headers).status_code == 200
+    db.expire_all()
+    assert db.query(GameConfig).one().auction_timer_end == timer_end
+    assert client.put(
+        "/submissions/me", headers=member_headers,
+        json={"repository_url": "https://github.com/team-alpha/member"},
+    ).status_code == 403
     broadcast.reset_mock()
 
     submitted = client.post(
@@ -95,3 +119,14 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
         "/submissions/me", headers=beta_headers,
         json={"repository_url": "https://github.com/team-beta/project"},
     ).status_code == 409
+
+
+def test_legacy_submission_state_normalizes_safely(db):
+    assert "SUBMISSION" not in EVENT_STATES
+    event_config = EventConfig(submissions_open=True)
+    game = GameConfig(state="SUBMISSION")
+    db.add_all([event_config, game]); db.commit()
+
+    assert get_or_create_game_config(db).state == "CODING"
+    game.state = "SUBMISSION"; event_config.submissions_open = False; db.commit()
+    assert get_or_create_game_config(db).state == "JUDGING_WAIT"
