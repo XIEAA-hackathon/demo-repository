@@ -564,6 +564,7 @@ def _finish_final_choice_locked(
     now: datetime | None = None,
 ) -> list[int]:
     confirmed_at = now or utc_now()
+
     pending = (
         db.query(Team)
         .join(Wildcard, Wildcard.team_id == Team.id)
@@ -576,23 +577,42 @@ def _finish_final_choice_locked(
         .with_for_update()
         .all()
     )
+
     for team in pending:
-        if team.round1_problem_id is None:
-            raise WildcardSelectionConflict(f"{team.team_name} has no Round 1 problem to use as the default.")
-        team.ps_id = team.round1_problem_id
-        team.final_problem_choice = "ROUND1"
+        if team.round1_problem_id is not None:
+            # Both problems existed, but participant did not choose in time.
+            # Round 1 is the normal timeout default.
+            team.ps_id = team.round1_problem_id
+            team.final_problem_choice = "ROUND1"
+
+        elif team.wildcard_problem_id is not None:
+            # No Round 1 assignment existed.
+            # Wildcard is therefore automatically the final problem.
+            team.ps_id = team.wildcard_problem_id
+            team.final_problem_choice = "WILDCARD"
+
+        else:
+            raise WildcardSelectionConflict(
+                f"{team.team_name} has neither a Round 1 nor Wildcard problem assigned."
+            )
+
         team.final_problem_confirmed_at = confirmed_at
         team.final_problem_defaulted = True
 
     control.status = "COMPLETE"
     control.ended = True
+
     record_event(
         db,
         "wildcard.final_choice_completed",
         actor=actor,
         actor_type="system" if actor is None else None,
-        metadata={"reason": reason, "defaulted_team_ids": [team.id for team in pending]},
+        metadata={
+            "reason": reason,
+            "defaulted_team_ids": [team.id for team in pending],
+        },
     )
+
     return [team.id for team in pending]
 
 
