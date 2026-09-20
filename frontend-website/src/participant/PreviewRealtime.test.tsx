@@ -12,7 +12,7 @@ import type { ParticipantDashboard } from './types'
 
 vi.mock('./services/apiParticipantService', () => ({ participantService: { getParticipantDashboard: vi.fn(), getProblems: vi.fn(), getLeaderboard: vi.fn() } }))
 vi.mock('./services/eventSocket', () => ({ connectEventSocket: vi.fn() }))
-let host: HTMLDivElement, root: Root, receive: (message: EventMessage) => void
+let host: HTMLDivElement, root: Root, receive: (message: EventMessage) => void, socketStatus: (status: string) => void
 const now = Date.parse('2026-09-13T10:00:00Z')
 const problem = { id: '1', number: 1, title: 'Preview regression', summary: 'Read this challenge', description: 'Read this challenge', startingBid: 100, available: true }
 const initial = {
@@ -26,7 +26,11 @@ beforeEach(() => {
   vi.mocked(participantService.getParticipantDashboard).mockResolvedValue(initial)
   vi.mocked(participantService.getProblems).mockResolvedValue([problem])
   vi.mocked(participantService.getLeaderboard).mockResolvedValue([])
-  vi.mocked(connectEventSocket).mockImplementation(callback => { receive = callback; return () => {} })
+  vi.mocked(connectEventSocket).mockImplementation((callback, onStatus) => {
+    receive = callback
+    socketStatus = onStatus ?? (() => {})
+    return () => {}
+  })
   host = document.createElement('div'); root = createRoot(host)
 })
 afterEach(() => { act(() => root.unmount()); vi.useRealTimers() })
@@ -61,6 +65,29 @@ it('updates only the affected team lab without reloading the dashboard', async (
   await delta(1, 3, 3); expect(host.textContent).toContain('Lab 3')
   await delta(1, 2, 2); expect(host.textContent).toContain('Lab 3')
   expect(participantService.getParticipantDashboard).toHaveBeenCalledTimes(1)
+})
+
+it('defers background reconciliation after a connected authoritative snapshot', async () => {
+  const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+  await act(async () => root.render(<MemoryRouter><ParticipantProvider><div /></ParticipantProvider></MemoryRouter>))
+  await act(async () => socketStatus('connected'))
+  await send(1, 'ROUND1_PREVIEW', new Date(now + 2_000).toISOString(), 'event_snapshot')
+
+  await act(async () => vi.advanceTimersByTimeAsync(20_000))
+  expect(participantService.getParticipantDashboard).toHaveBeenCalledTimes(1)
+  await act(async () => vi.advanceTimersByTimeAsync(40_000))
+  expect(participantService.getParticipantDashboard).toHaveBeenCalledTimes(2)
+  random.mockRestore()
+})
+
+it('keeps the faster reconciliation fallback until a socket snapshot arrives', async () => {
+  const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+  await act(async () => root.render(<MemoryRouter><ParticipantProvider><div /></ParticipantProvider></MemoryRouter>))
+  await act(async () => socketStatus('connected'))
+
+  await act(async () => vi.advanceTimersByTimeAsync(12_000))
+  expect(participantService.getParticipantDashboard).toHaveBeenCalledTimes(2)
+  random.mockRestore()
 })
 
 it('makes a completed-allocation inconsistency visible', async () => {

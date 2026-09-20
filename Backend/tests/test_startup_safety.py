@@ -1,8 +1,20 @@
 import asyncio
 
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+
 from app import main
 from app.models.models import Lab, LabAssignment, ProblemStatement, Team, User
 from app.services import lab_allocation
+
+
+def test_database_pool_timeouts_are_counted(monkeypatch):
+    monkeypatch.setattr(main, "pool_timeout_count", 0)
+    response = asyncio.run(
+        main.database_error_handler(None, SQLAlchemyTimeoutError("pool exhausted"))
+    )
+
+    assert response.status_code == 503
+    assert main.pool_timeout_count == 1
 
 
 def test_startup_does_not_generate_or_replace_lab_assignments(db, session_factory, monkeypatch):

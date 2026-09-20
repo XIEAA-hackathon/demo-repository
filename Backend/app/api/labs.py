@@ -107,9 +107,9 @@ async def create_lab(
     result = _lab_payload(lab)
     allocation_team_count = try_allocate_labs(db)
     db.close()
-    manager.publish_event("lab_configuration_updated", {"action": "created", "lab_id": result["id"]}, roles={"admin", "lab_admin"})
+    await manager.broadcast_event("lab_configuration_updated", {"action": "created", "lab_id": result["id"]}, roles={"admin", "lab_admin"})
     if allocation_team_count is not None:
-        manager.publish_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])}, roles={"admin", "lab_admin"})
+        await manager.broadcast_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])}, roles={"admin", "lab_admin"})
     return result
 
 
@@ -145,9 +145,9 @@ async def update_lab(
     result = _lab_payload(lab)
     allocation_team_count = try_allocate_labs(db)
     db.close()
-    manager.publish_event("lab_configuration_updated", {"action": "updated", "lab_id": lab_id}, roles={"admin", "lab_admin"})
+    await manager.broadcast_event("lab_configuration_updated", {"action": "updated", "lab_id": lab_id}, roles={"admin", "lab_admin"})
     if allocation_team_count is not None:
-        manager.publish_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])}, roles={"admin", "lab_admin"})
+        await manager.broadcast_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])}, roles={"admin", "lab_admin"})
     return result
 
 
@@ -170,7 +170,7 @@ async def delete_lab(
     record_event(db, "lab.deleted", actor=current_user, entity_type="lab", entity_id=lab_id, metadata={"name": name})
     db.commit()
     db.close()
-    manager.publish_event("lab_configuration_updated", {"action": "deleted", "lab_id": lab_id}, roles={"admin", "lab_admin"})
+    await manager.broadcast_event("lab_configuration_updated", {"action": "deleted", "lab_id": lab_id}, roles={"admin", "lab_admin"})
     return {"message": f"{name} deleted."}
 
 
@@ -195,7 +195,7 @@ async def generate_lab_allocation(
     board = lab_board(db)
     db.close()
     if changed:
-        manager.publish_event(
+        await manager.broadcast_event(
             "lab_allocation_updated",
             {"action": "auto_allocated", "team_count": team_count, "assignments": db.info.pop("lab_assignment_changes", [])},
             roles={"admin", "lab_admin"},
@@ -239,7 +239,7 @@ async def move_lab_assignment(
         result.update(changes[0])
     db.close()
     if changes:
-        manager.publish_event("lab_assignment_changed", result, roles={"admin", "lab_admin", "leader", "member"})
+        await manager.broadcast_event("lab_assignment_changed", result, roles={"admin", "lab_admin", "leader", "member"})
     return result
 
 

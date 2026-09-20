@@ -70,24 +70,8 @@ def _place_round1_bid_transaction(
     user_id: int | None = None
     with session_factory() as db:
         try:
-            # Bound contention without leaking a timeout into the pooled connection.
-            db.execute(text(f"SET LOCAL lock_timeout = '{ROUND1_BID_LOCK_TIMEOUT_MS}ms'"))
-            # This single row serializes price decisions for the active Round 1
-            # auction. Finalization, rebids and assignments use the same first
-            # lock, so MAX(amount) does not need to lock every Bid row.
-            auction_lock_started_at = perf_counter()
-            control = (
-                db.query(RoundControl)
-                .filter(RoundControl.round_type == "ROUND1")
-                .with_for_update()
-                .one_or_none()
-            )
-            auction_lock_wait_ms = (perf_counter() - auction_lock_started_at) * 1000
-            if control is None:
-                raise HTTPException(status_code=409, detail="Round 1 is not initialized.")
-
-            # Validate the signed identity after any auction-lock wait so a
-            # session revoked while queued cannot enter the price decision.
+            # Reject invalid identities and resolve stable membership before
+            # joining the globally serialized price decision.
             user = (
                 db.query(User)
                 .filter(
@@ -107,6 +91,36 @@ def _place_round1_bid_transaction(
                 team_id = db.query(Team.id).filter(Team.leader_id == user.id).scalar()
             if team_id is None:
                 raise HTTPException(status_code=403, detail="No team is linked to your account.")
+
+            # Bound contention without leaking a timeout into the pooled connection.
+            db.execute(text(f"SET LOCAL lock_timeout = '{ROUND1_BID_LOCK_TIMEOUT_MS}ms'"))
+            # This single row serializes price decisions for the active Round 1
+            # auction. Finalization, rebids and assignments use the same first
+            # lock, so MAX(amount) does not need to lock every Bid row.
+            auction_lock_started_at = perf_counter()
+            control = (
+                db.query(RoundControl)
+                .filter(RoundControl.round_type == "ROUND1")
+                .with_for_update()
+                .one_or_none()
+            )
+            auction_lock_wait_ms = (perf_counter() - auction_lock_started_at) * 1000
+            if control is None:
+                raise HTTPException(status_code=409, detail="Round 1 is not initialized.")
+
+            # Validate the signed identity after any auction-lock wait so a
+            # session revoked while queued cannot enter the price decision.
+            session_still_active = (
+                db.query(User.id)
+                .filter(
+                    User.id == user_id,
+                    User.credentials_active.is_(True),
+                    User.session_id == session_id,
+                )
+                .first()
+            )
+            if session_still_active is None:
+                raise HTTPException(status_code=401, detail="Session expired or was revoked. Please log in again.")
 
             config = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
             event_config = db.query(EventConfig).order_by(EventConfig.id.asc()).first()

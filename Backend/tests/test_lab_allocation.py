@@ -374,7 +374,7 @@ def test_lab_delta_only_reaches_affected_team_and_observers():
         manager = ConnectionManager()
         own, other, admin = Socket(), Socket(), Socket()
         manager.active_connections = {own: {'team_id': 1, 'role': 'leader'}, other: {'team_id': 2, 'role': 'leader'}, admin: {'role': 'lab_admin'}}
-        manager.publish_event('lab_allocation_updated', {'assignments': [{'team_id': 1, 'lab': {'id': 3, 'name': 'Lab C'}}]}, roles={'admin', 'lab_admin'})
+        await manager.broadcast_event('lab_allocation_updated', {'assignments': [{'team_id': 1, 'lab': {'id': 3, 'name': 'Lab C'}}]}, roles={'admin', 'lab_admin'})
         await manager.wait_for_pending()
         assert [row['type'] for row in own.messages] == ['lab_assignment_changed']
         assert other.messages == []

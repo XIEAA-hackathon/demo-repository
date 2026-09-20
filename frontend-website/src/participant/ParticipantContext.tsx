@@ -37,6 +37,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
   const [documentHidden, setDocumentHidden] = useState(() => document.hidden)
   const [refreshPending, setRefreshPending] = useState(false)
+  const [hasAuthoritativeSocketSnapshot, setHasAuthoritativeSocketSnapshot] = useState(false)
 
   // Only bidding screens consume realtimeEvent. Keeping every websocket message
   // here caused the entire participant tree (dashboard/layout/navigation) to
@@ -215,7 +216,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         const connected = ['connected', 'reconnected'].includes(socketStatusRef.current)
 
         schedule(
-          connected && next
+          connected && next && hasAuthoritativeSocketSnapshot
             ? jitterMilliseconds(60_000, 90_000)
             : next
               ? jitterMilliseconds(12_000, 20_000)
@@ -244,7 +245,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         const connected = ['connected', 'reconnected'].includes(socketStatusRef.current)
 
         schedule(
-          next && connected
+          next && connected && hasAuthoritativeSocketSnapshot
             ? jitterMilliseconds(60_000, 90_000)
             : next
               ? jitterMilliseconds(12_000, 20_000)
@@ -253,7 +254,11 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       })()
     }
 
-    schedule(jitterMilliseconds(12_000, 20_000))
+    schedule(
+      hasAuthoritativeSocketSnapshot && ['connected', 'reconnected'].includes(socketStatusRef.current)
+        ? jitterMilliseconds(60_000, 90_000)
+        : jitterMilliseconds(12_000, 20_000),
+    )
     document.addEventListener('visibilitychange', onVisibility)
 
     return () => {
@@ -261,7 +266,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
       if (timer !== undefined) window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [runRefresh])
+  }, [hasAuthoritativeSocketSnapshot, runRefresh])
 
   useEffect(() => {
     let timer: number | undefined
@@ -411,6 +416,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           || message.type === 'event_state_changed'
           || message.type === 'timer_sync'
         ) {
+          if (message.type === 'event_snapshot') setHasAuthoritativeSocketSnapshot(true)
           // An initial socket snapshot can arrive before the first dashboard
           // response. Make that response retry instead of accepting a snapshot
           // which started before newer server state was observed.
@@ -767,6 +773,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         socketStatusRef.current = status
 
         if (status === 'reconnected') {
+          setHasAuthoritativeSocketSnapshot(false)
           lastEventVersion.current = 0
           queueRefresh()
           window.dispatchEvent(new Event('participant:leaderboard-resync'))

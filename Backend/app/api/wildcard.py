@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import perf_counter
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -56,6 +56,7 @@ class WildcardBidResult:
     amount: int
     timestamp: datetime
     cooldown_seconds: int
+    auction_lock_wait_ms: float
     transaction_ms: float
 
 
@@ -76,8 +77,8 @@ def _place_wildcard_bid_transaction(
     user_id: int | None = None
     with session_factory() as db:
         try:
-            # Authentication, membership, and static configuration are checked
-            # before entering the globally serialized auction section.
+            # Authentication, membership, and application eligibility are
+            # checked before entering the globally serialized auction section.
             user = (
                 db.query(User)
                 .filter(
@@ -97,9 +98,6 @@ def _place_wildcard_bid_transaction(
                 team_id = db.query(Team.id).filter(Team.leader_id == user.id).scalar()
             if team_id is None:
                 raise HTTPException(status_code=403, detail="No team is linked to your account.")
-            event_config = db.query(EventConfig).order_by(EventConfig.id.asc()).first()
-            if not event_config:
-                raise HTTPException(status_code=409, detail="Event configuration is unavailable.")
             application_exists = (
                 db.query(Wildcard.id)
                 .filter(Wildcard.team_id == team_id, Wildcard.status == "applied")
@@ -112,15 +110,20 @@ def _place_wildcard_bid_transaction(
             # One short critical section protects the shared current price.
             # Authentication, membership, and application checks have already
             # completed; no network I/O occurs while this lock is held.
+            auction_lock_started_at = perf_counter()
             control = (
                 db.query(RoundControl)
                 .filter(RoundControl.round_type == "WILDCARD")
                 .with_for_update()
                 .one_or_none()
             )
+            auction_lock_wait_ms = (perf_counter() - auction_lock_started_at) * 1000
             if control is None:
                 raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
             game = db.query(GameConfig).order_by(GameConfig.id.asc()).first()
+            event_config = db.query(EventConfig).order_by(EventConfig.id.asc()).first()
+            if not event_config:
+                raise HTTPException(status_code=409, detail="Event configuration is unavailable.")
             session_still_active = db.query(User.id).filter(
                 User.id == user.id,
                 User.credentials_active.is_(True),
@@ -191,6 +194,7 @@ def _place_wildcard_bid_transaction(
                 "amount": next_amount,
                 "timestamp": now,
                 "cooldown_seconds": cooldown,
+                "auction_lock_wait_ms": auction_lock_wait_ms,
             }
             db.commit()
             return WildcardBidResult(
@@ -369,6 +373,7 @@ async def start_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
 async def place_wildcard_bid(
     http_request: Request,
     request: BidIncrementRequest,
+    response: Response,
     identity: BidAuthClaims = Depends(get_bid_auth_claims),
 ):
     request_started_at = perf_counter()
@@ -394,9 +399,15 @@ async def place_wildcard_bid(
         "cooldown_seconds": result.cooldown_seconds,
     }
     queued = manager.publish_event("wildcard_bid_updated", payload)
+    response.headers["Server-Timing"] = (
+        f"auction-lock;dur={result.auction_lock_wait_ms:.2f}, "
+        f"db-transaction;dur={result.transaction_ms:.2f}"
+    )
     logger.info(
-        "Wildcard bid timing team_id=%s transaction_ms=%.2f total_ms=%.2f broadcast_queued=%s",
+        "Wildcard bid timing team_id=%s auction_lock_wait_ms=%.2f "
+        "transaction_ms=%.2f total_ms=%.2f broadcast_queued=%s",
         result.team_id,
+        result.auction_lock_wait_ms,
         result.transaction_ms,
         (perf_counter() - request_started_at) * 1000,
         queued,
@@ -462,7 +473,7 @@ async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=De
         response = {"winners": winners, **wildcard_payload(db)}
         db.close()
         if lab_allocation_team_count is not None:
-            manager.publish_event(
+            await manager.broadcast_event(
                 "lab_allocation_updated",
                 {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])},
                 roles={"admin", "lab_admin"},
@@ -490,7 +501,7 @@ async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=De
     await manager.broadcast_event("wildcard_updated", {"action": "bidding_finalized", "winners": winners})
     await manager.broadcast_event("event_state_changed", snapshot)
     if lab_allocation_team_count is not None:
-        manager.publish_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])}, roles={"admin", "lab_admin"})
+        await manager.broadcast_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])}, roles={"admin", "lab_admin"})
     return response
 
 
@@ -512,7 +523,7 @@ async def end_wildcard(db: Session = Depends(get_db), current_user=Depends(get_c
         })
         await manager.broadcast_event("event_state_changed", snapshot)
         if result.get("lab_allocation_team_count") is not None:
-            manager.publish_event(
+            await manager.broadcast_event(
                 "lab_allocation_updated",
                 {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": assignments},
                 roles={"admin", "lab_admin"},
@@ -547,7 +558,7 @@ async def end_wildcard(db: Session = Depends(get_db), current_user=Depends(get_c
     })
     await manager.broadcast_event("event_state_changed", snapshot)
     if lab_allocation_team_count is not None:
-        manager.publish_event(
+        await manager.broadcast_event(
             "lab_allocation_updated",
             {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])},
             roles={"admin", "lab_admin"},
@@ -599,7 +610,7 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
     if snapshot is not None:
         await manager.broadcast_event("event_state_changed", snapshot)
     if result.get("lab_allocation_team_count") is not None:
-        manager.publish_event(
+        await manager.broadcast_event(
             "lab_allocation_updated",
             {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": db.info.pop("lab_assignment_changes", [])},
             roles={"admin", "lab_admin"},
@@ -642,7 +653,7 @@ async def choose_final_problem(
     if snapshot is not None:
         await manager.broadcast_event("event_state_changed", snapshot)
     if result.get("lab_allocation_team_count") is not None:
-        manager.publish_event(
+        await manager.broadcast_event(
             "lab_allocation_updated",
             {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": assignments},
             roles={"admin", "lab_admin"},
@@ -670,7 +681,7 @@ async def end_wildcard_final_choice(
     })
     await manager.broadcast_event("event_state_changed", snapshot)
     if result.get("lab_allocation_team_count") is not None:
-        manager.publish_event(
+        await manager.broadcast_event(
             "lab_allocation_updated",
             {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": assignments},
             roles={"admin", "lab_admin"},
@@ -718,7 +729,7 @@ async def end_wildcard_selection_turn(
     if snapshot is not None:
         await manager.broadcast_event("event_state_changed", snapshot)
     if result.get("lab_allocation_team_count") is not None:
-        manager.publish_event(
+        await manager.broadcast_event(
             "lab_allocation_updated",
             {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": db.info.pop("lab_assignment_changes", [])},
             roles={"admin", "lab_admin"},

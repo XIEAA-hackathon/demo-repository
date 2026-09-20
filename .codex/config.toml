@@ -1,0 +1,11 @@
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 2
+
+[agents.website_optimizer]
+description = "Website optimization implementation agent."
+config_file = "agents/website-optimizer.toml"
+
+[agents.performance_reviewer]
+description = "Independent performance reviewer."
+config_file = "agents/performance-reviewer.toml"

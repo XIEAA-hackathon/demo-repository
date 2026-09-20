@@ -54,7 +54,11 @@ class ConnectionManager:
         self._broadcast_queue: asyncio.Queue | None = None
         self._broadcast_worker: asyncio.Task | None = None
         self._worker_loop: asyncio.AbstractEventLoop | None = None
-        self._send_locks: dict[WebSocket, asyncio.Lock] = {}
+        self._client_queues: dict[WebSocket, asyncio.Queue] = {}
+        self._client_senders: dict[WebSocket, asyncio.Task] = {}
+        self._client_close_tasks: set[asyncio.Task] = set()
+        self._slow_client_disconnects = 0
+        self._client_queue_overflows = 0
         self._dropped_publish_events = 0
         self._drop_counter_started_at = monotonic()
         self._last_drop_log_at = 0.0
@@ -94,11 +98,25 @@ class ConnectionManager:
         self._broadcast_worker = None
         self._broadcast_queue = None
         self._worker_loop = None
+        senders = list(self._client_senders.values())
+        for sender in senders:
+            sender.cancel()
+        for sender in senders:
+            with suppress(asyncio.CancelledError):
+                await sender
+        self._client_senders.clear()
+        self._client_queues.clear()
+        self.active_connections.clear()
+        close_tasks = list(self._client_close_tasks)
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+        self._client_close_tasks.clear()
 
     async def wait_for_pending(self) -> None:
-        """Wait until events already accepted by the bounded queue are delivered."""
+        """Test helper: wait until currently queued broadcasts reach client senders."""
         if self._broadcast_queue is not None:
             await self._broadcast_queue.join()
+        await asyncio.gather(*(queue.join() for queue in list(self._client_queues.values())))
 
     async def _run_broadcast_worker(self) -> None:
         assert self._broadcast_queue is not None
@@ -153,6 +171,8 @@ class ConnectionManager:
             "broadcast_queue_capacity": self._queue_size,
             "broadcast_dropped_total": self._dropped_publish_events,
             "broadcast_worker_running": bool(self._broadcast_worker and not self._broadcast_worker.done()),
+            "slow_client_disconnects": self._slow_client_disconnects,
+            "client_queue_overflows": self._client_queue_overflows,
         }
 
     def schedule_presence_refresh(
@@ -192,11 +212,116 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket, identity: dict[str, Any]):
         await websocket.accept()
         self.active_connections[websocket] = identity
-        self._send_locks.setdefault(websocket, asyncio.Lock())
+        self._ensure_client_sender(websocket)
 
     def disconnect(self, websocket: WebSocket) -> dict[str, Any] | None:
-        self._send_locks.pop(websocket, None)
-        return self.active_connections.pop(websocket, None)
+        identity = self.active_connections.pop(websocket, None)
+        self._client_queues.pop(websocket, None)
+        sender = self._client_senders.pop(websocket, None)
+        if sender is not None and sender is not asyncio.current_task():
+            sender_loop = sender.get_loop()
+            if sender_loop is asyncio.get_running_loop():
+                sender.cancel()
+            elif sender_loop.is_running():
+                sender_loop.call_soon_threadsafe(sender.cancel)
+            else:
+                sender.cancel()
+        return identity
+
+    async def disconnect_and_wait(self, websocket: WebSocket) -> dict[str, Any] | None:
+        sender = self._client_senders.get(websocket)
+        identity = self.disconnect(websocket)
+        if sender is not None and sender is not asyncio.current_task():
+            sender_loop = sender.get_loop()
+            if sender_loop is asyncio.get_running_loop():
+                with suppress(asyncio.CancelledError):
+                    await sender
+            elif sender_loop.is_running():
+                async def wait_for_sender() -> None:
+                    with suppress(asyncio.CancelledError):
+                        await sender
+
+                await asyncio.wrap_future(
+                    asyncio.run_coroutine_threadsafe(wait_for_sender(), sender_loop)
+                )
+        return identity
+
+    def _ensure_client_sender(self, websocket: WebSocket) -> asyncio.Queue:
+        queue = self._client_queues.get(websocket)
+        if queue is not None:
+            return queue
+        queue = asyncio.Queue(maxsize=self._queue_size)
+        self._client_queues[websocket] = queue
+        self._client_senders[websocket] = asyncio.get_running_loop().create_task(
+            self._run_client_sender(websocket, queue),
+            name="websocket-client-sender",
+        )
+        return queue
+
+    async def _run_client_sender(self, websocket: WebSocket, queue: asyncio.Queue) -> None:
+        try:
+            while True:
+                message, completion = await queue.get()
+                try:
+                    await asyncio.wait_for(websocket.send_json(message), timeout=self._send_timeout_seconds)
+                    if completion is not None and not completion.done():
+                        completion.set_result(True)
+                except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError) as exc:
+                    if isinstance(exc, asyncio.TimeoutError):
+                        self._slow_client_disconnects += 1
+                    if completion is not None and not completion.done():
+                        completion.set_result(False)
+                    self.disconnect(websocket)
+                    await _safe_close(websocket, code=1013, reason="Client send timed out")
+                    return
+                except asyncio.CancelledError:
+                    if completion is not None and not completion.done():
+                        completion.set_result(False)
+                    raise
+                except Exception as exc:
+                    logger.warning("WebSocket client sender failed error=%s", exc.__class__.__name__)
+                    if completion is not None and not completion.done():
+                        completion.set_result(False)
+                    self.disconnect(websocket)
+                    await _safe_close(websocket, code=1011, reason="Client send failed")
+                    return
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            raise
+        finally:
+            while not queue.empty():
+                _message, completion = queue.get_nowait()
+                if completion is not None and not completion.done():
+                    completion.set_result(False)
+                queue.task_done()
+            if self._client_senders.get(websocket) is asyncio.current_task():
+                self._client_senders.pop(websocket, None)
+                self._client_queues.pop(websocket, None)
+
+    def _enqueue_client_message(self, websocket: WebSocket, message: dict[str, Any], completion=None) -> bool:
+        if websocket not in self.active_connections:
+            return False
+        if getattr(websocket, "application_state", WebSocketState.CONNECTED) != WebSocketState.CONNECTED:
+            self.disconnect(websocket)
+            return False
+        queue = self._ensure_client_sender(websocket)
+        try:
+            queue.put_nowait((message, completion))
+            return True
+        except asyncio.QueueFull:
+            self._client_queue_overflows += 1
+            self._slow_client_disconnects += 1
+            if completion is not None and not completion.done():
+                completion.set_result(False)
+            self.disconnect(websocket)
+            close_task = asyncio.get_running_loop().create_task(
+                _safe_close(websocket, code=1013, reason="Client outbound queue full"),
+                name="websocket-slow-client-close",
+            )
+            self._client_close_tasks.add(close_task)
+            close_task.add_done_callback(self._client_close_tasks.discard)
+            return False
 
     def participant_team_ids(self) -> set[int]:
         return {
@@ -212,7 +337,7 @@ class ConnectionManager:
             if identity.get("user_id") in user_ids
         ]
         for connection in matches:
-            self.disconnect(connection)
+            await self.disconnect_and_wait(connection)
         for connection in matches:
             try:
                 await connection.close(code=code, reason=reason)
@@ -221,22 +346,12 @@ class ConnectionManager:
         return len(matches)
 
     async def send_event(self, websocket: WebSocket, event_type: str, payload: dict[str, Any] | None = None) -> bool:
-        if websocket not in self.active_connections:
+        completion = asyncio.get_running_loop().create_future()
+        if not self._enqueue_client_message(
+            websocket, make_event(event_type, payload, version=self._version), completion,
+        ):
             return False
-        if getattr(websocket, "application_state", WebSocketState.CONNECTED) != WebSocketState.CONNECTED:
-            self.disconnect(websocket)
-            return False
-        try:
-            lock = self._send_locks.setdefault(websocket, asyncio.Lock())
-            async with lock:
-                await asyncio.wait_for(
-                    websocket.send_json(make_event(event_type, payload, version=self._version)),
-                    timeout=self._send_timeout_seconds,
-                )
-            return True
-        except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError):
-            self.disconnect(websocket)
-            return False
+        return await completion
 
     async def broadcast_event(
         self,
@@ -278,25 +393,8 @@ class ConnectionManager:
                  or identity.get("team_id") == (payload or {}).get("team_id"))
         ]
 
-        async def send(connection: WebSocket) -> WebSocket | None:
-            try:
-                lock = self._send_locks.setdefault(connection, asyncio.Lock())
-                async with lock:
-                    await asyncio.wait_for(
-                        connection.send_json(message),
-                        timeout=self._send_timeout_seconds,
-                    )
-                return None
-            except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError):
-                return connection
-
-        dead = [
-            connection
-            for connection in await asyncio.gather(*(send(connection) for connection in connections))
-            if connection
-        ]
-        for connection in dead:
-            self.disconnect(connection)
+        for connection in connections:
+            self._enqueue_client_message(connection, message)
 
     async def broadcast_json(self, data: dict):
         """Compatibility adapter for existing REST routes while keeping one envelope."""
@@ -364,6 +462,7 @@ def _authenticate_socket(
                 "session_last_seen_at": (
                     authenticated_at if session_needs_touch else user.session_last_seen_at
                 ),
+                "last_session_validation_at": authenticated_at,
                 "expires_at": int(expires_at) if expires_at is not None else None,
             }
             snapshot = event_snapshot(db)
@@ -425,16 +524,21 @@ def _touch_socket_identity(
     session_factory: Callable[[], Session],
 ) -> bool:
     now = utc_now()
+    if not participant_session_needs_touch(identity.get("last_session_validation_at"), now=now):
+        return True
     last_seen_at = identity.get("session_last_seen_at")
     with session_factory() as db:
         role = identity.get("role")
         if role is not None and role not in PARTICIPANT_ROLES:
-            return db.query(User.id).filter(
+            alive = db.query(User.id).filter(
                 User.id == int(identity["user_id"]),
                 User.role == str(role),
                 User.credentials_active.is_(True),
                 User.session_id == str(identity["session_id"]),
             ).first() is not None
+            if alive:
+                identity["last_session_validation_at"] = now
+            return alive
         if participant_session_needs_touch(last_seen_at, now=now):
             alive = touch_participant_session(
                 db,
@@ -445,6 +549,7 @@ def _touch_socket_identity(
             )
             if alive:
                 identity["session_last_seen_at"] = now
+                identity["last_session_validation_at"] = now
             return alive
         persisted = db.query(User.session_last_seen_at).filter(
             User.id == int(identity["user_id"]),
@@ -465,9 +570,20 @@ def _touch_socket_identity(
             )
             if alive:
                 identity["session_last_seen_at"] = now
+                identity["last_session_validation_at"] = now
             return alive
         identity["session_last_seen_at"] = persisted_last_seen_at
+        identity["last_session_validation_at"] = now
         return True
+
+
+async def _validate_socket_identity(
+    identity: dict[str, Any],
+    session_factory: Callable[[], Session],
+) -> bool:
+    if not participant_session_needs_touch(identity.get("last_session_validation_at")):
+        return True
+    return await run_in_threadpool(_touch_socket_identity, identity, session_factory)
 
 
 async def _safe_close(websocket: WebSocket, *, code: int, reason: str) -> None:
@@ -520,11 +636,7 @@ async def websocket_auction(websocket: WebSocket):
                 message = await websocket.receive_text()
                 is_heartbeat, client_time = _heartbeat_frame(message)
                 if is_heartbeat:
-                    session_alive = await run_in_threadpool(
-                        _touch_socket_identity,
-                        identity,
-                        session_factory,
-                    )
+                    session_alive = await _validate_socket_identity(identity, session_factory)
                     if not session_alive:
                         await websocket.close(code=4401, reason="Session revoked")
                         break
@@ -545,11 +657,7 @@ async def websocket_auction(websocket: WebSocket):
                 )
                 is_heartbeat, client_time = _heartbeat_frame(message)
                 if is_heartbeat:
-                    session_alive = await run_in_threadpool(
-                        _touch_socket_identity,
-                        identity,
-                        session_factory,
-                    )
+                    session_alive = await _validate_socket_identity(identity, session_factory)
                     if not session_alive:
                         await websocket.close(code=4401, reason="Session revoked")
                         break
@@ -569,6 +677,7 @@ async def websocket_auction(websocket: WebSocket):
         logger.exception("Unexpected error in established WebSocket connection.")
         await _safe_close(websocket, code=1011, reason="WebSocket connection error")
     finally:
-        disconnected_identity = manager.disconnect(websocket) if connected else None
-        if disconnected_identity and disconnected_identity.get("role") in ("leader", "member"):
+        if connected:
+            await manager.disconnect_and_wait(websocket)
+        if connected and identity.get("role") in ("leader", "member"):
             manager.schedule_presence_refresh(session_factory)

@@ -1,7 +1,11 @@
+from datetime import timedelta
+
 import pytest
 
+from app.core.config import settings
 from app.core.security import get_password_hash
-from app.models.models import Team, User
+from app.models.models import EventConfig, GameConfig, Team, User
+from app.services.participant_session import utc_now
 
 
 PASSWORD = "portal-test-password"
@@ -147,9 +151,94 @@ def test_participant_session_rejects_wrong_portal_tokens(client, db, role, login
 
 def test_participant_single_session_protection_remains_active(client, db):
     users = _create_portal_users(db)
+    leader_id = users["leader"].id
 
     first = _login(client, "/login", users["leader"])
+    assert first.status_code == 200
+    first_headers = {"Authorization": f"Bearer {first.json()['access_token']}"}
+    db.expire_all()
+    first_session_id = db.query(User.session_id).filter(User.id == leader_id).scalar()
+
     second = _login(client, "/login", users["leader"])
 
-    assert first.status_code == 200
     assert second.status_code == 409
+    assert second.json()["detail"] == (
+        "This leader account is already logged in on another device. "
+        "Please log out from the existing session before logging in again."
+    )
+    db.expire_all()
+    assert db.query(User.session_id).filter(User.id == leader_id).scalar() == first_session_id
+    assert client.get("/participant/session", headers=first_headers).status_code == 200
+
+    assert client.post("/logout", headers=first_headers).status_code == 200
+    db.expire_all()
+    assert db.query(User.session_id).filter(User.id == leader_id).scalar() is None
+
+    after_logout = _login(client, "/login", users["leader"])
+    assert after_logout.status_code == 200
+    db.expire_all()
+    assert db.query(User.session_id).filter(User.id == leader_id).scalar() != first_session_id
+
+
+def test_stale_participant_session_can_be_replaced(client, db):
+    users = _create_portal_users(db)
+    leader_id = users["leader"].id
+    first = _login(client, "/login", users["leader"])
+    assert first.status_code == 200
+    first_headers = {"Authorization": f"Bearer {first.json()['access_token']}"}
+
+    db.query(User).filter(User.id == leader_id).update({
+        User.session_last_seen_at: utc_now() - timedelta(seconds=settings.SESSION_STALE_SECONDS + 1),
+    })
+    db.commit()
+    db.expire_all()
+    first_session_id = db.query(User.session_id).filter(User.id == leader_id).scalar()
+
+    replacement = _login(client, "/login", users["leader"])
+
+    assert replacement.status_code == 200
+    replacement_headers = {"Authorization": f"Bearer {replacement.json()['access_token']}"}
+    db.expire_all()
+    assert db.query(User.session_id).filter(User.id == leader_id).scalar() != first_session_id
+    assert client.get("/participant/session", headers=first_headers).status_code == 401
+    assert client.get("/participant/session", headers=replacement_headers).status_code == 200
+
+
+def test_duplicate_login_does_not_disconnect_first_participant_socket(client, db):
+    users = _create_portal_users(db)
+    db.add_all([EventConfig(), GameConfig(state="WAITING")])
+    db.commit()
+    first = _login(client, "/login", users["leader"])
+    assert first.status_code == 200
+    token = first.json()["access_token"]
+
+    with client.websocket_connect(f"/ws/auction?token={token}") as socket:
+        assert socket.receive_json()["type"] == "event_snapshot"
+        second = _login(client, "/login", users["leader"])
+        assert second.status_code == 409
+        socket.send_json({"type": "heartbeat", "client_time": 123})
+        assert socket.receive_json()["type"] == "session_heartbeat"
+        assert client.get(
+            "/participant/session",
+            headers={"Authorization": f"Bearer {token}"},
+        ).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("role", "path"),
+    [("admin", "/admin/login"), ("display", "/leaderboard/login")],
+)
+def test_nonparticipant_relogin_behavior_is_unchanged(client, db, role, path):
+    users = _create_portal_users(db)
+    user_id = users[role].id
+
+    first = _login(client, path, users[role])
+    assert first.status_code == 200
+    db.expire_all()
+    first_session_id = db.query(User.session_id).filter(User.id == user_id).scalar()
+
+    second = _login(client, path, users[role])
+
+    assert second.status_code == 200
+    db.expire_all()
+    assert db.query(User.session_id).filter(User.id == user_id).scalar() != first_session_id

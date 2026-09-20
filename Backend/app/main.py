@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, TimeoutError as SQLAlchemyTimeoutError
 from starlette.concurrency import run_in_threadpool
 from app.api import auth, team, problem_statements, auction, wildcard, websockets, admin, participant, rounds, operations, judging, management, labs
 from app.core.database import engine, initialize_database, SessionLocal
@@ -30,6 +30,7 @@ from app.api.websockets import manager
 
 logger = logging.getLogger("uvicorn.error")
 install_sensitive_query_redaction()
+pool_timeout_count = 0
 
 
 def validate_startup_configuration() -> None:
@@ -140,7 +141,7 @@ async def process_expiry_cycle(
             },
         )
         if wildcard_assignment.get("lab_allocation_team_count") is not None:
-            connection_manager.publish_event(
+            await connection_manager.broadcast_event(
                 "lab_allocation_updated",
                 {
                     "action": "auto_allocated",
@@ -158,7 +159,7 @@ async def process_expiry_cycle(
             },
         )
         if final_choice_completion.get("lab_allocation_team_count") is not None:
-            connection_manager.publish_event(
+            await connection_manager.broadcast_event(
                 "lab_allocation_updated",
                 {
                     "action": "auto_allocated",
@@ -266,6 +267,9 @@ app.include_router(labs.router, tags=["Lab Allocation"])
 
 @app.exception_handler(SQLAlchemyError)
 async def database_error_handler(_request: Request, exc: SQLAlchemyError):
+    global pool_timeout_count
+    if isinstance(exc, SQLAlchemyTimeoutError):
+        pool_timeout_count += 1
     logger.error("Database operation failed: %s", exc.__class__.__name__)
     return JSONResponse(status_code=503, content={"detail": "Event service temporarily unavailable. Please retry."})
 
@@ -288,7 +292,10 @@ def readiness_check():
         pool_diagnostics = {
             "checked_out": pool.checkedout() if hasattr(pool, "checkedout") else None,
             "size": pool.size() if hasattr(pool, "size") else None,
+            "configured_pool_size": settings.DB_POOL_SIZE,
+            "max_overflow": getattr(settings, "DB_MAX_OVERFLOW", None),
             "overflow_in_use": max(0, pool.overflow()) if hasattr(pool, "overflow") else None,
+            "pool_timeout_count": pool_timeout_count,
         }
         return {
             "status": "ready",
