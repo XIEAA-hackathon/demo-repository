@@ -30,6 +30,24 @@ def _team(db, name, email, problem):
     return team
 
 
+def test_put_submission_creates_first_record(client, db, login_headers_factory, monkeypatch):
+    monkeypatch.setattr(participant.manager, "broadcast_event", AsyncMock())
+    problem = ProblemStatement(ps_number="R1-PUT", title="PUT Challenge", round=1)
+    db.add_all([problem, GameConfig(state="CODING")])
+    db.flush()
+    team = _team(db, "PUT Team", "put@submit.test", problem)
+
+    response = client.put(
+        "/submissions/me",
+        headers=login_headers_factory("put@submit.test"),
+        json={"repository_url": "https://github.com/test/test"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["repository_url"] == "https://github.com/test/test"
+    assert db.query(Submission).filter(Submission.team_id == team.id).one().problem_id == problem.id
+
+
 def test_submission_monitor_open_close_and_final_problem(client, admin_headers, db, login_headers_factory, monkeypatch):
     broadcast = AsyncMock()
     monkeypatch.setattr(participant.manager, "broadcast_event", broadcast)

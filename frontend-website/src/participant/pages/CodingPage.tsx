@@ -53,6 +53,7 @@ export default function CodingPage() {
           <Button type="submit" disabled={!permissions.canSubmitRepository || working || !finalProblem}>{working ? 'Saving…' : submitted ? 'Update repository' : 'Submit repository'}</Button>
           {!submissionsActive && <p className="notice">Repository submissions are closed. Any saved URL remains on record.</p>}
           {submissionsActive && !permissions.isLeader && <p className="notice">Only your team leader can submit or update the final repository.</p>}
+          {submissionsActive && permissions.isLeader && !finalProblem && <p className="notice">Final problem assignment is missing.</p>}
           {message && <p className={message.type === 'success' ? 'success' : 'error'} role="status">{message.text}</p>}
         </form>
       </Card>

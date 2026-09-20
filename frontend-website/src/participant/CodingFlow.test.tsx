@@ -85,6 +85,14 @@ describe('merged coding and submission flow', () => {
     expect(host.textContent).toContain('Only your team leader can submit or update the final repository.')
   })
 
+  it('explains when the leader has no final problem assignment', async () => {
+    useParticipant.mockReturnValue({ dashboard: { ...dashboard, finalProblem: null, currentProblem: null, submission: null }, service: { submitGitHubRepository }, refresh: vi.fn() })
+    await act(async () => root.render(<CodingPage />))
+    expect(host.querySelector<HTMLInputElement>('input[type="url"]')?.disabled).toBe(false)
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+    expect(host.textContent).toContain('Final problem assignment is missing.')
+  })
+
   it('normalizes the legacy phase and keeps the old URL as a redirect', () => {
     expect(participantStageRoutes.map((route) => route.state)).not.toContain('SUBMISSION')
     expect(getStageRoute('SUBMISSION').path).toBe('/participant/coding')
