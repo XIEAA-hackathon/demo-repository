@@ -20,7 +20,7 @@ const dashboard = {
   lab: { id: 2, name: 'Lab Aurora', assignment_id: 4, version: 1 },
   labAllocationReady: true,
   labAllocationStatus: 'ASSIGNED',
-  submissionsOpen: true,
+  submissionsOpen: false,
   submission: { id: '3', teamId: '7', problemId: '9', repositoryUrl: 'https://github.com/team-seven/final', submittedAt: '2026-09-19T09:00:00Z', updatedAt: '2026-09-19T10:00:00Z', submittedByName: 'Leader', status: 'SUBMITTED' },
   timing: { serverTime: '2026-09-19T10:00:00Z', receivedAt: Date.now(), startedAt: null, endsAt: null, paused: true, pausedRemainingSeconds: 3600, remainingSeconds: 3600 },
 } as unknown as ParticipantDashboard
@@ -64,8 +64,8 @@ describe('merged coding and submission flow', () => {
     expect(submitGitHubRepository).toHaveBeenCalledWith('https://github.com/team-seven/updated')
   })
 
-  it('keeps repository controls disabled until submissions are open', async () => {
-    useParticipant.mockReturnValue({ dashboard: { ...dashboard, submissionsOpen: false, submission: null }, service: { submitGitHubRepository }, refresh: vi.fn() })
+  it('keeps repository controls disabled outside Coding', async () => {
+    useParticipant.mockReturnValue({ dashboard: { ...dashboard, eventState: 'JUDGING', submissionsOpen: true, submission: null }, service: { submitGitHubRepository }, refresh: vi.fn() })
     await act(async () => root.render(<CodingPage />))
     expect(host.querySelector<HTMLInputElement>('input[type="url"]')?.disabled).toBe(true)
     expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent).toBe('Submit repository')
