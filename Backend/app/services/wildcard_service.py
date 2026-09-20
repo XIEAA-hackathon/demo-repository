@@ -436,13 +436,8 @@ def _assign_locked_selection(
     # start_selection_timer() calls start_final_choice() once the last
     # Wildcard problem has been selected.
     #
-    # If every winner was Wildcard-only, start_final_choice() will have
-    # completed the Wildcard immediately because nobody needs a choice.
-    if control.status == "COMPLETE":
-        from app.services.lab_allocation import try_allocate_labs
-
-        db.flush()
-        lab_allocation_team_count = try_allocate_labs(db)
+    # If every winner was Wildcard-only, the caller commits the completed
+    # selection before starting best-effort lab allocation in a new transaction.
     action = "wildcard.problem_selected" if method == "manual" else "wildcard.problem_auto_assigned"
     record_event(
         db,
@@ -531,7 +526,11 @@ def assign_wildcard_selection(
     result = _assign_locked_selection(
         db, control, active, problem, method=effective_method, actor=actor, now=check_time,
     )
+    should_allocate_labs = control.status == "COMPLETE"
     db.commit()
+    if should_allocate_labs:
+        from app.services.lab_allocation import try_allocate_labs
+        result["lab_allocation_team_count"] = try_allocate_labs(db)
     return result
 
 
@@ -584,7 +583,11 @@ def reconcile_wildcard_selection(db: Session, *, now: datetime | None = None) ->
     if not problem:
         raise WildcardSelectionConflict("No available Wildcard problem remains for automatic assignment.")
     result = _assign_locked_selection(db, control, active, problem, method="timeout", now=check_time)
+    should_allocate_labs = control.status == "COMPLETE"
     db.commit()
+    if should_allocate_labs:
+        from app.services.lab_allocation import try_allocate_labs
+        result["lab_allocation_team_count"] = try_allocate_labs(db)
     return result
 
 

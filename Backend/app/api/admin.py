@@ -175,8 +175,8 @@ async def update_event_config_admin(
         raise HTTPException(status_code=400, detail="wildcard_slots must be >= 0")
     if "wildcard_problem_count" in data and data["wildcard_problem_count"] < 0:
         raise HTTPException(status_code=400, detail="wildcard_problem_count must be >= 0")
-    if "coding_duration_seconds" in data and data["coding_duration_seconds"] < 0:
-        raise HTTPException(status_code=400, detail="coding_duration_seconds must be >= 0")
+    if "coding_duration_seconds" in data and data["coding_duration_seconds"] <= 0:
+        raise HTTPException(status_code=400, detail="coding_duration_seconds must be > 0")
     if "bid_cooldown_seconds" in data and not 0 <= data["bid_cooldown_seconds"] <= 60:
         raise HTTPException(status_code=400, detail="bid_cooldown_seconds must be between 0 and 60")
     if "royalty_coins_per_point" in data and data["royalty_coins_per_point"] < 0:

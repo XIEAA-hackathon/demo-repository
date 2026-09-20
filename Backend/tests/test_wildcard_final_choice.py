@@ -176,3 +176,27 @@ def test_wildcard_only_winner_completes_without_starting_coding(db):
     assert db.query(GameConfig).one().state == "WILDCARD_SELECTION"
     assert final_team.ps_id == wildcard_problem.id
     assert assignment.effective_ps_id == wildcard_problem.id
+
+
+def test_deferred_lab_allocation_cannot_rollback_completed_wildcard_selection(db):
+    _leader, team, _round1, wildcard_problem = _seed_auction(db, team_name="No-lab")
+    team.ps_id = None
+    team.round1_problem_id = None
+    db.query(Lab).delete()
+    db.commit()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    finalize_slot_bidding(db, control)
+    db.query(GameConfig).one().state = "WILDCARD_SELECTION"
+    db.commit()
+
+    result = assign_wildcard_selection(db, method="manual", team_id=team.id, problem_id=wildcard_problem.id)
+    db.expire_all()
+
+    final_team = db.query(Team).filter(Team.id == team.id).one()
+    selection = db.query(Wildcard).filter(Wildcard.team_id == team.id).one()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    assert result["lab_allocation_team_count"] is None
+    assert control.status == "COMPLETE" and control.ended is True
+    assert selection.status == "selected" and selection.problem_id == wildcard_problem.id
+    assert final_team.ps_id == wildcard_problem.id
+    assert db.query(ProblemStatement).filter_by(id=wildcard_problem.id).one().status == "allocated"

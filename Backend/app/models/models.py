@@ -363,7 +363,7 @@ class EventConfig(Base):
     wildcard_preview_seconds = Column(Integer, default=120)
     wildcard_bid_seconds = Column(Integer, default=180)
     wildcard_selection_seconds = Column(Integer, default=30)
-    wildcard_final_choice_seconds = Column(Integer, default=60)
+    wildcard_final_choice_seconds = Column(Integer, nullable=False, default=60)
     wildcard_starting_bid = Column(Integer, default=150)
     wildcard_bid_increment = Column(Integer, default=1)
 

@@ -2,9 +2,14 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CodingRoundAdminPage } from './App'
-import { getAdminSubmissions } from './services/api'
+import { getAdminSubmissions, openSubmissions, updateAdminConfig } from './services/api'
 
-vi.mock('./services/api', async (original) => ({ ...await original(), getAdminSubmissions: vi.fn() }))
+vi.mock('./services/api', async (original) => ({
+  ...await original(),
+  getAdminSubmissions: vi.fn(),
+  openSubmissions: vi.fn(),
+  updateAdminConfig: vi.fn(),
+}))
 
 const snapshot = {
   open: true,
@@ -32,6 +37,8 @@ describe('CodingRoundAdminPage refresh architecture', () => {
     hidden = false
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
     getAdminSubmissions.mockResolvedValue(structuredClone(snapshot))
+    openSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: true })
+    updateAdminConfig.mockImplementation(async (update) => ({ ...update }))
     host = document.createElement('div')
     root = createRoot(host)
   })
@@ -113,32 +120,105 @@ describe('CodingRoundAdminPage refresh architecture', () => {
     expect(getAdminSubmissions).toHaveBeenCalledTimes(1)
   })
 
-  it('opens Coding only after Wildcard completion and edits its duration in hours', async () => {
+  it.each([
+    ['1', 3600],
+    ['2', 7200],
+    ['3.5', 12600],
+    ['4', 14400],
+  ])('saves %s Coding hours as %i seconds only', async (hours, seconds) => {
     getAdminSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: false })
     const onConfig = vi.fn()
     await render({
       socketStatus: 'connected',
       state: { rounds: { WILDCARD: { status: 'COMPLETE', ended: true } } },
-      config: { coding_duration_seconds: 7200 },
+      config: { coding_duration_seconds: 10800, round1_bid_seconds: 99 },
       onConfig,
     })
 
     expect(host.textContent).toContain('Open Coding Round')
     expect(host.textContent).toContain('Coding duration (hours)')
     const input = host.querySelector('input[type="number"]')
-    expect(input.value).toBe('2')
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-      setter?.call(input, '3')
+      setter?.call(input, hours)
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    expect(onConfig).toHaveBeenCalledWith({ coding_duration_seconds: 10800 })
+    expect(onConfig).not.toHaveBeenCalled()
+    const save = [...host.querySelectorAll('button')].find((button) => button.textContent === 'Save duration')
+    await act(async () => save.click())
+    expect(updateAdminConfig).toHaveBeenCalledWith({ coding_duration_seconds: seconds })
+    expect(onConfig).toHaveBeenCalledWith({ coding_duration_seconds: seconds })
+  })
+
+  it('preserves a dirty local duration across background config refreshes', async () => {
+    getAdminSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: false })
+    const props = {
+      socketStatus: 'connected',
+      state: { rounds: { WILDCARD: { status: 'COMPLETE', ended: true } } },
+      config: { coding_duration_seconds: 10800 },
+    }
+    await render(props)
+    const input = host.querySelector('input[type="number"]')
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-      setter?.call(input, '3.5')
+      setter?.call(input, '4')
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    expect(onConfig).toHaveBeenCalledWith({ coding_duration_seconds: 12600 })
+
+    await render({ ...props, config: { coding_duration_seconds: 7200 } })
+
+    expect(host.querySelector('input[type="number"]').value).toBe('4')
+  })
+
+  it('saves the visible duration before opening Coding and refreshes authoritative state', async () => {
+    getAdminSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: false })
+    const onConfig = vi.fn()
+    const onGlobalSync = vi.fn().mockResolvedValue(true)
+    await render({
+      socketStatus: 'connected',
+      state: { rounds: { WILDCARD: { status: 'COMPLETE', ended: true } } },
+      config: { coding_duration_seconds: 10800 },
+      onConfig,
+      onGlobalSync,
+    })
+    const input = host.querySelector('input[type="number"]')
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      setter?.call(input, '4')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const open = [...host.querySelectorAll('button')].find((button) => button.textContent === 'Open Coding Round')
+
+    await act(async () => open.click())
+
+    expect(updateAdminConfig).toHaveBeenCalledWith({ coding_duration_seconds: 14400 })
+    expect(openSubmissions).toHaveBeenCalledTimes(1)
+    expect(updateAdminConfig.mock.invocationCallOrder[0]).toBeLessThan(openSubmissions.mock.invocationCallOrder[0])
+    expect(onConfig).toHaveBeenCalledWith({ coding_duration_seconds: 14400 })
+    expect(onGlobalSync).toHaveBeenCalledTimes(1)
+    expect(host.textContent).toContain('Coding Round opened.')
+  })
+
+  it('does not call either API when the Coding duration is invalid', async () => {
+    getAdminSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: false })
+    await render({
+      socketStatus: 'connected',
+      state: { rounds: { WILDCARD: { status: 'COMPLETE', ended: true } } },
+      config: { coding_duration_seconds: 10800 },
+    })
+    const input = host.querySelector('input[type="number"]')
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      setter?.call(input, '')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const open = [...host.querySelectorAll('button')].find((button) => button.textContent === 'Open Coding Round')
+
+    await act(async () => open.click())
+
+    expect(updateAdminConfig).not.toHaveBeenCalled()
+    expect(openSubmissions).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Enter a Coding duration of at least 0.25 hours.')
   })
 
   it('coalesces timer, visibility, and reconnect refreshes into one in-flight GET', async () => {

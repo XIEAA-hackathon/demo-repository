@@ -762,6 +762,8 @@ export function applySubmissionUpdate(current, payload) {
 export function CodingRoundAdminPage({ socketStatus = "disconnected", realtimeEvent = null, state = null, config = null, remaining = 0, onConfig = () => {}, onGlobalSync = async () => {} }) {
   const [data, setData] = useState(null);
   const [query, setQuery] = useState("");
+  const [codingHoursDraft, setCodingHoursDraft] = useState("");
+  const [codingDurationDirty, setCodingDurationDirty] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [working, setWorking] = useState(false);
@@ -771,6 +773,10 @@ export function CodingRoundAdminPage({ socketStatus = "disconnected", realtimeEv
   const pendingDeltas = useRef(new Map());
   const previousSocketStatus = useRef(socketStatus);
   const socketConnected = socketStatus === "connected" || socketStatus === "reconnected";
+  useEffect(() => {
+    if (!config || codingDurationDirty) return;
+    setCodingHoursDraft(String(config.coding_duration_seconds / 3600));
+  }, [codingDurationDirty, config]);
   const load = useCallback(() => {
     if (loadInFlight.current) return loadInFlight.current;
     const requestRevision = realtimeRevision.current;
@@ -836,7 +842,31 @@ export function CodingRoundAdminPage({ socketStatus = "disconnected", realtimeEv
   }, [load, realtimeEvent]);
   const run = async (operation, success) => { setWorking(true); setError(""); setNotice(""); try { const result = await operation(); realtimeRevision.current += 1; pendingDeltas.current.clear(); setData(result); setNotice(success); } catch (cause) { setError(cause.message || "Action failed."); } finally { setWorking(false); } };
   const runTimer = async (operation, success) => { setWorking(true); setError(""); setNotice(""); try { await operation(); await onGlobalSync(); setNotice(success); } catch (cause) { setError(cause.message || "Timer action failed."); } finally { setWorking(false); } };
-  const saveCodingDuration = async () => { setWorking(true); setError(""); setNotice(""); try { await updateAdminConfig(config); await onGlobalSync(); setNotice("Coding duration saved."); } catch (cause) { setError(cause.message || "Coding duration could not be saved."); } finally { setWorking(false); } };
+  const persistCodingDuration = async () => {
+    const hours = Number(codingHoursDraft);
+    if (!codingHoursDraft.trim() || !Number.isFinite(hours) || hours < 0.25) {
+      throw new Error("Enter a Coding duration of at least 0.25 hours.");
+    }
+    const saved = await updateAdminConfig({ coding_duration_seconds: Math.round(hours * 3600) });
+    setCodingHoursDraft(String(saved.coding_duration_seconds / 3600));
+    setCodingDurationDirty(false);
+    onConfig(saved);
+    return saved;
+  };
+  const saveCodingDuration = async () => { setWorking(true); setError(""); setNotice(""); try { await persistCodingDuration(); setNotice("Coding duration saved."); } catch (cause) { setError(cause.message || "Coding duration could not be saved."); } finally { setWorking(false); } };
+  const openCodingRound = async () => {
+    setWorking(true); setError(""); setNotice("");
+    try {
+      await persistCodingDuration();
+      const result = await openSubmissions();
+      realtimeRevision.current += 1;
+      pendingDeltas.current.clear();
+      setData(result);
+      await onGlobalSync();
+      setNotice("Coding Round opened.");
+    } catch (cause) { setError(cause.message || "Coding Round could not be opened."); }
+    finally { setWorking(false); }
+  };
   const downloadFinalExport = async () => {
     setWorking(true); setError(""); setNotice("");
     try {
@@ -853,9 +883,9 @@ export function CodingRoundAdminPage({ socketStatus = "disconnected", realtimeEv
   const wildcardComplete = state?.rounds?.WILDCARD?.status === "COMPLETE" && state?.rounds?.WILDCARD?.ended === true;
   if (!data) return <div className="loading-screen"><div className="loader" />Loading submissions…</div>;
   return <section className="submission-admin coding-round-admin">
-    <header className="submission-admin__header"><div><span className="eyebrow">EVENT / CODING ROUND</span><h2>Coding Round</h2><p>Start the coding timer and track each team’s final GitHub repository.</p></div><div className="submission-admin__actions"><button className="secondary-button" disabled={working || !data.export_available} title={data.export_available ? "Download final event results" : "Available after the Coding Round is closed"} onClick={() => void downloadFinalExport()}>{working ? "WORKING…" : "EXPORT EXCEL / CSV"}</button><button className={data.open ? "danger-button" : "primary-button"} disabled={working || (!data.open && !wildcardComplete)} title={!data.open && !wildcardComplete ? "Complete the Wildcard round before opening Coding." : undefined} onClick={() => run(data.open ? closeSubmissions : openSubmissions, data.open ? "Coding Round closed. Judging wait started." : "Coding Round opened.")}>{data.open ? "Close Coding Round" : "Open Coding Round"}</button></div></header>
+    <header className="submission-admin__header"><div><span className="eyebrow">EVENT / CODING ROUND</span><h2>Coding Round</h2><p>Start the coding timer and track each team’s final GitHub repository.</p></div><div className="submission-admin__actions"><button className="secondary-button" disabled={working || !data.export_available} title={data.export_available ? "Download final event results" : "Available after the Coding Round is closed"} onClick={() => void downloadFinalExport()}>{working ? "WORKING…" : "EXPORT EXCEL / CSV"}</button><button className={data.open ? "danger-button" : "primary-button"} disabled={working || (!data.open && !wildcardComplete)} title={!data.open && !wildcardComplete ? "Complete the Wildcard round before opening Coding." : undefined} onClick={() => data.open ? run(closeSubmissions, "Coding Round closed. Judging wait started.") : void openCodingRound()}>{data.open ? "Close Coding Round" : "Open Coding Round"}</button></div></header>
     {error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}
-    <section className="wildcard-stage-card coding-timer-panel"><div><span className="eyebrow">CODING TIMER SETTINGS</span><h3>{formatTime(remaining)} remaining</h3><p>Configured duration: {formatTime(config?.coding_duration_seconds ?? 0)}. The timer starts when the Coding Round opens.</p></div>{config && <label>Coding duration (hours)<input type="number" min="0.25" step="0.25" value={config.coding_duration_seconds / 3600} onChange={(event) => onConfig({ ...config, coding_duration_seconds: Math.round(Number(event.target.value) * 3600) })} /></label>}<div className="round-inline-actions"><button className="secondary-button" disabled={working || !config} onClick={() => void saveCodingDuration()}>Save duration</button><TimerButtons state={state} remaining={remaining} run={runTimer} /></div></section>
+    <section className="wildcard-stage-card coding-timer-panel"><div><span className="eyebrow">CODING TIMER SETTINGS</span><h3>{formatTime(remaining)} remaining</h3><p>Configured duration: {formatTime(config?.coding_duration_seconds ?? 0)}. The timer starts when the Coding Round opens.</p></div>{config && <label>Coding duration (hours)<input type="number" min="0.25" step="0.25" value={codingHoursDraft} onChange={(event) => { setCodingHoursDraft(event.target.value); setCodingDurationDirty(true); }} /></label>}<div className="round-inline-actions"><button className="secondary-button" disabled={working || !config} onClick={() => void saveCodingDuration()}>Save duration</button><TimerButtons state={state} remaining={remaining} run={runTimer} /></div></section>
     {!data.export_available && <div className="admin-notice">Final export is available after the Coding Round is closed.</div>}
     <div className="submission-stats"><Stat label="WINDOW" value={data.open ? "OPEN" : "CLOSED"} /><Stat label="TOTAL TEAMS" value={data.total} /><Stat label="SUBMITTED" value={data.submitted} /><Stat label="PENDING" value={data.pending} /></div>
     <div className="submission-table-panel"><div className="submission-toolbar"><div><h3>Repository Submissions</h3><span>{socketConnected ? "Live WebSocket updates with 60-second reconciliation." : "Connection unavailable; checking every thirty seconds."}</span></div><input aria-label="Search teams" placeholder="Search team…" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>FINAL PROBLEM</th><th>ALLOCATED LAB</th><th>STATUS</th><th>GITHUB URL</th><th>SUBMITTED BY</th><th>UPDATED</th></tr></thead><tbody>{rows.map((row) => <tr key={row.team_id}><td><strong>{row.team_name}</strong></td><td>{row.final_problem ? `#${row.final_problem.ps_number} · ${row.final_problem.title}` : "—"}</td><td>{row.allocated_lab?.name || "—"}</td><td><span className={`table-status ${row.status === "SUBMITTED" ? "active" : "pending"}`}>{row.status}</span></td><td>{row.github_url ? <a href={row.github_url} target="_blank" rel="noreferrer">Open repository ↗</a> : "—"}</td><td>{row.submitted_by || "—"}</td><td>{row.updated_at || row.submitted_at ? new Date(row.updated_at || row.submitted_at).toLocaleString() : "—"}</td></tr>)}</tbody></table></div></div>

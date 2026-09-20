@@ -605,21 +605,36 @@ def get_admin_submissions(db: Session = Depends(get_db), current_user: User = De
 
 @router.post("/admin/submissions/open")
 async def open_submissions(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
-    game = get_or_create_game_config(db)
-    event_config = get_or_create_event_config(db)
-    if game.state == "CODING" and event_config.submissions_open:
-        return get_admin_submissions(db, None)
-
     wildcard = get_or_create_round_control(db, "WILDCARD")
     if wildcard.status != "COMPLETE" or not wildcard.ended:
         raise HTTPException(status_code=409, detail="Complete the Wildcard round before opening Coding.")
 
+    game = (
+        db.query(GameConfig)
+        .order_by(GameConfig.id.asc())
+        .with_for_update()
+        .populate_existing()
+        .first()
+        or get_or_create_game_config(db)
+    )
+    event_config = get_or_create_event_config(db)
+    if game.state == "CODING" and event_config.submissions_open:
+        return get_admin_submissions(db, None)
+
+    started_coding = game.state != "CODING"
     if game.state == "CODING":
         event_config.submissions_open = True
     else:
-        transition_event_state(db, "CODING", validate=False, restart=True, commit=False)
+        game = transition_event_state(db, "CODING", validate=False, restart=True, commit=False)
     record_event(db, "submissions.opened", actor=current_user)
     db.commit()
+    if started_coding:
+        logger.info(
+            "Coding round started coding_duration_seconds=%s phase_started_at=%s auction_timer_end=%s",
+            event_config.coding_duration_seconds,
+            game.phase_started_at,
+            game.auction_timer_end,
+        )
     snapshot = event_snapshot(db)
     response = get_admin_submissions(db, None)
     db.close()

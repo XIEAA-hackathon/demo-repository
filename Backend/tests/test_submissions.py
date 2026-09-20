@@ -1,9 +1,14 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest.mock import AsyncMock
+
+import pytest
+
 from app.api import participant
 from app.core.security import get_password_hash
-from app.models.models import EventConfig, GameConfig, ProblemStatement, RoundControl, Submission, Team, User
+from app.models.models import EventActivityLog, EventConfig, GameConfig, ProblemStatement, RoundControl, Submission, Team, User
 from app.schemas.schemas import EVENT_STATES
-from app.services.event_service import get_or_create_game_config
+from app.services.event_service import event_snapshot, get_or_create_game_config
 
 
 def _team(db, name, email, problem):
@@ -130,6 +135,67 @@ def test_open_coding_requires_completed_wildcard(client, admin_headers, db):
     assert response.json()["detail"] == "Complete the Wildcard round before opening Coding."
     assert db.query(GameConfig).one().state == "WAITING"
     assert db.query(EventConfig).one().submissions_open is False
+
+
+@pytest.mark.parametrize("duration_seconds", [3600, 7200, 12600, 14400])
+def test_open_coding_uses_duration_persisted_through_admin_api(
+    duration_seconds, client, admin_headers, db,
+):
+    db.query(GameConfig).one().state = "WILDCARD_FINAL_CHOICE"
+    db.add(RoundControl(round_type="WILDCARD", status="COMPLETE", ended=True))
+    db.commit()
+
+    saved = client.put(
+        "/admin/config",
+        headers=admin_headers,
+        json={"coding_duration_seconds": duration_seconds},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["coding_duration_seconds"] == duration_seconds
+    persisted = client.get("/admin/config", headers=admin_headers)
+    assert persisted.status_code == 200
+    assert persisted.json()["coding_duration_seconds"] == duration_seconds
+
+    opened = client.post("/admin/submissions/open", headers=admin_headers)
+    assert opened.status_code == 200, opened.text
+    db.expire_all()
+    game = db.query(GameConfig).one()
+    assert game.state == "CODING"
+    assert (game.auction_timer_end - game.phase_started_at).total_seconds() == duration_seconds
+    snapshot = event_snapshot(db)
+    assert snapshot["timing"]["started_at"] == game.phase_started_at
+    assert snapshot["timing"]["ends_at"] == game.auction_timer_end
+
+
+def test_concurrent_and_repeated_open_coding_keeps_first_timer(client, admin_headers, db):
+    db.query(GameConfig).one().state = "WILDCARD_FINAL_CHOICE"
+    db.add(RoundControl(round_type="WILDCARD", status="COMPLETE", ended=True))
+    db.commit()
+    assert client.put(
+        "/admin/config", headers=admin_headers, json={"coding_duration_seconds": 7200},
+    ).status_code == 200
+    barrier = Barrier(5)
+
+    def open_once(_index):
+        barrier.wait(timeout=10)
+        return client.post("/admin/submissions/open", headers=admin_headers)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(open_once, index) for index in range(4)]
+        barrier.wait(timeout=10)
+        responses = [future.result(timeout=20) for future in futures]
+
+    assert all(response.status_code == 200 for response in responses)
+    db.expire_all()
+    game = db.query(GameConfig).one()
+    first_timer_end = game.auction_timer_end
+    assert (game.auction_timer_end - game.phase_started_at).total_seconds() == 7200
+    assert db.query(EventActivityLog).filter(EventActivityLog.action == "submissions.opened").count() == 1
+
+    repeated = client.post("/admin/submissions/open", headers=admin_headers)
+    assert repeated.status_code == 200
+    db.expire_all()
+    assert db.query(GameConfig).one().auction_timer_end == first_timer_end
 
 
 def test_legacy_submission_state_normalizes_safely(db):
