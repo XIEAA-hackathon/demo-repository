@@ -45,6 +45,6 @@ export function getParticipantPermissions(dashboard: ParticipantDashboard): Part
     canPlaceWildcardBid: isLeader,
     canSelectWildcardProblem: isLeader,
     canConfirmFinalProblem: isLeader,
-    canSubmitRepository: isLeader && dashboard.eventState === 'CODING',
+    canSubmitRepository: isLeader && dashboard.eventState === 'CODING' && dashboard.submissionsOpen,
   }
 }

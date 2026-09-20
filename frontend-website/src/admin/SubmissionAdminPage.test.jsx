@@ -113,6 +113,34 @@ describe('CodingRoundAdminPage refresh architecture', () => {
     expect(getAdminSubmissions).toHaveBeenCalledTimes(1)
   })
 
+  it('opens Coding only after Wildcard completion and edits its duration in hours', async () => {
+    getAdminSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: false })
+    const onConfig = vi.fn()
+    await render({
+      socketStatus: 'connected',
+      state: { rounds: { WILDCARD: { status: 'COMPLETE', ended: true } } },
+      config: { coding_duration_seconds: 7200 },
+      onConfig,
+    })
+
+    expect(host.textContent).toContain('Open Coding Round')
+    expect(host.textContent).toContain('Coding duration (hours)')
+    const input = host.querySelector('input[type="number"]')
+    expect(input.value).toBe('2')
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      setter?.call(input, '3')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(onConfig).toHaveBeenCalledWith({ coding_duration_seconds: 10800 })
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      setter?.call(input, '3.5')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(onConfig).toHaveBeenCalledWith({ coding_duration_seconds: 12600 })
+  })
+
   it('coalesces timer, visibility, and reconnect refreshes into one in-flight GET', async () => {
     await render({ socketStatus: 'reconnecting' })
     getAdminSubmissions.mockClear()

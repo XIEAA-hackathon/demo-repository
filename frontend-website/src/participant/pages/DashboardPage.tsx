@@ -28,7 +28,7 @@ const nextAction: Record<ParticipantEventState, string> = {
   WILDCARD_BIDDING: 'Place one bid for a ranked wildcard slot.',
   WILDCARD_SELECTION: 'Choose your team’s wildcard problem.',
   WILDCARD_FINAL_CHOICE: 'Choose whether to build your Round 1 or Wildcard problem.',
-  CODING: 'Build your solution and submit its repository when the window opens.',
+  CODING: 'Build your solution and submit its repository from the Coding Round.',
   JUDGING_WAIT: 'Sit tight while judges score your submission.',
   RESULTS: 'The final standings are in.',
 }

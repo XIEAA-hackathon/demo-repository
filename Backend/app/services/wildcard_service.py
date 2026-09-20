@@ -441,15 +441,8 @@ def _assign_locked_selection(
     if control.status == "COMPLETE":
         from app.services.lab_allocation import try_allocate_labs
 
+        db.flush()
         lab_allocation_team_count = try_allocate_labs(db)
-
-        transition_event_state(
-            db,
-            "CODING",
-            validate=False,
-            restart=True,
-            commit=False,
-        )
     action = "wildcard.problem_selected" if method == "manual" else "wildcard.problem_auto_assigned"
     record_event(
         db,
@@ -799,7 +792,6 @@ def confirm_final_problem(
     if completed:
         from app.services.lab_allocation import try_allocate_labs
         lab_allocation_team_count = try_allocate_labs(db)
-        transition_event_state(db, "CODING", validate=False, restart=True)
     return {
         "team_id": team.id,
         "choice": choice,
@@ -822,7 +814,6 @@ def finish_final_choice(db: Session, *, actor=None, reason: str = "admin_end") -
     db.commit()
     from app.services.lab_allocation import try_allocate_labs
     lab_allocation_team_count = try_allocate_labs(db)
-    transition_event_state(db, "CODING", validate=False, restart=True)
     return {
         "defaulted_team_ids": defaulted_team_ids,
         "lab_allocation_team_count": lab_allocation_team_count,

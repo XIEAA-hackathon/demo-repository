@@ -318,7 +318,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
         round1AssignmentCost=team.round1_assignment_cost,
         wildcardEligible=bool(team.is_approved),
         wildcardApplicationsOpen=bool(wildcard_control and wildcard_control.applications_open),
-        submissionsOpen=config.state == "CODING",
+        submissionsOpen=bool(event_config.submissions_open),
         finalProblemChoice=team.final_problem_choice,
         finalProblemConfirmedAt=team.final_problem_confirmed_at,
         finalProblemDefaulted=bool(team.final_problem_defaulted),
@@ -606,17 +606,25 @@ def get_admin_submissions(db: Session = Depends(get_db), current_user: User = De
 @router.post("/admin/submissions/open")
 async def open_submissions(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     game = get_or_create_game_config(db)
-    if game.state != "CODING":
-        raise HTTPException(status_code=409, detail="Submissions can only be opened during Coding.")
     event_config = get_or_create_event_config(db)
-    if event_config.submissions_open:
+    if game.state == "CODING" and event_config.submissions_open:
         return get_admin_submissions(db, None)
-    event_config.submissions_open = True
+
+    wildcard = get_or_create_round_control(db, "WILDCARD")
+    if wildcard.status != "COMPLETE" or not wildcard.ended:
+        raise HTTPException(status_code=409, detail="Complete the Wildcard round before opening Coding.")
+
+    if game.state == "CODING":
+        event_config.submissions_open = True
+    else:
+        transition_event_state(db, "CODING", validate=False, restart=True, commit=False)
     record_event(db, "submissions.opened", actor=current_user)
     db.commit()
+    snapshot = event_snapshot(db)
     response = get_admin_submissions(db, None)
     db.close()
     await manager.broadcast_event("submission_updated", {"action": "submissions_opened"})
+    await manager.broadcast_event("event_state_changed", snapshot)
     return response
 
 

@@ -476,7 +476,8 @@ async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=De
     game.timer_paused_remaining_seconds = None
     try:
         winners = finalize_slot_bidding(db, control, commit=False)
-        transition_event_state(db, "CODING" if control.ended else "WILDCARD_SELECTION", validate=False, commit=False)
+        if not control.ended:
+            transition_event_state(db, "WILDCARD_SELECTION", validate=False, commit=False)
         record_event(db, "wildcard.bidding_finalized", actor=current_user, metadata={"winner_count": len(winners)})
         db.commit()
     except ValueError as exc:
@@ -528,7 +529,6 @@ async def end_wildcard(db: Session = Depends(get_db), current_user=Depends(get_c
     control.current_selection_rank = None
     control.selection_started_at = None
     control.selection_ends_at = None
-    transition_event_state(db, "CODING", validate=False, commit=False)
     record_event(db, "wildcard.manually_ended", actor=current_user, metadata={
         "application_count": applications,
         "winner_count": winners,

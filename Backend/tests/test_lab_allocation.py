@@ -192,7 +192,11 @@ def test_max_flow_wildcard_effective_problem_and_strict_moves(client, db, admin_
 def test_manual_wildcard_end_triggers_automatic_allocation(client, db, admin_headers):
     problem = _problem(db, "PS1")
     team = _team(db, "Alpha", problem)
-    db.add(Lab(name="CC Lab", capacity=1, sort_order=1))
+    db.query(GameConfig).one().state = "WILDCARD_SELECTION"
+    db.add_all([
+        Lab(name="CC Lab", capacity=1, sort_order=1),
+        RoundControl(round_type="WILDCARD", status="PROBLEM_SELECTION", ended=False),
+    ])
     db.commit()
 
     response = client.post("/admin/rounds/wildcard/end", headers=admin_headers)
@@ -203,6 +207,7 @@ def test_manual_wildcard_end_triggers_automatic_allocation(client, db, admin_hea
     board = client.get("/lab-allocation", headers=admin_headers).json()
     assert board["status"] == "ALLOCATED"
     assert board["team_count"] == 1
+    assert db.query(GameConfig).one().state == "WILDCARD_SELECTION"
 
 
 @pytest.mark.parametrize("same_problem", [False, True])
@@ -251,6 +256,7 @@ def test_concurrent_moves_cannot_overfill_lab_or_duplicate_ps(db, session_factor
 def test_no_wildcard_winners_still_allocates_labs(client, db, admin_headers):
     problem = _problem(db, "NO-WC")
     team = _team(db, "No wildcard winner", problem)
+    db.query(GameConfig).one().state = "WILDCARD_BIDDING"
     db.add_all([Lab(name="Final Lab", capacity=3), RoundControl(round_type="WILDCARD", status="BIDDING_CLOSED", slot_count=0)])
     db.commit()
     response = client.post("/admin/wildcard/finalize", headers=admin_headers)
@@ -258,6 +264,7 @@ def test_no_wildcard_winners_still_allocates_labs(client, db, admin_headers):
     assert response.json()["winners"] == []
     assert db.query(LabAssignment).filter_by(team_id=team.id).one().effective_ps_id == problem.id
     assert client.get("/lab-allocation", headers=admin_headers).json()["can_move"] is True
+    assert db.query(GameConfig).one().state == "WILDCARD_BIDDING"
 
 
 def test_one_team_one_lab_is_allocated_and_visible_to_participant(client, db, admin_headers):

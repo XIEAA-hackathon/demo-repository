@@ -85,7 +85,7 @@ def test_round1_choice_preserves_selection_charge_and_allocates_by_final_problem
     assert wildcard_problem.id == selected.wildcard_problem_id
     assert db.query(ProblemStatement).filter(ProblemStatement.id == wildcard_problem.id).one().status == "allocated"
     assert control.status == "COMPLETE" and control.ended is True
-    assert db.query(GameConfig).one().state == "CODING"
+    assert db.query(GameConfig).one().state == "WILDCARD_FINAL_CHOICE"
     assert assignment.effective_ps_id == selected.ps_id == round1.id
 
     duplicate = client.post("/wildcard/final-choice", headers=headers, json={"choice": "WILDCARD"})
@@ -152,3 +152,27 @@ def test_final_choice_timeout_defaults_round1_without_refund_and_then_allocates(
     assert final_team.wildcard_problem_id == wildcard_problem.id
     assert assignment.effective_ps_id == final_team.ps_id
     assert db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one().status == "COMPLETE"
+    assert db.query(GameConfig).one().state == "WILDCARD_FINAL_CHOICE"
+
+
+def test_wildcard_only_winner_completes_without_starting_coding(db):
+    _leader, team, _round1, wildcard_problem = _seed_auction(db, team_name="Wildcard-only")
+    team.ps_id = None
+    team.round1_problem_id = None
+    db.commit()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    finalize_slot_bidding(db, control)
+    db.query(GameConfig).one().state = "WILDCARD_SELECTION"
+    db.commit()
+
+    result = assign_wildcard_selection(db, method="manual", team_id=team.id, problem_id=wildcard_problem.id)
+    db.expire_all()
+
+    final_team = db.query(Team).filter(Team.id == team.id).one()
+    control = db.query(RoundControl).filter(RoundControl.round_type == "WILDCARD").one()
+    assert result["lab_allocation_team_count"] == 1
+    assignment = db.query(LabAssignment).filter(LabAssignment.team_id == team.id).one()
+    assert control.status == "COMPLETE" and control.ended is True
+    assert db.query(GameConfig).one().state == "WILDCARD_SELECTION"
+    assert final_team.ps_id == wildcard_problem.id
+    assert assignment.effective_ps_id == wildcard_problem.id

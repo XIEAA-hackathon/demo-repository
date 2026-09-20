@@ -3,7 +3,7 @@ from app.api import participant
 from app.core.security import get_password_hash
 from app.models.models import EventConfig, GameConfig, ProblemStatement, RoundControl, Submission, Team, User
 from app.schemas.schemas import EVENT_STATES
-from app.services.event_service import get_or_create_game_config, transition_event_state
+from app.services.event_service import get_or_create_game_config
 
 
 def _team(db, name, email, problem):
@@ -39,8 +39,27 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
         RoundControl(round_type="ROUND1", status="CLOSED", ended=True),
         RoundControl(round_type="WILDCARD", status="COMPLETE", ended=True),
     ])
-    transition_event_state(db, "CODING", validate=False, restart=True)
+    game = db.query(GameConfig).one()
+    game.state = "WILDCARD_FINAL_CHOICE"
+    event_config = db.query(EventConfig).one()
+    event_config.coding_duration_seconds = 7200
+    event_config.submissions_open = False
+    db.commit()
+
+    opened = client.post("/admin/submissions/open", headers=admin_headers)
+    assert opened.status_code == 200, opened.text
+    db.expire_all()
+    game = db.query(GameConfig).one()
+    first_timer_end = game.auction_timer_end
+    assert game.state == "CODING"
+    assert (game.auction_timer_end - game.phase_started_at).total_seconds() == 7200
     assert db.query(EventConfig).one().submissions_open is True
+    assert [call.args[0] for call in broadcast.await_args_list] == ["submission_updated", "event_state_changed"]
+
+    duplicate = client.post("/admin/submissions/open", headers=admin_headers)
+    assert duplicate.status_code == 200, duplicate.text
+    db.expire_all()
+    assert db.query(GameConfig).one().auction_timer_end == first_timer_end
     alpha_headers = login_headers_factory("alpha@submit.test")
     beta_headers = login_headers_factory("beta@submit.test")
     member_headers = login_headers_factory("alpha-member@submit.test")
@@ -99,6 +118,18 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
         "/submissions/me", headers=beta_headers,
         json={"repository_url": "https://github.com/team-beta/project"},
     ).status_code == 409
+
+
+def test_open_coding_requires_completed_wildcard(client, admin_headers, db):
+    db.add(RoundControl(round_type="WILDCARD", status="FINAL_CHOICE", ended=False))
+    db.commit()
+
+    response = client.post("/admin/submissions/open", headers=admin_headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Complete the Wildcard round before opening Coding."
+    assert db.query(GameConfig).one().state == "WAITING"
+    assert db.query(EventConfig).one().submissions_open is False
 
 
 def test_legacy_submission_state_normalizes_safely(db):

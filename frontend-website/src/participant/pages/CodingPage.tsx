@@ -15,7 +15,7 @@ export default function CodingPage() {
   const permissions = getParticipantPermissions(dashboard)
   const submitted = Boolean(dashboard.submission)
   const finalProblem = dashboard.finalProblem ?? dashboard.currentProblem
-  const submissionsActive = dashboard.eventState === 'CODING'
+  const submissionsActive = dashboard.eventState === 'CODING' && dashboard.submissionsOpen
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()

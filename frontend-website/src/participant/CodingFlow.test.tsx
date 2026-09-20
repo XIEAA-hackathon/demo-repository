@@ -2,7 +2,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CodingPage from './pages/CodingPage'
-import { getStageRoute } from './routeConfig'
+import { getStageRoute, participantStageRoutes } from './routeConfig'
 import { legacySubmissionRedirect } from './ParticipantApp'
 import type { ParticipantDashboard } from './types'
 
@@ -20,7 +20,7 @@ const dashboard = {
   lab: { id: 2, name: 'Lab Aurora', assignment_id: 4, version: 1 },
   labAllocationReady: true,
   labAllocationStatus: 'ASSIGNED',
-  submissionsOpen: false,
+  submissionsOpen: true,
   submission: { id: '3', teamId: '7', problemId: '9', repositoryUrl: 'https://github.com/team-seven/final', submittedAt: '2026-09-19T09:00:00Z', updatedAt: '2026-09-19T10:00:00Z', submittedByName: 'Leader', status: 'SUBMITTED' },
   timing: { serverTime: '2026-09-19T10:00:00Z', receivedAt: Date.now(), startedAt: null, endsAt: null, paused: true, pausedRemainingSeconds: 3600, remainingSeconds: 3600 },
 } as unknown as ParticipantDashboard
@@ -64,11 +64,12 @@ describe('merged coding and submission flow', () => {
     expect(submitGitHubRepository).toHaveBeenCalledWith('https://github.com/team-seven/updated')
   })
 
-  it('enables a first submission for a leader even if the legacy flag is false', async () => {
-    useParticipant.mockReturnValue({ dashboard: { ...dashboard, submission: null }, service: { submitGitHubRepository }, refresh: vi.fn() })
+  it('keeps repository controls disabled until submissions are open', async () => {
+    useParticipant.mockReturnValue({ dashboard: { ...dashboard, submissionsOpen: false, submission: null }, service: { submitGitHubRepository }, refresh: vi.fn() })
     await act(async () => root.render(<CodingPage />))
-    expect(host.querySelector<HTMLInputElement>('input[type="url"]')?.disabled).toBe(false)
+    expect(host.querySelector<HTMLInputElement>('input[type="url"]')?.disabled).toBe(true)
     expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent).toBe('Submit repository')
+    expect(host.textContent).toContain('Repository submissions are closed.')
   })
 
   it('keeps repository controls disabled for ordinary members', async () => {
@@ -85,6 +86,7 @@ describe('merged coding and submission flow', () => {
   })
 
   it('normalizes the legacy phase and keeps the old URL as a redirect', () => {
+    expect(participantStageRoutes.map((route) => route.state)).not.toContain('SUBMISSION')
     expect(getStageRoute('SUBMISSION').path).toBe('/participant/coding')
     expect(legacySubmissionRedirect).toBe('/participant/coding')
   })
