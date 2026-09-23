@@ -20,13 +20,17 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
     let failures = 0;
     let hasDisplay = false;
     let inFlight = false;
+    let refreshQueued = false;
     let socketConnected = false;
     const schedule = (delay) => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(load, delay);
     };
     const load = async () => {
-      if (inFlight) return;
+      if (inFlight) {
+        refreshQueued = true;
+        return;
+      }
       inFlight = true;
       try {
         const response = await fetch(`${API_URL}/public/leaderboard`, {
@@ -53,7 +57,11 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
         }
       } finally {
         inFlight = false;
-        if (active) schedule(failures ? Math.min(30_000, 1000 * 2 ** failures) : document.hidden && socketConnected ? 60_000 : socketConnected ? 30_000 : 12_000);
+        if (active) {
+          const delay = refreshQueued ? 250 : failures ? Math.min(30_000, 1000 * 2 ** failures) : document.hidden && socketConnected ? 60_000 : socketConnected ? 30_000 : 12_000;
+          refreshQueued = false;
+          schedule(delay);
+        }
       }
     };
     const onVisibility = () => schedule(document.hidden ? 30_000 : 0);

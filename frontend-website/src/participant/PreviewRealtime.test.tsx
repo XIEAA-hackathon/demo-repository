@@ -6,11 +6,12 @@ import { ParticipantProvider, useParticipant } from './ParticipantContext'
 import AllocatedLab from './components/AllocatedLab'
 import RoundOnePreviewPage from './pages/RoundOnePreviewPage'
 import RoundOneBiddingPage from './pages/RoundOneBiddingPage'
+import WildcardSelectionPage from './pages/WildcardSelectionPage'
 import { participantService } from './services/apiParticipantService'
 import { connectEventSocket, type EventMessage } from './services/eventSocket'
 import type { ParticipantDashboard } from './types'
 
-vi.mock('./services/apiParticipantService', () => ({ participantService: { getParticipantDashboard: vi.fn(), getProblems: vi.fn(), getLeaderboard: vi.fn() } }))
+vi.mock('./services/apiParticipantService', () => ({ participantService: { getParticipantDashboard: vi.fn(), getProblems: vi.fn(), getLeaderboard: vi.fn(), getWildcardProblems: vi.fn(), selectWildcardProblem: vi.fn() } }))
 vi.mock('./services/eventSocket', () => ({ connectEventSocket: vi.fn() }))
 let host: HTMLDivElement, root: Root, receive: (message: EventMessage) => void, socketStatus: (status: string) => void
 const now = Date.parse('2026-09-13T10:00:00Z')
@@ -26,6 +27,7 @@ beforeEach(() => {
   vi.mocked(participantService.getParticipantDashboard).mockResolvedValue(initial)
   vi.mocked(participantService.getProblems).mockResolvedValue([problem])
   vi.mocked(participantService.getLeaderboard).mockResolvedValue([])
+  vi.mocked(participantService.getWildcardProblems).mockResolvedValue([{ ...problem, available: true }])
   vi.mocked(connectEventSocket).mockImplementation((callback, onStatus) => {
     receive = callback
     socketStatus = onStatus ?? (() => {})
@@ -52,6 +54,59 @@ it('recovers the initial dashboard when a socket snapshot overtakes its HTTP res
   await act(async () => resolveFirst(initial))
   expect(host.textContent).toContain('Lab B')
   expect(participantService.getParticipantDashboard).toHaveBeenCalledTimes(2)
+})
+
+it('reconciles a Wildcard turn after realtime overtakes an in-flight dashboard refresh', async () => {
+  const waiting = {
+    ...initial,
+    eventState: 'WILDCARD_SELECTION',
+    isLeader: true,
+    wildcard: {
+      status: 'qualified', rank: 1, winningBid: 500, selectedProblemId: null, selectionMethod: null,
+      currentSelectionRank: 2, currentSelectionTeam: 'Other team', isSelectionTurn: false,
+      availableProblemCount: 1, slotCount: 3, selectionStartedAt: null, selectionEndsAt: null,
+      selectionDurationSeconds: 30, selectionRemainingSeconds: 30,
+    },
+  } as ParticipantDashboard
+  const stale = { ...waiting, wildcard: { ...waiting.wildcard!, currentSelectionTeam: 'Stale team' } }
+  const activeTurn = {
+    ...waiting,
+    wildcard: {
+      ...waiting.wildcard!, currentSelectionRank: 1, currentSelectionTeam: waiting.team.name,
+      isSelectionTurn: true, selectionStartedAt: new Date(now).toISOString(),
+      selectionEndsAt: new Date(now + 30_000).toISOString(),
+    },
+  }
+  let resolveStale!: (value: ParticipantDashboard) => void
+  let resolveTurn!: (value: ParticipantDashboard) => void
+  vi.mocked(participantService.getParticipantDashboard)
+    .mockReset()
+    .mockResolvedValueOnce(waiting)
+    .mockImplementationOnce(() => new Promise(resolve => { resolveStale = resolve }))
+    .mockImplementationOnce(() => new Promise(resolve => { resolveTurn = resolve }))
+  function Probe() {
+    const { refresh } = useParticipant()
+    return <><button id="refresh" onClick={() => void refresh()}>Refresh</button><WildcardSelectionPage /></>
+  }
+  await act(async () => root.render(<MemoryRouter><ParticipantProvider><Probe /></ParticipantProvider></MemoryRouter>))
+  act(() => host.querySelector<HTMLButtonElement>('#refresh')!.click())
+  await act(async () => receive({
+    type: 'wildcard_updated', version: 2, server_time: new Date().toISOString(),
+    payload: { action: 'bidding_finalized', winners: [{ team_id: 1, rank: 1, winning_bid: 500 }] },
+  }))
+  await act(async () => vi.advanceTimersByTimeAsync(900))
+  expect(participantService.getParticipantDashboard).toHaveBeenCalledTimes(2)
+
+  await act(async () => resolveStale(stale))
+  expect(participantService.getParticipantDashboard).toHaveBeenCalledTimes(3)
+  expect(host.textContent).not.toContain('Stale team')
+
+  await act(async () => resolveTurn(activeTurn))
+  expect(host.textContent).toContain('Choose your final problem')
+  const radio = host.querySelector<HTMLInputElement>('input[type="radio"]')!
+  expect(radio.disabled).toBe(false)
+  act(() => radio.click())
+  expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Choose final problem')?.disabled).toBe(false)
 })
 
 it('updates only the affected team lab without reloading the dashboard', async () => {

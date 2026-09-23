@@ -118,9 +118,9 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
     void request.finally(() => {
       if (refreshInFlight.current === request) refreshInFlight.current = null
 
-      // If the initial HTTP snapshot lost a race with an authoritative realtime
+      // If the HTTP snapshot lost a race with an authoritative realtime
       // mutation, silently retry once the in-flight request has been released.
-      if (!dashboardRef.current && requestRevision !== realtimeRevision.current) {
+      if (requestRevision !== realtimeRevision.current) {
         queueMicrotask(() => {
           void refreshRunnerRef.current?.(false)
         })

@@ -58,6 +58,7 @@ frontend-website/src/**/*.test.*
 !frontend-website/src/admin/pages/ChangeProblemPage.test.jsx
 !frontend-website/src/admin/AdminApplication.test.jsx
 !frontend-website/src/participant/auth/AuthContext.test.ts
+!frontend-website/src/leaderboard/LeaderboardDisplay.test.jsx
 !frontend-website/src/authPortalEndpoints.test.ts
 !frontend-website/src/participant/services/apiParticipantService.test.ts
 !frontend-website/src/participant/CodingFlow.test.tsx
