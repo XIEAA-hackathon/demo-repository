@@ -33,4 +33,5 @@ tests/*
 !tests/test_wildcard_final_choice.py
 !tests/test_auth_role_separation.py
 !tests/test_admin_export_performance.py
+!tests/test_problem_results.py
 !requirements-dev.txt

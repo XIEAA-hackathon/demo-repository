@@ -4,6 +4,7 @@ import { connectReconnectingSocket } from "../services/realtime/connectReconnect
 import { WS_URL } from "../services/api/config";
 import LabAllocationPanel from "../labs/LabAllocationPanel";
 import { applyLabChange } from "../labs/labBoard";
+import ProblemResultsPage from "./ProblemResultsPage";
 import {
   clearLabAdminToken,
   getLabAdminSession,
@@ -32,12 +33,14 @@ export default function LabAdminApp() {
 
 export function LabAdminBoard({ onLogout, session = null }) {
   const [page, setPage] = useState("labs");
+  const [resultsRevision, setResultsRevision] = useState(0);
   const revision = useRef(0);
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [socketStatus, setSocketStatus] = useState("connecting");
   const loadInFlight = useRef(null);
+  const resultsRefreshTimer = useRef(null);
   const load = useCallback(() => {
     if (loadInFlight.current) return loadInFlight.current;
     const startedRevision = revision.current;
@@ -64,7 +67,20 @@ export function LabAdminBoard({ onLogout, session = null }) {
         if (message.type === "lab_assignment_changed") { revision.current += 1; setBoard(current => applyLabChange(current, message.payload)); return; }
         const wildcardEnded = message.type === "wildcard_ended"
           || (message.type === "event_state_changed" && Boolean(message.payload?.rounds?.WILDCARD?.ended));
-        if (wildcardEnded && !wildcardReadySeen.current) {
+        const newlyCompletedWildcard = wildcardEnded && !wildcardReadySeen.current;
+        const resultsChanged = message.type === "results_published"
+          || message.type === "round1_assignment_changed"
+          || message.type === "external_problems_imported"
+          || (message.type === "round_updated" && ["winners_assigned", "problem_no_bids", "problems_imported"].includes(message.payload?.action))
+          || newlyCompletedWildcard
+          || (message.type === "wildcard_updated" && ["problem_selected", "selection_timeout", "admin_end_turn", "final_problem_confirmed", "final_choice_completed", "final_choice_ended", "final_choice_timeout"].includes(message.payload?.action));
+        if (resultsChanged && resultsRefreshTimer.current === null) {
+          resultsRefreshTimer.current = window.setTimeout(() => {
+            resultsRefreshTimer.current = null;
+            setResultsRevision(current => current + 1);
+          }, 150);
+        }
+        if (newlyCompletedWildcard) {
           wildcardReadySeen.current = true;
           revision.current += 1; // discard a pre-completion GET already in flight
           void load();
@@ -73,19 +89,25 @@ export function LabAdminBoard({ onLogout, session = null }) {
       heartbeatIntervalMs: 20_000,
       heartbeatMessage: () => JSON.stringify({ type: "heartbeat", client_time: Date.now() }),
     });
-    return disconnect;
+    return () => {
+      if (resultsRefreshTimer.current !== null) window.clearTimeout(resultsRefreshTimer.current);
+      disconnect();
+    };
   }, [load]);
   const connected = socketStatus === "connected" || socketStatus === "reconnected";
+  const title = page === "teams" ? "Teams" : page === "labs" ? "Labs" : "Problem Results";
   return (
     <div className="app-shell lab-admin-shell">
       <aside className="sidebar lab-admin-sidebar">
         <div className="sidebar-brand"><div className="sidebar-logo">L</div><div><strong>Bid to Build</strong><span>LAB OPERATIONS</span></div></div>
-        <nav className="sidebar-nav" aria-label="Lab Admin"><span className="sidebar-section-title">Workspace</span>{["teams", "labs"].map(item => <button key={item} className={`nav-item ${page === item ? "active" : ""}`} type="button" onClick={() => setPage(item)}><span className="nav-label">{item === "teams" ? "Teams" : "Labs"}</span></button>)}</nav>
-        <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">L</div><div><strong>{session?.name || "Lab Admin"}</strong><span>Placement access only</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
+        <nav className="sidebar-nav" aria-label="Lab Admin"><span className="sidebar-section-title">Workspace</span>{[["teams", "Teams"], ["labs", "Labs"], ["problem-results", "Problem Results"]].map(([item, label]) => <button key={item} className={`nav-item ${page === item ? "active" : ""}`} type="button" onClick={() => setPage(item)}><span className="nav-label">{label}</span></button>)}</nav>
+        <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">L</div><div><strong>{session?.name || "Lab Admin"}</strong><span>Lab and results access</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><h1>{page === "teams" ? "Teams" : "Labs"}</h1><p>Final team placement after problem allocation</p></div><div className="lab-connection"><i className={`status-dot ${connected ? "online" : "degraded"}`} /><span>{connected ? "Live" : "Reconnecting"}</span></div></header>
-        <div className="page-content"><LabAllocationPanel board={board} loading={loading} error={error} onReload={load} onMove={moveLabAssignment} onBoardChange={change => { revision.current += 1; setBoard(change); }} view={page} canMove /></div>
+        <header className="topbar"><div><h1>{title}</h1><p>{page === "problem-results" ? "Read-only view of problem assignments, winning bids, Wildcard outcomes and final placements." : "Final team placement after problem allocation"}</p></div><div className="lab-connection"><i className={`status-dot ${connected ? "online" : "degraded"}`} /><span>{connected ? "Live" : "Reconnecting"}</span></div></header>
+        <div className="page-content">{page === "problem-results"
+          ? <ProblemResultsPage refreshRevision={resultsRevision} />
+          : <LabAllocationPanel board={board} loading={loading} error={error} onReload={load} onMove={moveLabAssignment} onBoardChange={change => { revision.current += 1; setBoard(change); }} view={page} canMove />}</div>
       </main>
     </div>
   );

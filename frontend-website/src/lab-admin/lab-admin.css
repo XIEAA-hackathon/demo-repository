@@ -15,3 +15,48 @@
 @media (max-width: 760px) {
   .lab-admin-shell .logout-button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; }
 }
+
+.problem-results { display: grid; gap: 18px; color: var(--text); }
+.problem-results__header, .problem-results__actions, .problem-result-card > header, .problem-result-card > header > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.problem-results__header h2 { margin: 0 0 6px; font-size: clamp(22px, 2.4vw, 32px); letter-spacing: -.025em; }
+.problem-results__header p, .problem-results__actions { margin: 0; color: #aa9bb2; font-size: 11px; }
+.problem-results__actions .secondary-button, .problem-result-card .secondary-button { width: auto; min-height: 36px; padding: 8px 12px; }
+.problem-results__summary { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); }
+.problem-results__tabs { display: flex; gap: 6px; padding: 4px; background: rgba(16,8,23,.9); border: 1px solid rgba(190,91,243,.16); border-radius: 11px; }
+.problem-results__tabs button { min-height: 36px; padding: 7px 13px; color: #9f91a7; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
+.problem-results__tabs button[aria-selected="true"] { color: #fff; background: rgba(181,76,255,.15); box-shadow: inset 0 0 0 1px rgba(190,91,243,.24); }
+.problem-results__filters { padding: 0; }
+.problem-results__list { display: grid; gap: 10px; }
+.problem-result-card { overflow: hidden; background: rgba(16,8,23,.9); border: 1px solid rgba(190,91,243,.16); border-radius: 14px; }
+.problem-result-card > header { padding: 16px 18px; }
+.problem-result-card > header > div:first-child { justify-content: flex-start; flex-wrap: wrap; }
+.problem-result-card h3 { margin: 0; color: #f4edf7; font-size: 16px; }
+.problem-result-card header p { margin: 0; color: #b8aabc; font-size: 12px; }
+.problem-result-card header strong { color: #d6cadb; font-size: 11px; }
+.problem-result-type, .problem-result-status { padding: 4px 7px; color: #d8b85f; background: rgba(233,184,79,.08); border: 1px solid rgba(233,184,79,.2); border-radius: 999px; font-size: 8px; font-weight: 850; letter-spacing: .05em; text-transform: uppercase; }
+.problem-result-type--round1 { color: #d8b8e8; background: rgba(181,76,255,.09); border-color: rgba(190,91,243,.2); }
+.problem-result-status { color: #a99ab1; background: rgba(255,255,255,.035); border-color: rgba(255,255,255,.09); }
+.problem-result-status.assigned { color: #8ce1b1; background: rgba(56,233,139,.07); border-color: rgba(56,233,139,.2); }
+.problem-result-details { padding: 0 18px 18px; border-top: 1px solid rgba(255,255,255,.05); }
+.problem-result-details > dl { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 16px 0 10px; }
+.problem-result-details dt { color: #8f8197; font-size: 9px; }
+.problem-result-details dd { margin: 3px 0 0; color: #e9e0ed; font-size: 11px; }
+.problem-result-details > p { color: #a99ab1; font-size: 11px; line-height: 1.55; }
+.problem-result-table-wrap { overflow-x: auto; border: 1px solid rgba(190,91,243,.12); border-radius: 10px; }
+.problem-result-table-wrap table { width: 100%; min-width: 1180px; border-collapse: collapse; }
+.problem-result-table-wrap th, .problem-result-table-wrap td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,.045); text-align: left; vertical-align: top; }
+.problem-result-table-wrap th { color: #81738a; background: rgba(255,255,255,.018); font-size: 8px; letter-spacing: .05em; text-transform: uppercase; }
+.problem-result-table-wrap td { color: #cfc4d5; font-size: 10px; }
+.problem-result-table-wrap td span, .problem-result-table-wrap td small, .problem-result-table-wrap td strong { display: block; }
+.problem-result-table-wrap td strong { color: #f1e9f4; }
+.problem-result-table-wrap td small { margin-top: 4px; color: #8f8197; }
+.placement-badge { display: inline-flex !important; width: max-content; padding: 4px 7px; color: #aaa0b0; background: rgba(255,255,255,.04); border-radius: 999px; font-weight: 800; }
+.placement-badge--1stplace, .placement-badge--2ndplace, .placement-badge--3rdplace { color: #f0cb6f; background: rgba(233,184,79,.09); }
+
+@media (max-width: 760px) {
+  .problem-results__header, .problem-result-card > header { align-items: flex-start; flex-direction: column; }
+  .problem-results__actions, .problem-result-card > header > div { width: 100%; flex-wrap: wrap; justify-content: flex-start; }
+  .problem-results__summary { grid-template-columns: 1fr 1fr; }
+  .problem-results__tabs { overflow-x: auto; }
+  .problem-results__tabs button { min-height: 44px; white-space: nowrap; }
+}
