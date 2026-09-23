@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_, func, or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_active_admin, get_current_active_admin_or_lab_admin, get_current_active_lab_admin
 from app.api.websockets import manager
 from app.core.database import get_db
-from app.models.models import Bid, FinalResult, Lab, LabAssignment, ProblemStatement, Team, User, Wildcard
+from app.models.models import FinalResult, Lab, LabAssignment, ProblemStatement, Team, User, Wildcard
 from app.services.activity_log import record_event
 from app.services.lab_allocation import LabAllocationError, allocate_labs, lab_board, move_team, try_allocate_labs
 
@@ -182,24 +182,10 @@ def get_lab_allocation(
     return lab_board(db)
 
 
-def _problem_result_payload(problem: ProblemStatement | None) -> dict | None:
-    if problem is None:
-        return None
-    return {
-        "id": problem.id,
-        "number": problem.ps_number,
-        "title": problem.title,
-        "description": problem.description,
-        "round": problem.round,
-        "problem_status": problem.status,
-        "problem_type": "WILDCARD" if problem.round == 2 else "ROUND1",
-    }
-
-
 def _problem_reference(problem: ProblemStatement | None) -> dict | None:
     if problem is None:
         return None
-    return {"id": problem.id, "number": problem.ps_number, "title": problem.title}
+    return {"id": problem.id, "problem_number": problem.ps_number, "problem_title": problem.title}
 
 
 @router.get("/lab-admin/problem-results")
@@ -208,94 +194,60 @@ def get_problem_results(
     current_user: User = Depends(get_current_active_lab_admin),
 ):
     del current_user
-    problems = db.query(ProblemStatement).order_by(ProblemStatement.round.asc(), ProblemStatement.ps_number.asc()).all()
-    team_rows = (
-        db.query(Team, User.name)
-        .outerjoin(User, Team.leader_id == User.id)
+    problems = db.query(ProblemStatement).all()
+    teams = (
+        db.query(Team)
         .filter(or_(Team.round1_problem_id.is_not(None), Team.wildcard_problem_id.is_not(None)))
         .order_by(Team.team_name.asc())
-        .all()
-    )
-    round1_bids = (
-        db.query(Bid)
-        .join(Team, and_(Team.id == Bid.team_id, Team.round1_problem_id == Bid.ps_id))
-        .filter(Bid.round == 1)
         .all()
     )
     wildcards = db.query(Wildcard).all()
     final_result = db.query(FinalResult).first()
 
     problem_by_id = {problem.id: problem for problem in problems}
-    result_by_id = {
-        problem.id: {**_problem_result_payload(problem), "assignments": []}
-        for problem in problems
-    }
-    bid_by_team_problem = {(bid.team_id, bid.ps_id): bid.amount for bid in round1_bids}
     wildcard_by_team = {wildcard.team_id: wildcard for wildcard in wildcards}
     published = bool(final_result and final_result.result_status == "PUBLISHED")
     placements = {} if not published else {
-        final_result.first_place_team_id: "1st Place",
-        final_result.second_place_team_id: "2nd Place",
-        final_result.third_place_team_id: "3rd Place",
+        team_id: place
+        for team_id, place in (
+            (final_result.first_place_team_id, "FIRST"),
+            (final_result.second_place_team_id, "SECOND"),
+            (final_result.third_place_team_id, "THIRD"),
+        )
+        if team_id is not None
     }
-    assigned_team_ids: set[int] = set()
-
-    for team, leader_name in team_rows:
-        final_problem = problem_by_id.get(team.ps_id)
+    rows = []
+    for team in teams:
+        round1_problem = _problem_reference(problem_by_id.get(team.round1_problem_id))
+        wildcard_problem = _problem_reference(problem_by_id.get(team.wildcard_problem_id))
         wildcard = wildcard_by_team.get(team.id)
-        common = {
+        rows.append({
             "team_id": team.id,
             "team_name": team.team_name,
-            "leader_name": leader_name,
-            "round1_problem": _problem_reference(problem_by_id.get(team.round1_problem_id)),
-            "wildcard_problem": _problem_reference(problem_by_id.get(team.wildcard_problem_id)),
-            "final_problem": _problem_reference(final_problem),
+            "round1": None if round1_problem is None else {
+                **round1_problem,
+                "winning_bid": team.round1_assignment_cost,
+            },
+            "wildcard": {
+                "selected": wildcard_problem is not None,
+                **(wildcard_problem or {}),
+                "winning_bid": wildcard.winning_bid if wildcard else None,
+            },
+            "final_problem": _problem_reference(problem_by_id.get(team.ps_id)),
             "final_choice": team.final_problem_choice,
-            "final_problem_defaulted": team.final_problem_defaulted,
-            "final_problem_confirmed_at": team.final_problem_confirmed_at,
-            "changed_after_wildcard": bool(team.ps_id and team.round1_problem_id and team.ps_id != team.round1_problem_id),
-            "placement": placements.get(team.id, "Not Placed") if published else "Pending",
-        }
-        if team.round1_problem_id in result_by_id:
-            result_by_id[team.round1_problem_id]["assignments"].append({
-                **common,
-                "association": "ROUND1",
-                "assignment_source": team.round1_assignment_type,
-                "assignment_cost": team.round1_assignment_cost,
-                "round1_bid_amount": bid_by_team_problem.get((team.id, team.round1_problem_id)),
-                "wildcard_rank": wildcard.rank if wildcard else None,
-                "wildcard_winning_bid": wildcard.winning_bid if wildcard else None,
-                "coins_paid": wildcard.coins_paid if wildcard else None,
-                "selection_method": wildcard.selection_method if wildcard else None,
-            })
-            assigned_team_ids.add(team.id)
-        if team.wildcard_problem_id in result_by_id:
-            result_by_id[team.wildcard_problem_id]["assignments"].append({
-                **common,
-                "association": "WILDCARD",
-                "assignment_source": wildcard.selection_method if wildcard else None,
-                "assignment_cost": None,
-                "round1_bid_amount": bid_by_team_problem.get((team.id, team.round1_problem_id)),
-                "wildcard_rank": wildcard.rank if wildcard else None,
-                "wildcard_winning_bid": wildcard.winning_bid if wildcard else None,
-                "coins_paid": wildcard.coins_paid if wildcard else None,
-                "selection_method": wildcard.selection_method if wildcard else None,
-            })
-            assigned_team_ids.add(team.id)
+            "final_placement": placements.get(team.id, "NOT_PLACED") if published else "PENDING",
+        })
 
-    result_rows = list(result_by_id.values())
-    for problem in result_rows:
-        problem["status"] = "Assigned" if problem["assignments"] else "Unassigned"
     return {
         "result_status": final_result.result_status if final_result else "WAITING",
         "published_at": final_result.published_at if published else None,
         "summary": {
-            "total_problems": len(result_rows),
-            "round1_problems": sum(problem["problem_type"] == "ROUND1" for problem in result_rows),
-            "wildcard_problems": sum(problem["problem_type"] == "WILDCARD" for problem in result_rows),
-            "assigned_teams": len(assigned_team_ids),
+            "total_teams": len(rows),
+            "round1_assigned": sum(team.round1_problem_id is not None for team in teams),
+            "wildcard_selected": sum(team.wildcard_problem_id is not None for team in teams),
+            "top3_finalized": len(placements),
         },
-        "problems": result_rows,
+        "teams": rows,
     }
 
 

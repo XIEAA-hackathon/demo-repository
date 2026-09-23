@@ -77,8 +77,8 @@ def _seed_results(db, *, published=True):
     return {"round1": round1, "wildcard": wildcard_problem, "teams": teams}
 
 
-def _problem(payload, problem_id):
-    return next(row for row in payload["problems"] if row["id"] == problem_id)
+def _team(payload, name):
+    return next(row for row in payload["teams"] if row["team_name"] == name)
 
 
 def test_problem_results_requires_lab_admin(client, db):
@@ -98,7 +98,7 @@ def test_problem_results_requires_lab_admin(client, db):
 
     allowed = client.get("/lab-admin/problem-results", headers=_lab_admin_headers(client, db))
     assert allowed.status_code == 200
-    assert _problem(allowed.json(), seeded["round1"].id)["number"] == "PS-04"
+    assert _team(allowed.json(), "Alpha")["round1"]["problem_number"] == "PS-04"
 
 
 def test_problem_results_preserves_history_values_placements_and_uses_bounded_read_queries(client, db, engine):
@@ -117,47 +117,47 @@ def test_problem_results_preserves_history_values_placements_and_uses_bounded_re
 
     assert response.status_code == 200, response.text
     assert not [statement for statement in statements if statement.startswith(("INSERT", "UPDATE", "DELETE"))]
-    assert len([statement for statement in statements if statement.startswith("SELECT")]) == 6  # auth + five fixed data reads
+    assert len([statement for statement in statements if statement.startswith("SELECT")]) == 5  # auth + four fixed data reads
 
     payload = response.json()
-    assert payload["summary"] == {"total_problems": 4, "round1_problems": 3, "wildcard_problems": 1, "assigned_teams": 4}
-    round1 = _problem(payload, seeded["round1"].id)
-    assert [row["team_name"] for row in round1["assignments"]] == ["Alpha", "Beta"]
-    alpha_history = round1["assignments"][0]
-    assert alpha_history["assignment_source"] == "BID_WINNER"
-    assert alpha_history["assignment_cost"] == 400
-    assert alpha_history["round1_bid_amount"] == 420
-    assert alpha_history["changed_after_wildcard"] is True
-    assert alpha_history["round1_problem"]["id"] == seeded["round1"].id
-    assert "description" not in alpha_history["round1_problem"]
-    assert alpha_history["final_problem"]["id"] == seeded["wildcard"].id
-    assert alpha_history["placement"] == "1st Place"
-    assert round1["assignments"][1]["placement"] == "2nd Place"
+    assert payload["summary"] == {"total_teams": 4, "round1_assigned": 4, "wildcard_selected": 1, "top3_finalized": 3}
+    assert [row["team_name"] for row in payload["teams"]] == ["Alpha", "Beta", "Delta", "Gamma"]
+    assert len({row["team_id"] for row in payload["teams"]}) == 4
 
-    wildcard = _problem(payload, seeded["wildcard"].id)
-    assert len(wildcard["assignments"]) == 1
-    selected = wildcard["assignments"][0]
-    assert selected["team_name"] == "Alpha"
-    assert selected["wildcard_rank"] == 1
-    assert selected["wildcard_winning_bid"] == 300
-    assert selected["coins_paid"] == 300
-    assert selected["selection_method"] == "manual"
-    assert selected["final_problem"]["id"] == seeded["wildcard"].id
-
-    other_round1 = _problem(payload, seeded["teams"][2].round1_problem_id)
-    assert {row["team_name"]: row["placement"] for row in other_round1["assignments"]} == {
-        "Delta": "Not Placed",
-        "Gamma": "3rd Place",
+    alpha = _team(payload, "Alpha")
+    assert alpha["round1"] == {
+        "id": seeded["round1"].id,
+        "problem_number": "PS-04",
+        "problem_title": "Smart Campus",
+        "winning_bid": 400,
     }
+    assert alpha["wildcard"] == {
+        "selected": True,
+        "id": seeded["wildcard"].id,
+        "problem_number": "WC-02",
+        "problem_title": "Open Innovation",
+        "winning_bid": 300,
+    }
+    assert alpha["final_problem"]["id"] == seeded["wildcard"].id
+    assert alpha["final_choice"] == "WILDCARD"
+    assert alpha["final_placement"] == "FIRST"
+    assert "description" not in alpha["round1"]
+    assert "description" not in alpha["wildcard"]
+
+    assert _team(payload, "Beta")["final_placement"] == "SECOND"
+    assert _team(payload, "Gamma")["final_placement"] == "THIRD"
+    delta = _team(payload, "Delta")
+    assert delta["wildcard"] == {"selected": False, "winning_bid": None}
+    assert delta["final_placement"] == "NOT_PLACED"
 
 
 def test_problem_results_keeps_placements_pending_until_published(client, db):
     _seed_results(db, published=False)
     response = client.get("/lab-admin/problem-results", headers=_lab_admin_headers(client, db))
     assert response.status_code == 200
-    assignments = [assignment for problem in response.json()["problems"] for assignment in problem["assignments"]]
-    assert assignments
-    assert {assignment["placement"] for assignment in assignments} == {"Pending"}
+    teams = response.json()["teams"]
+    assert teams
+    assert {team["final_placement"] for team in teams} == {"PENDING"}
 
 
 def test_problem_results_handles_normal_incomplete_event_data(client, db):
@@ -177,11 +177,15 @@ def test_problem_results_handles_normal_incomplete_event_data(client, db):
     response = client.get("/lab-admin/problem-results", headers=_lab_admin_headers(client, db))
     assert response.status_code == 200, response.text
     payload = response.json()
-    alpha_row = next(row for problem in payload["problems"] for row in problem["assignments"] if row["team_name"] == "Alpha")
+    alpha_row = _team(payload, "Alpha")
     assert payload["result_status"] == "WAITING"
-    assert alpha_row["placement"] == "Pending"
-    assert alpha_row["leader_name"] is None
-    assert alpha_row["assignment_cost"] is None
-    assert alpha_row["round1_bid_amount"] is None
-    assert alpha_row["wildcard_rank"] is None
-    assert all(row["team_name"] != "Waiting Team" for problem in payload["problems"] for row in problem["assignments"])
+    assert alpha_row["final_placement"] == "PENDING"
+    assert alpha_row["round1"]["winning_bid"] is None
+    assert alpha_row["wildcard"] == {
+        "selected": True,
+        "id": seeded["wildcard"].id,
+        "problem_number": "WC-02",
+        "problem_title": "Open Innovation",
+        "winning_bid": None,
+    }
+    assert all(row["team_name"] != "Waiting Team" for row in payload["teams"])

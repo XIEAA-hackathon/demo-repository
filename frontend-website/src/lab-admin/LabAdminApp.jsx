@@ -104,7 +104,7 @@ export function LabAdminBoard({ onLogout, session = null }) {
         <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">L</div><div><strong>{session?.name || "Lab Admin"}</strong><span>Lab and results access</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><h1>{title}</h1><p>{page === "problem-results" ? "Read-only view of problem assignments, winning bids, Wildcard outcomes and final placements." : "Final team placement after problem allocation"}</p></div><div className="lab-connection"><i className={`status-dot ${connected ? "online" : "degraded"}`} /><span>{connected ? "Live" : "Reconnecting"}</span></div></header>
+        <header className="topbar"><div><h1>{title}</h1><p>{page === "problem-results" ? "Round 1, Wildcard and final result details by team." : "Final team placement after problem allocation"}</p></div><div className="lab-connection"><i className={`status-dot ${connected ? "online" : "degraded"}`} /><span>{connected ? "Live" : "Reconnecting"}</span></div></header>
         <div className="page-content">{page === "problem-results"
           ? <ProblemResultsPage refreshRevision={resultsRevision} />
           : <LabAllocationPanel board={board} loading={loading} error={error} onReload={load} onMove={moveLabAssignment} onBoardChange={change => { revision.current += 1; setBoard(change); }} view={page} canMove />}</div>

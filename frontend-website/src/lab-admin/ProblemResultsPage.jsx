@@ -1,20 +1,51 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getProblemResults } from "./services/api";
 
-const friendly = value => value ? value.toLowerCase().split("_").map(word => word[0].toUpperCase() + word.slice(1)).join(" ") : "—";
-const coins = value => value == null ? "—" : `${Number(value).toLocaleString()} coins`;
-const shortProblem = problem => problem ? `${problem.number} — ${problem.title}` : "—";
-const placement = value => ({ "1st Place": "🥇 1st Place", "2nd Place": "🥈 2nd Place", "3rd Place": "🥉 3rd Place" }[value] || value);
+const PLACEMENTS = {
+  FIRST: { label: "1st Place", icon: "🥇" },
+  SECOND: { label: "2nd Place", icon: "🥈" },
+  THIRD: { label: "3rd Place", icon: "🥉" },
+  NOT_PLACED: { label: "Not Placed", icon: "" },
+  PENDING: { label: "Pending", icon: "" },
+};
+
+const coins = value => value == null ? "Not recorded" : `${Number(value).toLocaleString()} coins`;
+const problemText = problem => problem ? `${problem.problem_number} ${problem.problem_title}` : "";
+
+function PlacementBadge({ value }) {
+  const placement = PLACEMENTS[value] || PLACEMENTS.PENDING;
+  return <span className={`placement-badge placement-badge--${value?.toLowerCase() || "pending"}`}>
+    {placement.icon && <span aria-hidden="true">{placement.icon}</span>}{placement.label}
+  </span>;
+}
+
+function ProblemSummary({ problem, empty }) {
+  if (!problem) return <span className="problem-summary problem-summary--empty">{empty}</span>;
+  return <span className="problem-summary"><strong>{problem.problem_number}</strong><small>{problem.problem_title}</small></span>;
+}
+
+function HistoryCard({ type, problem, bid, placement, selected = true }) {
+  const wildcard = type === "Wildcard";
+  return <article className={`competition-history-card ${wildcard ? "competition-history-card--wildcard" : ""}`}>
+    <header><span>{type}</span>{!selected && <strong>Not selected</strong>}</header>
+    {selected ? <dl>
+      <div><dt>Problem Statement</dt><dd><strong>{problem?.problem_number || "Not assigned"}</strong>{problem?.problem_title && <span>{problem.problem_title}</span>}</dd></div>
+      <div><dt>{wildcard ? "Wildcard Bid" : "Winning Bid"}</dt><dd><strong>{coins(bid)}</strong></dd></div>
+      <div><dt>Final Place</dt><dd><PlacementBadge value={placement} /></dd></div>
+    </dl> : <p>This team did not select or receive a Wildcard problem.</p>}
+  </article>;
+}
 
 export default function ProblemResultsPage({ refreshRevision = 0 }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState(null);
-  const [tab, setTab] = useState("all");
-  const [status, setStatus] = useState("all");
   const [query, setQuery] = useState("");
-  const [expanded, setExpanded] = useState(null);
+  const [historyFilter, setHistoryFilter] = useState("all");
+  const [placementFilter, setPlacementFilter] = useState("all");
+  const [selectedTeam, setSelectedTeam] = useState(null);
+  const closeButton = useRef(null);
   const alive = useRef(true);
   const currentRevision = useRef(refreshRevision);
   const inFlight = useRef(null);
@@ -61,33 +92,58 @@ export default function ProblemResultsPage({ refreshRevision = 0 }) {
     currentRevision.current = refreshRevision;
     void load();
   }, [refreshRevision, load]);
+  useEffect(() => {
+    if (!selectedTeam) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = event => { if (event.key === "Escape") setSelectedTeam(null); };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", handleKeyDown);
+    closeButton.current?.focus();
+    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", handleKeyDown); };
+  }, [selectedTeam]);
 
-  const shown = useMemo(() => (data?.problems || []).filter(problem => {
-    const searchable = [problem.number, problem.title, ...problem.assignments.map(row => row.team_name)].join(" ").toLowerCase();
-    const tabMatch = tab === "all" || problem.problem_type === tab;
-    const statusMatch = status === "all"
-      || (status === "assigned" && problem.assignments.length > 0)
-      || (status === "unassigned" && problem.assignments.length === 0)
-      || (status === "changed" && problem.assignments.some(row => row.changed_after_wildcard));
-    return tabMatch && statusMatch && searchable.includes(query.trim().toLowerCase());
-  }), [data, query, status, tab]);
+  const shown = useMemo(() => (data?.teams || []).filter(team => {
+    const searchable = [team.team_name, problemText(team.round1), problemText(team.wildcard)].join(" ").toLowerCase();
+    const hasWildcard = Boolean(team.wildcard?.selected);
+    const historyMatch = historyFilter === "all"
+      || (historyFilter === "round1" && !hasWildcard)
+      || (historyFilter === "wildcard" && hasWildcard)
+      || (historyFilter === "final-round1" && team.final_choice === "ROUND1")
+      || (historyFilter === "final-wildcard" && team.final_choice === "WILDCARD");
+    const placementMatch = placementFilter === "all"
+      || (placementFilter === "top3" && ["FIRST", "SECOND", "THIRD"].includes(team.final_placement))
+      || team.final_placement === placementFilter;
+    return searchable.includes(query.trim().toLowerCase()) && historyMatch && placementMatch;
+  }), [data, historyFilter, placementFilter, query]);
 
   if (loading && !data) return <p className="lab-panel-state">Loading problem results…</p>;
   if (!data) return <p className="lab-inline-error" role="alert">{error || "Problem results are unavailable."}</p>;
   return <section className="problem-results" aria-busy={loading}>
-    <header className="problem-results__header"><div><h2>Problem Results</h2><p>Read-only event history from persisted problem assignments and final results.</p></div><div className="problem-results__actions"><span>Last updated {updatedAt?.toLocaleTimeString() || "—"}</span><button type="button" className="secondary-button" disabled={loading} onClick={() => void load()}>Refresh</button></div></header>
+    <header className="problem-results__header"><div><h2>Problem Results</h2><p>Round 1, Wildcard and final result details by team.</p></div><div className="problem-results__actions"><span>Last updated {updatedAt?.toLocaleTimeString() || "Not yet"}</span><button type="button" className="secondary-button" disabled={loading} onClick={() => void load()}>Refresh</button></div></header>
     {error && <p className="lab-inline-error" role="alert">{error}</p>}
-    <dl className="lab-allocation-summary problem-results__summary"><div><dt>Total Problems</dt><dd>{data.summary.total_problems}</dd></div><div><dt>Round 1 Problems</dt><dd>{data.summary.round1_problems}</dd></div><div><dt>Wildcard Problems</dt><dd>{data.summary.wildcard_problems}</dd></div><div><dt>Assigned Teams</dt><dd>{data.summary.assigned_teams}</dd></div></dl>
-    <div className="problem-results__tabs" role="tablist" aria-label="Problem type">{[["all", "All Problems"], ["ROUND1", "Round 1"], ["WILDCARD", "Wildcard"]].map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>{label}</button>)}</div>
-    <div className="lab-filters problem-results__filters"><label>Search problems or teams<input type="search" value={query} onChange={event => setQuery(event.target.value)} /></label><label>Status<select value={status} onChange={event => setStatus(event.target.value)}><option value="all">All</option><option value="assigned">Assigned</option><option value="unassigned">Unassigned</option><option value="changed">Changed After Wildcard</option></select></label></div>
-    <div className="problem-results__list">{shown.map(problem => {
-      const open = expanded === problem.id;
-      return <article className="problem-result-card" key={problem.id}>
-        <header><div><span className={`problem-result-type problem-result-type--${problem.problem_type.toLowerCase()}`}>{problem.problem_type === "ROUND1" ? "Round 1" : "Wildcard"}</span><h3>{problem.number}</h3><p>{problem.title}</p></div><div><strong>{problem.assignments.length} team{problem.assignments.length === 1 ? "" : "s"} assigned</strong><span className={`problem-result-status ${problem.assignments.length ? "assigned" : ""}`}>{problem.status}</span><button type="button" className="secondary-button" aria-expanded={open} onClick={() => setExpanded(open ? null : problem.id)}>{open ? "Hide Details" : "View Details"}</button></div></header>
-        {open && <div className="problem-result-details"><dl><div><dt>DB ID</dt><dd>{problem.id}</dd></div><div><dt>PS number</dt><dd>{problem.number}</dd></div><div><dt>Round</dt><dd>{problem.round}</dd></div><div><dt>Problem status</dt><dd>{friendly(problem.problem_status)}</dd></div></dl><p>{problem.description || "No description stored."}</p>
-          {problem.assignments.length ? <div className="problem-result-table-wrap"><table><thead><tr><th>Team</th><th>Assignment source</th><th>Winning bid / cost</th><th>Round 1 problem</th><th>Wildcard outcome</th><th>Final problem</th><th>Final choice</th><th>Final placement</th><th>Status</th></tr></thead><tbody>{problem.assignments.map(row => <tr key={`${row.association}-${row.team_id}`}><td><strong>{row.team_name}</strong><small>Team #{row.team_id}{row.leader_name ? ` · ${row.leader_name}` : ""}</small></td><td>{friendly(row.assignment_source)}</td><td>{row.association === "ROUND1" ? <><span>{coins(row.assignment_cost)}</span>{row.round1_bid_amount != null && <small>Stored bid: {coins(row.round1_bid_amount)}</small>}</> : <><span>Winning bid: {coins(row.wildcard_winning_bid)}</span><small>Coins paid: {coins(row.coins_paid)}</small></>}</td><td>{shortProblem(row.round1_problem)}</td><td>{row.wildcard_problem ? <><span>{shortProblem(row.wildcard_problem)}</span><small>Rank {row.wildcard_rank ? `#${row.wildcard_rank}` : "—"} · {friendly(row.selection_method)}</small></> : "—"}</td><td>{shortProblem(row.final_problem)}</td><td>{friendly(row.final_choice)}{row.final_problem_defaulted ? <small>Defaulted</small> : null}{row.final_problem_confirmed_at ? <small>Confirmed {new Date(row.final_problem_confirmed_at).toLocaleString()}</small> : null}</td><td><span className={`placement-badge placement-badge--${row.placement.replace(/\W/g, "").toLowerCase()}`}>{placement(row.placement)}</span></td><td>{row.changed_after_wildcard ? "Changed After Wildcard" : row.final_problem?.id === problem.id ? "Final Problem" : "Historical"}</td></tr>)}</tbody></table></div> : <p className="lab-empty-row">No teams are associated with this problem.</p>}
-        </div>}
-      </article>;
-    })}{!shown.length && <p className="lab-empty-row">No problems match these filters.</p>}</div>
+    <dl className="lab-allocation-summary problem-results__summary"><div><dt>Total Teams</dt><dd>{data.summary.total_teams}</dd></div><div><dt>Round 1 Assigned</dt><dd>{data.summary.round1_assigned}</dd></div><div><dt>Wildcard Selected</dt><dd>{data.summary.wildcard_selected}</dd></div><div><dt>Top 3 Finalized</dt><dd>{data.summary.top3_finalized}</dd></div></dl>
+    <div className="lab-filters problem-results__filters">
+      <label>Search teams or problems<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Team, number or title" /></label>
+      <label>History<select value={historyFilter} onChange={event => setHistoryFilter(event.target.value)}><option value="all">All Teams</option><option value="round1">Round 1 Only</option><option value="wildcard">Used Wildcard</option><option value="final-round1">Final Problem = Round 1</option><option value="final-wildcard">Final Problem = Wildcard</option></select></label>
+      <label>Placement<select value={placementFilter} onChange={event => setPlacementFilter(event.target.value)}><option value="all">All Placements</option><option value="top3">Top 3</option><option value="NOT_PLACED">Not Placed</option><option value="PENDING">Pending</option></select></label>
+    </div>
+    <div className="problem-team-table-wrap"><table className="problem-team-table"><thead><tr><th>Team</th><th>Round 1 Problem</th><th>Wildcard Problem</th><th>Final Problem</th><th>Final Place</th><th>Action</th></tr></thead><tbody>{shown.map(team => <tr className="problem-team-row" key={team.team_id}>
+      <td data-label="Team"><strong>{team.team_name}</strong><small>Team #{team.team_id}</small></td>
+      <td data-label="Round 1 Problem"><ProblemSummary problem={team.round1} empty="Not assigned" /></td>
+      <td data-label="Wildcard Problem"><ProblemSummary problem={team.wildcard?.selected ? team.wildcard : null} empty="Not selected" /></td>
+      <td data-label="Final Problem"><ProblemSummary problem={team.final_problem} empty="Not assigned" /></td>
+      <td data-label="Final Place"><PlacementBadge value={team.final_placement} /></td>
+      <td data-label="Action"><button type="button" className="secondary-button" onClick={() => setSelectedTeam(team)}>View Details</button></td>
+    </tr>)}</tbody></table>{!shown.length && <p className="lab-empty-row">No teams match these filters.</p>}</div>
+    {selectedTeam && <div className="problem-results-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSelectedTeam(null); }}>
+      <section className="problem-results-modal" role="dialog" aria-modal="true" aria-labelledby={`team-results-${selectedTeam.team_id}`}>
+        <header><div><span>Competition history</span><h2 id={`team-results-${selectedTeam.team_id}`}>{selectedTeam.team_name}</h2></div><button ref={closeButton} type="button" className="problem-results-modal__x" aria-label="Close details" onClick={() => setSelectedTeam(null)}>×</button></header>
+        <div className="competition-history-grid">
+          <HistoryCard type="Round 1" problem={selectedTeam.round1} bid={selectedTeam.round1?.winning_bid} placement={selectedTeam.final_placement} selected={Boolean(selectedTeam.round1)} />
+          <HistoryCard type="Wildcard" problem={selectedTeam.wildcard} bid={selectedTeam.wildcard?.winning_bid} placement={selectedTeam.final_placement} selected={Boolean(selectedTeam.wildcard?.selected)} />
+        </div>
+        <footer><button type="button" className="secondary-button" onClick={() => setSelectedTeam(null)}>Close</button></footer>
+      </section>
+    </div>}
   </section>;
 }
