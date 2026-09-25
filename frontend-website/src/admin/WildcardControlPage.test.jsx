@@ -2,9 +2,13 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WildcardControlPage } from './App'
-import { getRoundControl } from './services/api'
+import { downloadWildcardAssignments, getRoundControl } from './services/api'
 
-vi.mock('./services/api', async (original) => ({ ...await original(), getRoundControl: vi.fn() }))
+vi.mock('./services/api', async (original) => ({
+  ...await original(),
+  downloadWildcardAssignments: vi.fn(),
+  getRoundControl: vi.fn(),
+}))
 
 const snapshot = (status) => ({
   status,
@@ -30,12 +34,17 @@ describe('WildcardControlPage stages', () => {
   beforeEach(() => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
     vi.useFakeTimers()
+    vi.clearAllMocks()
+    Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:wildcard-export'), revokeObjectURL: vi.fn() })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    downloadWildcardAssignments.mockResolvedValue(new Blob(['wildcard']))
     host = document.createElement('div')
     root = createRoot(host)
   })
 
   afterEach(() => {
     act(() => root.unmount())
+    vi.restoreAllMocks()
     vi.useRealTimers()
   })
 
@@ -51,6 +60,13 @@ describe('WildcardControlPage stages', () => {
     expect(host.textContent).toContain('1 confirmed · 1 pending')
     expect(host.textContent).toContain('Pending teams default to their Round 1 problem')
     expect(host.textContent).toContain('End final choice')
+    const download = [...host.querySelectorAll('button')].find(button => button.textContent === 'DOWNLOAD WILDCARD ASSIGNMENTS')
+    expect(download.disabled).toBe(true)
+    expect(download.title).toBe('Available after Wildcard ends')
+    expect(downloadWildcardAssignments).not.toHaveBeenCalled()
+
+    await act(async () => root.render(<WildcardControlPage remaining={42} socketConnected realtimeEvent={{ type: 'wildcard_updated', payload: { action: 'problem_selected' } }} />))
+    expect(downloadWildcardAssignments).not.toHaveBeenCalled()
   })
 
   it('shows COMPLETE in the fourth stage instead of Problem selection', async () => {
@@ -62,5 +78,9 @@ describe('WildcardControlPage stages', () => {
     expect(tabs[3].getAttribute('aria-selected')).toBe('true')
     expect(host.textContent).toContain('Wildcard complete')
     expect(host.textContent).toContain('Final choice complete')
+    const download = [...host.querySelectorAll('button')].find(button => button.textContent === 'DOWNLOAD WILDCARD ASSIGNMENTS')
+    expect(download.disabled).toBe(false)
+    await act(async () => download.click())
+    expect(downloadWildcardAssignments).toHaveBeenCalledTimes(1)
   })
 })

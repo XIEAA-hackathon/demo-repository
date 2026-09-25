@@ -23,7 +23,6 @@ from app.services.event_service import (
     pause_event_timer, resume_event_timer, adjust_event_timer,
     get_or_create_round_control, _remaining_seconds,
 )
-from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_rejection
 from app.services.participant_session import participant_session_needs_touch
 from app.services.round1_assignment import (
@@ -205,14 +204,6 @@ def _place_round1_bid_transaction(
                     timestamp=now,
                 )
                 db.add(bid_row)
-            record_event(
-                db,
-                "round1.bid_placed",
-                actor=user,
-                entity_type="team",
-                entity_id=team.id,
-                metadata={"problem_id": problem.id, "increment": increment, "amount": next_amount},
-            )
             if participant_session_needs_touch(user.session_last_seen_at, now=now):
                 user.session_last_seen_at = now
             db.flush()
@@ -387,7 +378,12 @@ async def finalize_round_one(
             winner_team.round1_problem_id = ps.id
             winner_team.round1_assignment_type = "BID_WINNER"
             winner_team.round1_assignment_cost = bid.amount
-            winners.append({"team": winner_team.team_name, "amount": bid.amount})
+            winners.append({
+                "team_id": winner_team.id,
+                "team": winner_team.team_name,
+                "amount": bid.amount,
+                "coins": winner_team.coins,
+            })
 
         if winners:
             update_round1_winning_bid_aggregate(
@@ -407,7 +403,6 @@ async def finalize_round_one(
         ).count()
         control.status = "COMPLETE" if unassigned_count == 0 else "READY"
         control.ended = unassigned_count == 0
-        record_event(db, "round1.auction_finalized", actor=current_user, entity_type="problem", entity_id=ps.id, metadata={"winner_count": len(winners)})
         db.commit()
 
     transition_event_state(db, "ROUND1_RESULT")

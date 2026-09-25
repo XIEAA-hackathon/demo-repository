@@ -2,9 +2,14 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { RoundControlPage } from './App'
-import { getRoundControl, startRoundBidding } from './services/api'
+import { downloadRoundOneAssignments, getRoundControl, startRoundBidding } from './services/api'
 
-vi.mock('./services/api', async (original) => ({ ...await original(), getRoundControl: vi.fn(), startRoundBidding: vi.fn() }))
+vi.mock('./services/api', async (original) => ({
+  ...await original(),
+  downloadRoundOneAssignments: vi.fn(),
+  getRoundControl: vi.fn(),
+  startRoundBidding: vi.fn(),
+}))
 const initial = {
   status: 'PREVIEW', ended: false, round_type: 'ROUND1', problems: [], settings: { base_price: 100 },
   current_problem: { id: 1, problem_number: '1', title: 'Preview regression', description: 'Review the challenge' },
@@ -14,10 +19,13 @@ let host, root
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   vi.clearAllMocks()
+  Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:round-1-export'), revokeObjectURL: vi.fn() })
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
   host = document.createElement('div'); root = createRoot(host)
   getRoundControl.mockResolvedValue(initial)
+  downloadRoundOneAssignments.mockResolvedValue(new Blob(['round-1']))
 })
-afterEach(() => act(() => root.unmount()))
+afterEach(() => { act(() => root.unmount()); vi.restoreAllMocks() })
 const render = async (state, remaining = 0) => act(async () => root.render(<RoundControlPage round="round-1" state={state} remaining={remaining} />))
 const buttons = () => [...host.querySelectorAll('button')]
 
@@ -57,4 +65,24 @@ it('distinguishes ready to preview from bidding complete', async () => {
   await render({ event_state: 'ROUND1_RESULT', timing: { server_time: '2026-09-13T10:00:20Z' } })
   expect(host.textContent).toContain('Bidding complete')
   expect(buttons().some(button => button.textContent === 'Start preview')).toBe(false)
+})
+
+it('keeps the Round 1 export on demand and disabled until the round ends', async () => {
+  await render(initial.event)
+  const download = buttons().find(button => button.textContent === 'DOWNLOAD ROUND 1 ASSIGNMENTS')
+
+  expect(download.disabled).toBe(true)
+  expect(download.title).toBe('Available after Round 1 ends')
+  expect(downloadRoundOneAssignments).not.toHaveBeenCalled()
+})
+
+it('generates the Round 1 export exactly once when clicked after completion', async () => {
+  getRoundControl.mockResolvedValue({ ...initial, status: 'COMPLETE', ended: true })
+  await render({ ...initial.event, rounds: { ROUND1: { status: 'COMPLETE', ended: true } } })
+  const download = buttons().find(button => button.textContent === 'DOWNLOAD ROUND 1 ASSIGNMENTS')
+
+  expect(download.disabled).toBe(false)
+  await act(async () => download.click())
+
+  expect(downloadRoundOneAssignments).toHaveBeenCalledTimes(1)
 })

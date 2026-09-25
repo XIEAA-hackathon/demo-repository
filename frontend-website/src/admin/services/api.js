@@ -54,7 +54,6 @@ export const getTeams = () => request("/teams");
 export const approveTeam = (id) => request(`/team/${id}/approve`, { method: "PUT" });
 export const deleteTeam = (id) => request(`/team/${id}`, { method: "DELETE" });
 export const getProblemStatements = () => request("/problem-statements");
-export const setProblemVisibility = (id, status) => request(`/problem-statement/${id}/visibility?status=${encodeURIComponent(status)}`, { method: "PUT" });
 export const getBidHistory = () => request("/bid-history");
 export const getLeaderboard = () => request("/leaderboard");
 export const getAdminState = () => request("/admin/state");
@@ -65,7 +64,6 @@ export const pauseTimer = () => request("/admin/event/timer/pause", { method: "P
 export const resumeTimer = () => request("/admin/event/timer/resume", { method: "POST" });
 export const addTime = (seconds) => request("/admin/event/timer/adjust", { method: "POST", body: JSON.stringify({ seconds }) });
 export const removeTime = (seconds) => request("/admin/event/timer/adjust", { method: "POST", body: JSON.stringify({ seconds: -seconds }) });
-export const finalizeProblem = (id) => request(`/admin/auction/${id}/finalize`, { method: "POST" });
 export const finalizeWildcard = () => request("/admin/wildcard/finalize", { method: "POST" });
 export const previewRegistrationImport = (file) => {
   const body = new FormData(); body.append("file", file);
@@ -137,7 +135,6 @@ export const resumeRecoveryTimer = () => request("/admin/recovery/resume-timer",
 export const reloadRecoveryState = () => request("/admin/recovery/reload-state", { method: "POST" });
 export const resyncClients = () => request("/admin/recovery/resync-clients", { method: "POST" });
 export const retryCurrentTransition = () => request("/admin/recovery/retry-transition", { method: "POST" });
-export const getActivityLog = (limit = 200) => request(`/admin/activity-log?limit=${encodeURIComponent(limit)}`);
 export const developmentReset = (confirmation) => request("/admin/development/reset", { method: "POST", body: JSON.stringify({ confirmation }) });
 export const resetEventData = (confirmation) => request("/admin/event-data/reset", { method: "POST", body: JSON.stringify({ confirmation }) });
 export const getManagedAdminUsers = () => request("/admin/management/admin-users");

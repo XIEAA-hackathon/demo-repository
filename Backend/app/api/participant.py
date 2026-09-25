@@ -31,7 +31,6 @@ from app.services.wildcard_service import (
     ranked_wildcard_bids,
     selection_remaining_seconds,
 )
-from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_remaining
 
 router = APIRouter()
@@ -454,7 +453,6 @@ async def create_submission(
         repository_url=submission.repository_url.strip(),
     )
     db.add(new_submission)
-    record_event(db, "submission.created", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": team.ps_id})
     db.commit()
     db.refresh(new_submission)
     response = DashboardSubmission(
@@ -492,7 +490,6 @@ async def update_submission(
             repository_url=submission.repository_url.strip(),
         )
         db.add(new_submission)
-        record_event(db, "submission.created", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": team.ps_id})
         db.commit()
         db.refresh(new_submission)
         result = new_submission
@@ -501,7 +498,6 @@ async def update_submission(
         existing.problem_id = team.ps_id
         existing.submitted_by_user_id = current_user.id
         existing.updated_at = member_utcnow()
-        record_event(db, "submission.updated", actor=current_user, entity_type="team", entity_id=team.id, metadata={"problem_id": team.ps_id})
         db.commit()
         db.refresh(existing)
         result = existing
@@ -626,12 +622,10 @@ async def open_submissions(db: Session = Depends(get_db), current_user: User = D
         event_config.submissions_open = True
     else:
         game = transition_event_state(db, "CODING", validate=False, restart=True, commit=False)
-    record_event(db, "submissions.opened", actor=current_user)
     db.commit()
     if started_coding:
         logger.info(
-            "Coding round started coding_duration_seconds=%s phase_started_at=%s auction_timer_end=%s",
-            event_config.coding_duration_seconds,
+            "Untimed Coding round started phase_started_at=%s auction_timer_end=%s",
             game.phase_started_at,
             game.auction_timer_end,
         )
@@ -649,10 +643,8 @@ async def close_submissions(db: Session = Depends(get_db), current_user: User = 
     event_config = get_or_create_event_config(db)
     if event_config.submissions_open:
         event_config.submissions_open = False
-        record_event(db, "submissions.closed", actor=current_user)
     if game.state in {"CODING", "SUBMISSION"}:
         transition_event_state(db, "JUDGING_WAIT", commit=False)
-        record_event(db, "judging.started", actor=current_user)
     db.commit()
     snapshot = event_snapshot(db)
     response = get_admin_submissions(db, None)

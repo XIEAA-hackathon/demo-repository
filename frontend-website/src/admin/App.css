@@ -28,10 +28,10 @@ button, input, select { font: inherit; }
 .state-button.active { color: white; border-color: var(--violet); box-shadow: 0 0 18px rgba(181, 76, 255, .18); }
 .state-button:disabled:not(.active) { opacity: .42; cursor: not-allowed; }
 .admin-timer { margin: 24px 0; color: var(--text); font: 700 clamp(2rem, 5vw, 4rem)/1 monospace; }
-.action-strip, .table-actions, .problem-footer { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.action-strip, .table-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
 .config-grid label { display: grid; gap: 7px; color: var(--muted); font-size: 12px; }
-.config-grid input, .problem-footer select, .import-panel input { padding: 10px; color: var(--text); background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; }
+.config-grid input, .import-panel input { padding: 10px; color: var(--text); background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; }
 .config-grid .primary-button { align-self: end; }
 .danger-link, .table-actions button { padding: 7px 9px; color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; }
 .danger-link { color: var(--red) !important; border-color: rgba(255, 83, 112, .35) !important; }
@@ -1382,6 +1382,12 @@ button, input, select { font: inherit; }
   margin: auto;
 }
 
+.teams-login-summary { display: inline-grid; gap: 5px; min-width: 190px; padding: 16px 18px; background: rgba(17,7,24,.88); border: 1px solid rgba(190,91,243,.22); border-radius: 13px; }
+.teams-login-summary > span { color: #8e7a98; font-size: 8px; font-weight: 850; letter-spacing: .1em; }
+.teams-login-summary > strong { color: #f5edf8; font-size: 25px; letter-spacing: -.03em; }
+.teams-login-summary > strong small { color: #ad9ab6; font-size: 15px; }
+.teams-login-summary > em { color: #72d69e; font-size: 9px; font-style: normal; }
+
 .table-wrapper {
   overflow-x: auto;
 
@@ -1444,91 +1450,6 @@ td strong {
 .table-status.inactive {
   color: #ff8b9e;
   background: rgba(255, 69, 99, 0.08);
-}
-
-
-/* =====================================
-   PROBLEM CARDS
-===================================== */
-
-.problem-grid {
-  display: grid;
-
-  grid-template-columns:
-    repeat(3, 1fr);
-
-  gap: 16px;
-
-  margin-top: 18px;
-}
-
-.problem-card {
-  min-height: 220px;
-
-  padding: 22px;
-
-  color: white;
-
-  text-align: left;
-
-  background:
-    linear-gradient(
-      145deg,
-      rgba(29, 10, 40, 0.95),
-      rgba(13, 6, 18, 0.95)
-    );
-
-  border: 1px solid
-    rgba(178, 73, 242, 0.2);
-
-  border-radius: 15px;
-
-  transition: 0.2s;
-}
-
-.problem-card:hover {
-  transform: translateY(-2px);
-
-  border-color:
-    rgba(190, 77, 255, 0.48);
-
-  box-shadow:
-    0 15px 40px
-      rgba(120, 32, 170, 0.13);
-}
-
-.problem-number {
-  color: #a657db;
-
-  font-size: 9px;
-  font-weight: 900;
-  letter-spacing: 1.5px;
-}
-
-.problem-card h3 {
-  margin: 13px 0 8px;
-
-  font-size: 17px;
-}
-
-.problem-card p {
-  color: #82718b;
-
-  line-height: 1.5;
-
-  font-size: 10px;
-}
-
-.problem-footer {
-  display: flex;
-  justify-content: space-between;
-
-  margin-top: 24px;
-
-  color: #8c639d;
-
-  font-size: 9px;
-  font-weight: 900;
 }
 
 
@@ -2000,11 +1921,6 @@ td strong {
   .auction-layout {
     grid-template-columns: 1fr;
   }
-
-  .problem-grid {
-    grid-template-columns:
-      repeat(2, 1fr);
-  }
 }
 
 
@@ -2053,7 +1969,6 @@ td strong {
   }
 
   .stats-grid,
-  .problem-grid,
   .result-grid {
     grid-template-columns: 1fr;
   }
@@ -2521,9 +2436,6 @@ td strong {
 .submission-admin__header > button { min-height: 46px; }
 .submission-admin__actions { display: flex; flex-direction: column; gap: 10px; min-width: 220px; }
 .submission-admin__actions > button { min-height: 46px; }
-.coding-timer-panel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, .35fr) auto; align-items: end; gap: 20px; }
-.coding-timer-panel label { display: grid; gap: 7px; color: #bda9c5; font-size: 9px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
-.coding-timer-panel input { min-height: 41px; padding: 9px 12px; color: #f1e8f4; background: #0d0613; border: 1px solid rgba(190,91,243,.25); border-radius: 9px; }
 .wildcard-final-choice-control { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 22px; }
 .submission-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .submission-table-panel { padding: 24px; background: #100817; border: 1px solid rgba(190,91,243,.18); border-radius: 15px; }
@@ -2532,7 +2444,7 @@ td strong {
 .submission-toolbar span { display: block; margin-top: 5px; color: #7f6e87; font-size: 9px; }
 .submission-toolbar input { width: min(260px,100%); min-height: 41px; padding: 9px 12px; color: #f1e8f4; background: rgba(255,255,255,.035); border: 1px solid rgba(190,91,243,.22); border-radius: 9px; }
 .submission-table-panel td a { color: #d17af7; text-decoration: none; }
-@media (max-width: 1100px) { .wildcard-settings-panel { grid-template-columns: 1fr; } .wildcard-settings-save { justify-self: start; } .wildcard-slots, .wildcard-live-bidding, .coding-timer-panel, .wildcard-final-choice-control { grid-template-columns: 1fr; } .wildcard-slot-control, .wildcard-live-bidding .round-inline-actions { justify-content: flex-start; } .submission-stats { grid-template-columns: repeat(2,1fr); } }
+@media (max-width: 1100px) { .wildcard-settings-panel { grid-template-columns: 1fr; } .wildcard-settings-save { justify-self: start; } .wildcard-slots, .wildcard-live-bidding, .wildcard-final-choice-control { grid-template-columns: 1fr; } .wildcard-slot-control, .wildcard-live-bidding .round-inline-actions { justify-content: flex-start; } .submission-stats { grid-template-columns: repeat(2,1fr); } }
 @media (max-width: 760px) { .wildcard-stage-banner, .submission-admin__header, .submission-toolbar { align-items: flex-start; flex-direction: column; } .wildcard-tabs button { min-height: 58px; flex-direction: column; gap: 5px; font-size: 9px; line-height: 1.25; } .wildcard-stage-card { padding: 20px 17px; } .wildcard-settings-grid, .wildcard-current-turn { grid-template-columns: 1fr; } .wildcard-stage-card p, .wildcard-stage-banner h3 { line-height: 1.55; } .wildcard-rank-list > div { grid-template-columns: 34px 1fr auto; } .wildcard-rank-list em { grid-column: 2; } .submission-stats { grid-template-columns: 1fr 1fr; } .submission-table-panel { padding: 18px 15px; } .submission-toolbar input { width: 100%; } }
 
 .managed-users-page { display: grid; gap: 20px; }

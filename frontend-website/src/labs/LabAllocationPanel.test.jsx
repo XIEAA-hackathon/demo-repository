@@ -56,10 +56,11 @@ it('rejects full and duplicate-PS targets and prevents moves before completion',
   expect(host.textContent).toContain('after Wildcard is complete');
   expect(host.querySelector('[draggable="true"]')).toBeNull();
 });
-it('shows final PS, current lab and pending status with searchable team rows', async () => {
+it('keeps team rows lightweight while searching already-loaded problem data', async () => {
   await render({ view: 'teams' });
-  expect(host.textContent).toContain('Final wildcard problem'); expect(host.textContent).toContain('Lab A · ALLOCATED');
-  expect(host.textContent).toContain('Not assigned · PENDING');
+  expect(host.textContent).toContain('Alpha'); expect(host.textContent).toContain('Lab A');
+  expect(host.textContent).toContain('Not assigned'); expect(host.textContent).toContain('View Details');
+  expect(host.querySelector('.team-allotment-list').textContent).not.toContain('Final wildcard problem');
   const input = host.querySelector('input');
   act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'WC-7'); input.dispatchEvent(new Event('input', { bubbles: true })); });
   expect(host.textContent).toContain('Alpha'); expect(host.textContent).not.toContain('Pending team');

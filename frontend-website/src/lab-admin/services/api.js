@@ -34,7 +34,6 @@ export async function labAdminLogout() {
 
 export const getLabAdminSession = () => request("/lab-admin/session");
 export const getLabAllocation = () => request("/lab-allocation");
-export const getProblemResults = (signal) => request("/lab-admin/problem-results", { signal });
 export const moveLabAssignment = (id, payload) => request(`/lab-admin/teams/${id}/lab`, {
   method: "PUT",
   body: JSON.stringify(payload),

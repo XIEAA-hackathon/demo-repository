@@ -45,7 +45,6 @@ from app.services.registration_import import (
     ASSIGNMENT_HEADERS,
 )
 from app.services.reset_service import reset_event_and_imported_participants, reset_imported_participant_credentials
-from app.services.activity_log import record_event
 from app.services.participant_session import clear_user_session
 from app.core.security import get_password_hash
 from app.core.event_constants import ROUND1_WINNER_COUNT
@@ -186,7 +185,6 @@ async def update_event_config_admin(
 
     for field, value in data.items():
         setattr(config, field, value)
-    record_event(db, "event.configuration_updated", actor=current_user, metadata={"fields": sorted(data)})
     db.commit()
     db.refresh(config)
     await manager.broadcast_event("config_updated", {"config": EventConfigResponse.model_validate(config).model_dump(mode="json")})
@@ -210,7 +208,6 @@ async def set_bid_cooldown(
         raise HTTPException(status_code=400, detail="Cooldown seconds must be between 0 and 60")
     config = get_or_create_event_config(db)
     config.bid_cooldown_seconds = seconds
-    record_event(db, "event.bid_cooldown_updated", actor=current_user, metadata={"seconds": seconds})
     db.commit()
     db.refresh(config)
     await _broadcast_bid_cooldown(db, config)
@@ -230,7 +227,6 @@ async def add_bid_cooldown(
     if new_seconds > 60:
         raise HTTPException(status_code=400, detail="Cooldown seconds must be between 0 and 60")
     config.bid_cooldown_seconds = new_seconds
-    record_event(db, "event.bid_cooldown_updated", actor=current_user, metadata={"seconds": config.bid_cooldown_seconds})
     db.commit()
     db.refresh(config)
     await _broadcast_bid_cooldown(db, config)
@@ -250,7 +246,6 @@ async def reduce_bid_cooldown(
         raise HTTPException(status_code=400, detail="Seconds to reduce must be > 0")
     config = get_or_create_event_config(db)
     config.bid_cooldown_seconds = max(0, (config.bid_cooldown_seconds or 0) - seconds)
-    record_event(db, "event.bid_cooldown_updated", actor=current_user, metadata={"seconds": config.bid_cooldown_seconds})
     db.commit()
     db.refresh(config)
     await _broadcast_bid_cooldown(db, config)
@@ -263,7 +258,6 @@ async def reduce_bid_cooldown(
 
 async def _apply_event_state(payload: EventStateUpdate, db: Session, current_user: User):
     config = transition_event_state(db, payload.state, commit=False)
-    record_event(db, "event.state_changed", actor=current_user, metadata={"state": config.state})
     db.commit()
     snapshot = event_snapshot(db)
     db.close()
@@ -318,7 +312,6 @@ async def pause_event_timer_admin(
     current_user: User = Depends(get_current_active_admin),
 ):
     pause_event_timer(db)
-    record_event(db, "event.timer_paused", actor=current_user)
     db.commit()
     snapshot = event_snapshot(db)
     db.close()
@@ -332,7 +325,6 @@ async def resume_event_timer_admin(
     current_user: User = Depends(get_current_active_admin),
 ):
     resume_event_timer(db)
-    record_event(db, "event.timer_resumed", actor=current_user)
     db.commit()
     snapshot = event_snapshot(db)
     db.close()
@@ -347,7 +339,6 @@ async def adjust_event_timer_admin(
     current_user: User = Depends(get_current_active_admin),
 ):
     adjust_event_timer(db, payload.seconds)
-    record_event(db, "event.timer_adjusted", actor=current_user, metadata={"seconds": payload.seconds})
     db.commit()
     snapshot = event_snapshot(db)
     db.close()
@@ -503,7 +494,7 @@ async def reset_participant_password(
     await manager.broadcast_event(
         "participant_presence_changed",
         participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
-        roles={"admin"},
+        roles={"admin", "lab_admin"},
     )
     supplied_email = account.email if "@" in account.email else ""
     return _credential(account, team, password, supplied_email)
@@ -526,14 +517,6 @@ async def force_logout_participant(
     participant_role = account.role
     had_active_session = bool(account.session_id)
     clear_user_session(account)
-    record_event(
-        db,
-        "auth.force_logout",
-        actor=current_user,
-        entity_type="user",
-        entity_id=account.id,
-        metadata={"role": participant_role, "had_active_session": had_active_session},
-    )
     db.commit()
     logger.info(
         "Admin force logout completed user_id=%s role=%s had_active_session=%s",
@@ -927,18 +910,6 @@ async def import_registrations(
             "credential_export",
             time.perf_counter() - export_started_at,
         )
-        record_event(
-            db,
-            "registration.import_committed",
-            actor=current_user,
-            metadata={
-                "filename": filename,
-                "teams_created": teams_created,
-                "teams_updated": teams_updated,
-                "leaders_created": leaders_created,
-                "rows_failed": len({error["row_number"] for error in errors}),
-            },
-        )
         commit_started_at = time.perf_counter()
         db.commit()
         logger.info(
@@ -971,7 +942,7 @@ async def import_registrations(
         await manager.broadcast_event(
             "participant_presence_changed",
             participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
-            roles={"admin"},
+            roles={"admin", "lab_admin"},
         )
     await manager.broadcast_event("team_updated", {
         "action": "registrations_imported",
@@ -1029,7 +1000,7 @@ async def reset_registration_credentials(
     game = get_or_create_game_config(db)
     sockets_closed = await manager.disconnect_users(imported_user_ids)
     presence = participant_presence_payload(db, connected_team_ids=manager.participant_team_ids())
-    await manager.broadcast_event("participant_presence_changed", presence, roles={"admin"})
+    await manager.broadcast_event("participant_presence_changed", presence, roles={"admin", "lab_admin"})
     await manager.broadcast_event("team_updated", {
         "action": "registration_credentials_reset",
         "participant_accounts": credential_reset["participant_accounts"],
@@ -1102,14 +1073,6 @@ async def set_imported_participant_password(
     account.password_hash = get_password_hash(payload.new_password)
     account.credentials_active = True
     clear_user_session(account)
-    record_event(
-        db,
-        "registration.participant_password_set",
-        actor=current_user,
-        entity_type="user",
-        entity_id=account.id,
-        metadata={"login_id": account.email, "role": account.role},
-    )
     db.commit()
     db.refresh(account)
     logger.info(
@@ -1121,7 +1084,7 @@ async def set_imported_participant_password(
     await manager.broadcast_event(
         "participant_presence_changed",
         participant_presence_payload(db, connected_team_ids=manager.participant_team_ids()),
-        roles={"admin"},
+        roles={"admin", "lab_admin"},
     )
     team = db.query(Team).filter(Team.id == account.team_id).first() if account.team_id else None
     return {"status": "password_set", "account": _participant_account_payload(account, team)}
@@ -1567,14 +1530,6 @@ async def confirm_registration_import(
 
     import_record.status = "committed"
     import_record.committed_at = datetime.now(timezone.utc)
-    record_event(
-        db,
-        "registration.legacy_import_committed",
-        actor=current_user,
-        entity_type="registration_import",
-        entity_id=import_record.id,
-        metadata={"teams_created": teams_created, "teams_updated": teams_updated, "accounts_created": accounts_created},
-    )
     db.commit()
 
     await manager.broadcast_event("team_updated", {

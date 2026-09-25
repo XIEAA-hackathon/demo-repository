@@ -379,18 +379,3 @@ class EventConfig(Base):
     # Royalty
     royalty_coins_per_point = Column(Integer, default=10)
     royalty_max_points = Column(Integer, default=100)
-
-
-class EventActivityLog(Base):
-    """Append-only, secret-free operational audit trail for the live event."""
-
-    __tablename__ = "event_activity_log"
-
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
-    actor_type = Column(String, nullable=False)
-    actor_id = Column(Integer, nullable=True)
-    action = Column(String, nullable=False, index=True)
-    entity_type = Column(String, nullable=True)
-    entity_id = Column(Integer, nullable=True)
-    metadata_json = Column(Text, nullable=False, default="{}")

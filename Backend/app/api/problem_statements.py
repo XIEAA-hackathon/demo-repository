@@ -105,20 +105,6 @@ async def update_ps(
     })
     return problem
 
-@router.put("/problem-statement/{ps_id}/visibility")
-async def toggle_visibility(ps_id: int, status: str, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
-    if status not in ["visible", "hidden", "allocated"]:
-        raise HTTPException(status_code=400, detail="Invalid status")
-    ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()
-    if not ps:
-        raise HTTPException(status_code=404, detail="PS not found")
-    ps.status = status
-    db.commit()
-    await manager.broadcast_event("problem_visibility_updated", {"problem_id": ps.id, "status": status})
-    await manager.broadcast_event("ps_updated", {"action": "status_changed", "ps_id": ps.id, "status": status})
-    return {"message": f"PS {ps.ps_number} status updated to {status}"}
-
-
 @router.delete("/problem-statement/{ps_id}")
 async def delete_ps(ps_id: int, db: Session = Depends(get_db), current_user = Depends(get_current_active_admin)):
     problem = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).first()

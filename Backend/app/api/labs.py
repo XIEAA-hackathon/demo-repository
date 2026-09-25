@@ -2,15 +2,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_active_admin, get_current_active_admin_or_lab_admin, get_current_active_lab_admin
 from app.api.websockets import manager
 from app.core.database import get_db
-from app.models.models import FinalResult, Lab, LabAssignment, ProblemStatement, Team, User, Wildcard
-from app.services.activity_log import record_event
+from app.models.models import Lab, LabAssignment, Team, User
 from app.services.lab_allocation import LabAllocationError, allocate_labs, lab_board, move_team, try_allocate_labs
 
 
@@ -97,7 +96,6 @@ async def create_lab(
         raise HTTPException(status_code=409, detail="A lab with this name already exists.")
     lab = Lab(**payload.model_dump())
     db.add(lab)
-    record_event(db, "lab.created", actor=current_user, entity_type="lab")
     try:
         db.commit()
     except IntegrityError as exc:
@@ -135,7 +133,6 @@ async def update_lab(
         raise HTTPException(status_code=409, detail="Move assigned teams before deactivating this lab.")
     for field, value in data.items():
         setattr(lab, field, value)
-    record_event(db, "lab.updated", actor=current_user, entity_type="lab", entity_id=lab.id, metadata={"fields": sorted(data)})
     try:
         db.commit()
     except IntegrityError as exc:
@@ -167,7 +164,6 @@ async def delete_lab(
         raise HTTPException(status_code=409, detail="This lab is part of the saved allocation and cannot be deleted.")
     name = lab.name
     db.delete(lab)
-    record_event(db, "lab.deleted", actor=current_user, entity_type="lab", entity_id=lab_id, metadata={"name": name})
     db.commit()
     db.close()
     await manager.broadcast_event("lab_configuration_updated", {"action": "deleted", "lab_id": lab_id}, roles={"admin", "lab_admin"})
@@ -179,76 +175,8 @@ def get_lab_allocation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin_or_lab_admin),
 ):
-    return lab_board(db)
-
-
-def _problem_reference(problem: ProblemStatement | None) -> dict | None:
-    if problem is None:
-        return None
-    return {"id": problem.id, "problem_number": problem.ps_number, "problem_title": problem.title}
-
-
-@router.get("/lab-admin/problem-results")
-def get_problem_results(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_lab_admin),
-):
     del current_user
-    problems = db.query(ProblemStatement).all()
-    teams = (
-        db.query(Team)
-        .filter(or_(Team.round1_problem_id.is_not(None), Team.wildcard_problem_id.is_not(None)))
-        .order_by(Team.team_name.asc())
-        .all()
-    )
-    wildcards = db.query(Wildcard).all()
-    final_result = db.query(FinalResult).first()
-
-    problem_by_id = {problem.id: problem for problem in problems}
-    wildcard_by_team = {wildcard.team_id: wildcard for wildcard in wildcards}
-    published = bool(final_result and final_result.result_status == "PUBLISHED")
-    placements = {} if not published else {
-        team_id: place
-        for team_id, place in (
-            (final_result.first_place_team_id, "FIRST"),
-            (final_result.second_place_team_id, "SECOND"),
-            (final_result.third_place_team_id, "THIRD"),
-        )
-        if team_id is not None
-    }
-    rows = []
-    for team in teams:
-        round1_problem = _problem_reference(problem_by_id.get(team.round1_problem_id))
-        wildcard_problem = _problem_reference(problem_by_id.get(team.wildcard_problem_id))
-        wildcard = wildcard_by_team.get(team.id)
-        rows.append({
-            "team_id": team.id,
-            "team_name": team.team_name,
-            "round1": None if round1_problem is None else {
-                **round1_problem,
-                "winning_bid": team.round1_assignment_cost,
-            },
-            "wildcard": {
-                "selected": wildcard_problem is not None,
-                **(wildcard_problem or {}),
-                "winning_bid": wildcard.winning_bid if wildcard else None,
-            },
-            "final_problem": _problem_reference(problem_by_id.get(team.ps_id)),
-            "final_choice": team.final_problem_choice,
-            "final_placement": placements.get(team.id, "NOT_PLACED") if published else "PENDING",
-        })
-
-    return {
-        "result_status": final_result.result_status if final_result else "WAITING",
-        "published_at": final_result.published_at if published else None,
-        "summary": {
-            "total_teams": len(rows),
-            "round1_assigned": sum(team.round1_problem_id is not None for team in teams),
-            "wildcard_selected": sum(team.wildcard_problem_id is not None for team in teams),
-            "top3_finalized": len(placements),
-        },
-        "teams": rows,
-    }
+    return lab_board(db, logged_in_team_ids=manager.participant_team_ids())
 
 
 @router.post("/admin/lab-allocation/allocate")
@@ -261,7 +189,7 @@ async def generate_lab_allocation(
     except LabAllocationError as exc:
         db.rollback()
         _raise_allocation_error(exc)
-    board = lab_board(db)
+    board = lab_board(db, logged_in_team_ids=manager.participant_team_ids())
     db.close()
     if changed:
         await manager.broadcast_event(

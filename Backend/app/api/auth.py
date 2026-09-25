@@ -20,7 +20,6 @@ from app.core.security import (
 )
 from jose import ExpiredSignatureError, JWTError, jwt
 from app.core.config import settings
-from app.services.activity_log import record_event
 from app.services.participant_session import (
     PARTICIPANT_ROLES,
     acquire_participant_session,
@@ -196,7 +195,6 @@ def _issue_session(user: User, db: Session) -> dict:
     user.session_id = new_session_id
     user.session_created_at = now
     user.session_last_seen_at = now
-    record_event(db, "auth.login", actor=user)
     db.commit()
     logger.info("Successful login user_id=%s role=%s", user_id, user_role)
 
@@ -245,12 +243,6 @@ def _acquire_participant_session(
                 detail="Incorrect username or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        record_event(
-            db,
-            "auth.login_rejected_duplicate",
-            actor=current,
-            metadata={"reason": "active_session"},
-        )
         db.commit()
         logger.info("Rejected duplicate participant login user_id=%s role=%s", user_id, user_role)
         detail = ALREADY_LOGGED_IN_MESSAGE if user_role == "leader" else (
@@ -259,19 +251,6 @@ def _acquire_participant_session(
         )
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
-    if replaced_stale_session:
-        record_event(
-            db,
-            "auth.session_replaced_stale",
-            actor=user,
-            metadata={"stale_after_seconds": settings.SESSION_STALE_SECONDS},
-        )
-    record_event(
-        db,
-        "auth.login",
-        actor=user,
-        metadata={"replaced_stale_session": replaced_stale_session},
-    )
     db.commit()
     if replaced_stale_session:
         logger.info("Replaced stale participant session user_id=%s role=%s", user_id, user_role)
@@ -560,7 +539,6 @@ async def logout(
     user_role = current_user.role
     active_session_id = current_user.session_id
 
-    record_event(db, "auth.logout", actor=current_user)
     cleared = (
         db.query(User)
         .filter(User.id == user_id, User.session_id == active_session_id)

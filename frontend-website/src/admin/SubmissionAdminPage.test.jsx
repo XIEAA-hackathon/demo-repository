@@ -2,13 +2,13 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CodingRoundAdminPage } from './App'
-import { getAdminSubmissions, openSubmissions, updateAdminConfig } from './services/api'
+import { closeSubmissions, getAdminSubmissions, openSubmissions } from './services/api'
 
 vi.mock('./services/api', async (original) => ({
   ...await original(),
+  closeSubmissions: vi.fn(),
   getAdminSubmissions: vi.fn(),
   openSubmissions: vi.fn(),
-  updateAdminConfig: vi.fn(),
 }))
 
 const snapshot = {
@@ -38,7 +38,7 @@ describe('CodingRoundAdminPage refresh architecture', () => {
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
     getAdminSubmissions.mockResolvedValue(structuredClone(snapshot))
     openSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: true })
-    updateAdminConfig.mockImplementation(async (update) => ({ ...update }))
+    closeSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: false })
     host = document.createElement('div')
     root = createRoot(host)
   })
@@ -48,10 +48,19 @@ describe('CodingRoundAdminPage refresh architecture', () => {
     vi.useRealTimers()
   })
 
-  it('loads once initially and reconciles connected sockets at 60 seconds', async () => {
+  it('removes the status banner while preserving Coding controls, submissions, and the untimed layout', async () => {
     await render({ socketStatus: 'connected' })
     expect(getAdminSubmissions).toHaveBeenCalledTimes(1)
-    expect(host.textContent).toContain('CODING TIMER SETTINGS')
+    expect(host.querySelector('.coding-status-panel')).toBeNull()
+    expect(host.textContent).not.toContain('ACTIVE')
+    expect(host.textContent).not.toContain('Coding has no deadline and ends only when an admin closes the round.')
+    expect(Array.from(host.querySelectorAll('.stat-card'), card => card.textContent)).not.toContain('REPOSITORY SUBMISSIONSOPEN')
+    expect(host.textContent).toContain('Close Coding Round')
+    expect(host.textContent).toContain('Repository Submissions')
+    expect(host.textContent).toContain('WINDOWOPEN')
+    expect(host.textContent).not.toContain('Time remaining')
+    expect(host.textContent).not.toContain('Coding duration')
+    for (const control of ['Pause', 'Resume', '+30 sec', '−30 sec']) expect(host.textContent).not.toContain(control)
     expect(host.textContent).toContain('Lab Aurora')
     getAdminSubmissions.mockClear()
 
@@ -120,105 +129,34 @@ describe('CodingRoundAdminPage refresh architecture', () => {
     expect(getAdminSubmissions).toHaveBeenCalledTimes(1)
   })
 
-  it.each([
-    ['1', 3600],
-    ['2', 7200],
-    ['3.5', 12600],
-    ['4', 14400],
-  ])('saves %s Coding hours as %i seconds only', async (hours, seconds) => {
+  it('opens untimed Coding directly and refreshes authoritative state', async () => {
     getAdminSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: false })
-    const onConfig = vi.fn()
-    await render({
-      socketStatus: 'connected',
-      state: { rounds: { WILDCARD: { status: 'COMPLETE', ended: true } } },
-      config: { coding_duration_seconds: 10800, round1_bid_seconds: 99 },
-      onConfig,
-    })
-
-    expect(host.textContent).toContain('Open Coding Round')
-    expect(host.textContent).toContain('Coding duration (hours)')
-    const input = host.querySelector('input[type="number"]')
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-      setter?.call(input, hours)
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    expect(onConfig).not.toHaveBeenCalled()
-    const save = [...host.querySelectorAll('button')].find((button) => button.textContent === 'Save duration')
-    await act(async () => save.click())
-    expect(updateAdminConfig).toHaveBeenCalledWith({ coding_duration_seconds: seconds })
-    expect(onConfig).toHaveBeenCalledWith({ coding_duration_seconds: seconds })
-  })
-
-  it('preserves a dirty local duration across background config refreshes', async () => {
-    getAdminSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: false })
-    const props = {
-      socketStatus: 'connected',
-      state: { rounds: { WILDCARD: { status: 'COMPLETE', ended: true } } },
-      config: { coding_duration_seconds: 10800 },
-    }
-    await render(props)
-    const input = host.querySelector('input[type="number"]')
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-      setter?.call(input, '4')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-
-    await render({ ...props, config: { coding_duration_seconds: 7200 } })
-
-    expect(host.querySelector('input[type="number"]').value).toBe('4')
-  })
-
-  it('saves the visible duration before opening Coding and refreshes authoritative state', async () => {
-    getAdminSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: false })
-    const onConfig = vi.fn()
     const onGlobalSync = vi.fn().mockResolvedValue(true)
     await render({
       socketStatus: 'connected',
       state: { rounds: { WILDCARD: { status: 'COMPLETE', ended: true } } },
-      config: { coding_duration_seconds: 10800 },
-      onConfig,
       onGlobalSync,
     })
-    const input = host.querySelector('input[type="number"]')
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-      setter?.call(input, '4')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
     const open = [...host.querySelectorAll('button')].find((button) => button.textContent === 'Open Coding Round')
 
     await act(async () => open.click())
 
-    expect(updateAdminConfig).toHaveBeenCalledWith({ coding_duration_seconds: 14400 })
     expect(openSubmissions).toHaveBeenCalledTimes(1)
-    expect(updateAdminConfig.mock.invocationCallOrder[0]).toBeLessThan(openSubmissions.mock.invocationCallOrder[0])
-    expect(onConfig).toHaveBeenCalledWith({ coding_duration_seconds: 14400 })
     expect(onGlobalSync).toHaveBeenCalledTimes(1)
     expect(host.textContent).toContain('Coding Round opened.')
+    expect(host.textContent).toContain('Close Coding Round')
+    expect(host.querySelector('input[type="number"]')).toBeNull()
   })
 
-  it('does not call either API when the Coding duration is invalid', async () => {
-    getAdminSubmissions.mockResolvedValue({ ...structuredClone(snapshot), open: false })
-    await render({
-      socketStatus: 'connected',
-      state: { rounds: { WILDCARD: { status: 'COMPLETE', ended: true } } },
-      config: { coding_duration_seconds: 10800 },
-    })
-    const input = host.querySelector('input[type="number"]')
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-      setter?.call(input, '')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    const open = [...host.querySelectorAll('button')].find((button) => button.textContent === 'Open Coding Round')
+  it('still lets the admin close Coding and enter the Judging wait', async () => {
+    await render({ socketStatus: 'connected' })
+    const close = [...host.querySelectorAll('button')].find((button) => button.textContent === 'Close Coding Round')
 
-    await act(async () => open.click())
+    await act(async () => close.click())
 
-    expect(updateAdminConfig).not.toHaveBeenCalled()
-    expect(openSubmissions).not.toHaveBeenCalled()
-    expect(host.textContent).toContain('Enter a Coding duration of at least 0.25 hours.')
+    expect(closeSubmissions).toHaveBeenCalledTimes(1)
+    expect(host.textContent).toContain('Coding Round closed. Judging wait started.')
+    expect(host.textContent).toContain('Open Coding Round')
   })
 
   it('coalesces timer, visibility, and reconnect refreshes into one in-flight GET', async () => {

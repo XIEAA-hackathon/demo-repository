@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from app.models.models import EventConfig, GameConfig, RoundControl, Team, User, WalletTransaction
 from app.core.event_constants import ROUND1_WINNER_COUNT
 from app.schemas.schemas import EVENT_STATES
-from app.services.activity_log import record_event
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -90,7 +89,6 @@ def _duration_for_state(event_config: EventConfig, state: str) -> int | None:
         "WILDCARD_APPLICATION": event_config.wildcard_application_seconds,
         "WILDCARD_BIDDING": event_config.wildcard_bid_seconds,
         "WILDCARD_FINAL_CHOICE": event_config.wildcard_final_choice_seconds,
-        "CODING": event_config.coding_duration_seconds,
     }.get(state)
 
 def transition_event_state(
@@ -265,8 +263,6 @@ def _sync_expired_event_state(db: Session, config_id: int, round_type: str) -> l
     config.timer_paused = False
     config.timer_paused_remaining_seconds = None
     config.last_state_update = now
-    for action in actions:
-        record_event(db, action, actor_type="system", metadata={"reason": "timer_expired"})
     db.commit()
     db.refresh(config)
     logger.info("Round auto-close applied: %s", ", ".join(actions))

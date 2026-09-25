@@ -27,7 +27,6 @@ from app.services.event_service import (
     get_team_for_user,
     transition_event_state,
 )
-from app.services.activity_log import record_event
 from app.services.bid_cooldown import bid_cooldown_rejection
 from app.services.participant_session import participant_session_needs_touch
 from app.services.wildcard_service import (
@@ -176,14 +175,6 @@ def _place_wildcard_bid_transaction(
             else:
                 bid_row.amount = next_amount
                 bid_row.timestamp = now
-            record_event(
-                db,
-                "wildcard.bid_placed",
-                actor=user,
-                entity_type="team",
-                entity_id=team.id,
-                metadata={"increment": increment, "amount": next_amount},
-            )
             if participant_session_needs_touch(user.session_last_seen_at, now=now):
                 user.session_last_seen_at = now
             db.flush()
@@ -245,7 +236,6 @@ async def apply_wildcard(db: Session = Depends(get_db), current_user=Depends(get
     record.selected_at = None
     record.used = False
     db.add(record)
-    record_event(db, "wildcard.application_confirmed", actor=current_user, entity_type="team", entity_id=team.id)
     db.commit()
     team_name = team.team_name
     db.close()
@@ -270,7 +260,6 @@ async def decline_wildcard(db: Session = Depends(get_db), current_user=Depends(g
     record = record or Wildcard(team_id=team.id, coins_paid=0)
     record.status = "declined"
     db.add(record)
-    record_event(db, "wildcard.application_declined", actor=current_user, entity_type="team", entity_id=team.id)
     db.commit()
     team_name = team.team_name
     db.close()
@@ -338,7 +327,6 @@ async def confirm_wildcard_slots(
         )
     control.slot_count = request.slots
     get_or_create_event_config(db).wildcard_slots = request.slots
-    record_event(db, "wildcard.slots_confirmed", actor=current_user, metadata={"slot_count": request.slots})
     db.commit()
     response = wildcard_payload(db)
     db.close()
@@ -360,7 +348,6 @@ async def start_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
     control.status = "BIDDING_OPEN"
     control.applications_open = False
     transition_event_state(db, "WILDCARD_BIDDING", validate=False, restart=True)
-    record_event(db, "wildcard.bidding_started", actor=current_user, metadata={"slot_count": control.slot_count})
     db.commit()
     snapshot = event_snapshot(db)
     response = wildcard_payload(db)
@@ -447,7 +434,6 @@ async def close_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
     game.auction_timer_end = None
     game.timer_paused = False
     game.timer_paused_remaining_seconds = None
-    record_event(db, "wildcard.bidding_closed", actor=current_user)
     db.commit()
     snapshot = event_snapshot(db)
     response = wildcard_payload(db)
@@ -489,7 +475,6 @@ async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=De
         winners = finalize_slot_bidding(db, control, commit=False)
         if not control.ended:
             transition_event_state(db, "WILDCARD_SELECTION", validate=False, commit=False)
-        record_event(db, "wildcard.bidding_finalized", actor=current_user, metadata={"winner_count": len(winners)})
         db.commit()
     except ValueError as exc:
         db.rollback()
@@ -540,11 +525,6 @@ async def end_wildcard(db: Session = Depends(get_db), current_user=Depends(get_c
     control.current_selection_rank = None
     control.selection_started_at = None
     control.selection_ends_at = None
-    record_event(db, "wildcard.manually_ended", actor=current_user, metadata={
-        "application_count": applications,
-        "winner_count": winners,
-        "completed_selection_count": selections,
-    })
     db.commit()
     lab_allocation_team_count = try_allocate_labs(db)
     snapshot = event_snapshot(db)

@@ -26,7 +26,6 @@ from app.services.event_service import (
     sync_expired_event_state,
     transition_event_state,
 )
-from app.services.activity_log import record_event
 from app.core.event_constants import ROUND1_WINNER_COUNT
 from app.services.round1_assignment import (
     EXTERNAL_PROBLEM_ROUND,
@@ -230,7 +229,6 @@ async def import_problems(round_slug: str, file: UploadFile = File(...), db: Ses
     control = get_or_create_round_control(db, meta["type"])
     if meta["type"] == "ROUND1" and control.status == "IDLE":
         control.status = "READY"
-    record_event(db, f"{meta['type'].lower()}.problems_imported", actor=current_user, metadata={"count": len(rows), "filename": file.filename or ""})
     db.commit()
     response = {"imported": len(rows), "created": created, "updated": updated, **_round_payload(db, meta)}
     db.close()
@@ -274,7 +272,6 @@ async def select_problem(round_slug: str, problem_id: int, db: Session = Depends
     problem.status = "current"
     control.current_problem_id = problem.id
     control.status = "READY"
-    record_event(db, "round1.problem_selected", actor=current_user, entity_type="problem", entity_id=problem.id)
     db.commit()
     problem_id_value = problem.id
     snapshot = event_snapshot(db)
@@ -298,7 +295,6 @@ async def start_preview(round_slug: str, db: Session = Depends(get_db), current_
     state = "ROUND1_PREVIEW" if meta["number"] == 1 else "WILDCARD_PREVIEW"
     transition_event_state(db, state, validate=False, commit=False)
     control.status = "PREVIEW"
-    record_event(db, "round1.preview_started", actor=current_user, entity_type="problem", entity_id=control.current_problem_id)
     db.commit()
     snapshot = event_snapshot(db)
     response = _round_payload(db, meta)
@@ -326,7 +322,6 @@ async def start_bidding(round_slug: str, db: Session = Depends(get_db), current_
     state = "ROUND1_BIDDING" if meta["number"] == 1 else "WILDCARD_BIDDING"
     transition_event_state(db, state, validate=False, commit=False)
     control.status = "BIDDING"
-    record_event(db, "round1.bidding_started", actor=current_user, entity_type="problem", entity_id=control.current_problem_id)
     db.commit()
     snapshot = event_snapshot(db)
     response = _round_payload(db, meta)
@@ -351,7 +346,6 @@ async def close_bidding(round_slug: str, db: Session = Depends(get_db), current_
         raise HTTPException(status_code=409, detail="Bidding is not active.")
     transition_event_state(db, "ROUND1_RESULT" if meta["number"] == 1 else "WILDCARD_SELECTION", validate=False, commit=False)
     control.status = "READY"
-    record_event(db, "round1.bidding_closed", actor=current_user, entity_type="problem", entity_id=control.current_problem_id)
     db.commit()
     # Materialize every DB-backed value while the session is available, then
     # release its connection before potentially slow WebSocket fan-out.
@@ -411,7 +405,12 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
                 team.round1_assignment_type = ROUND1_BID_WINNER
                 team.round1_assignment_cost = bid.amount
             db.add(WalletTransaction(team_id=team.id, transaction_type="ROUND1_WIN" if meta["number"] == 1 else "WILDCARD_WIN", amount=-bid.amount, description=f"{meta['label']} win for problem {_display_number(problem)}"))
-            winners.append({"team_id": team.id, "team_name": team.team_name, "amount": bid.amount})
+            winners.append({
+                "team_id": team.id,
+                "team_name": team.team_name,
+                "amount": bid.amount,
+                "coins": team.coins,
+            })
         if meta["number"] == 1:
             update_round1_winning_bid_aggregate(
                 control,
@@ -435,7 +434,6 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
         control.status = "COMPLETE" if unassigned_count == 0 else "READY"
         control.ended = unassigned_count == 0
         event_name = "round1.winners_assigned" if winners else "round1.problem_received_no_bids"
-        record_event(db, event_name, actor=current_user, entity_type="problem", entity_id=problem.id, metadata={"winner_team_ids": [winner["team_id"] for winner in winners]})
         db.commit()
         message = (
             f"{len(winners)} actual bidder{'s' if len(winners) != 1 else ''} assigned."
@@ -518,16 +516,6 @@ async def import_external_assignment_problems(
                 db.add(problem)
                 created.append(problem)
             db.flush()
-            record_event(
-                db,
-                "round1.external_problems_imported",
-                actor=current_user,
-                metadata={
-                    "created": len(created),
-                    "skipped_duplicates": len(skipped_duplicates),
-                    "filename": file.filename or "",
-                },
-            )
             db.commit()
         except IntegrityError as exc:
             db.rollback()
@@ -702,14 +690,6 @@ async def rebid_problem(
         problem.status = "current"
         control.current_problem_id = problem.id
         control.status = "READY"
-        record_event(
-            db,
-            "round1.problem_rebid_selected",
-            actor=current_user,
-            entity_type="problem",
-            entity_id=problem.id,
-            metadata={"remaining_capacity": capacity},
-        )
         db.commit()
         snapshot = event_snapshot(db)
         response = _round_payload(db, ROUND_META["round-1"])
@@ -749,10 +729,6 @@ async def end_round_one(db: Session = Depends(get_db), current_user=Depends(get_
     control.ended = True
     control.status = "CLOSED"
     transition_event_state(db, "ROUND1_RESULT", validate=False, commit=False)
-    record_event(db, "round1.manually_ended", actor=current_user, metadata={
-        "assigned_team_count": assigned_count,
-        "unassigned_team_count": unassigned_count,
-    })
     db.commit()
     snapshot = event_snapshot(db)
     response = _round_payload(db, ROUND_META["round-1"])
@@ -779,7 +755,6 @@ async def open_applications(db: Session = Depends(get_db), current_user=Depends(
     wildcard.applications_open = True
     wildcard.status = "APPLICATIONS_OPEN"
     transition_event_state(db, "WILDCARD_APPLICATION", validate=False, restart=True, commit=False)
-    record_event(db, "wildcard.applications_opened", actor=current_user)
     db.commit()
     snapshot = event_snapshot(db)
     response = _round_payload(db, ROUND_META["wildcard"])
@@ -803,7 +778,6 @@ async def close_applications(db: Session = Depends(get_db), current_user=Depends
     game.auction_timer_end = None
     game.timer_paused = False
     game.timer_paused_remaining_seconds = None
-    record_event(db, "wildcard.applications_closed", actor=current_user)
     db.commit()
     response = _round_payload(db, ROUND_META["wildcard"])
     db.close()

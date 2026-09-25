@@ -16,7 +16,6 @@ from app.models.models import (
     WildcardBid,
     WildcardSelectionPool,
 )
-from app.services.activity_log import record_event
 from app.services.event_service import (
     _remaining_seconds,
     event_snapshot,
@@ -98,18 +97,6 @@ def start_final_choice(
             team.final_problem_confirmed_at = started_at
             team.final_problem_defaulted = True
 
-            record_event(
-                db,
-                "wildcard.final_problem_auto_confirmed",
-                actor_type="system",
-                entity_type="team",
-                entity_id=team.id,
-                metadata={
-                    "choice": "WILDCARD",
-                    "problem_id": team.wildcard_problem_id,
-                    "reason": "no_round1_problem",
-                },
-            )
 
     db.flush()
 
@@ -133,14 +120,6 @@ def start_final_choice(
         control.final_choice_ends_at = None
         control.final_choice_duration_seconds = None
 
-        record_event(
-            db,
-            "wildcard.final_choice_completed",
-            actor_type="system",
-            metadata={
-                "reason": "no_choices_required",
-            },
-        )
 
         return
 
@@ -172,15 +151,6 @@ def start_final_choice(
     control.final_choice_ends_at = game.auction_timer_end
     control.final_choice_duration_seconds = duration
 
-    record_event(
-        db,
-        "wildcard.final_choice_opened",
-        actor_type="system",
-        metadata={
-            "duration_seconds": duration,
-            "pending_team_count": pending_count,
-        },
-    )
 
 def start_selection_timer(
     db: Session,
@@ -438,16 +408,6 @@ def _assign_locked_selection(
     #
     # If every winner was Wildcard-only, the caller commits the completed
     # selection before starting best-effort lab allocation in a new transaction.
-    action = "wildcard.problem_selected" if method == "manual" else "wildcard.problem_auto_assigned"
-    record_event(
-        db,
-        action,
-        actor=actor,
-        actor_type="system" if actor is None else None,
-        entity_type="problem",
-        entity_id=problem.id,
-        metadata={"team_id": team.id, "rank": record.rank, "method": method},
-    )
     return {
         "team_id": team.id,
         "team_name": team.team_name,
@@ -604,6 +564,7 @@ def finalize_slot_bidding(db: Session, control: RoundControl, *, commit: bool = 
                 "team_id": team.id,
                 "team_name": team.team_name,
                 "winning_bid": application.winning_bid,
+                "coins": team.coins,
             }
             for application, team in ordered_qualifications(db)
         ]
@@ -638,19 +599,12 @@ def finalize_slot_bidding(db: Session, control: RoundControl, *, commit: bool = 
             amount=-bid.amount,
             description=f"Wildcard slot rank #{rank}",
         ))
-        record_event(
-            db,
-            "wildcard.team_qualified",
-            actor_type="system",
-            entity_type="team",
-            entity_id=team.id,
-            metadata={"rank": rank, "winning_bid": bid.amount},
-        )
         winners.append({
             "rank": rank,
             "team_id": team.id,
             "team_name": team.team_name,
             "winning_bid": bid.amount,
+            "coins": team.coins,
         })
 
     control.status = "PROBLEM_SELECTION" if winners else "COMPLETE"
@@ -660,12 +614,6 @@ def finalize_slot_bidding(db: Session, control: RoundControl, *, commit: bool = 
         start_selection_timer(db, control)
     else:
         clear_selection_timer(control)
-    record_event(
-        db,
-        "wildcard.selection_pool_frozen",
-        actor_type="system",
-        metadata={"slot_count": slot_count, "problem_ids": [row.problem_id for row in selection_pool(db)]},
-    )
     if commit:
         db.commit()
     else:
@@ -720,16 +668,6 @@ def _finish_final_choice_locked(
     control.status = "COMPLETE"
     control.ended = True
 
-    record_event(
-        db,
-        "wildcard.final_choice_completed",
-        actor=actor,
-        actor_type="system" if actor is None else None,
-        metadata={
-            "reason": reason,
-            "defaulted_team_ids": [team.id for team in pending],
-        },
-    )
 
     return [team.id for team in pending]
 
@@ -767,14 +705,6 @@ def confirm_final_problem(
     team.final_problem_choice = choice
     team.final_problem_confirmed_at = utc_now()
     team.final_problem_defaulted = False
-    record_event(
-        db,
-        "wildcard.final_problem_confirmed",
-        actor=actor,
-        entity_type="team",
-        entity_id=team.id,
-        metadata={"choice": choice, "problem_id": team.ps_id},
-    )
     db.flush()
     pending = (
         db.query(Team.id)

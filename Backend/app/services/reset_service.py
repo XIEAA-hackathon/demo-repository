@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from app.models.models import (
     Bid,
     EventConfig,
-    EventActivityLog,
     ExchangeRequest,
     FinalResult,
     GameConfig,
@@ -27,7 +26,6 @@ from app.models.models import (
     WildcardBid,
     WildcardSelectionPool,
 )
-from app.services.activity_log import record_event
 from app.services.event_service import get_or_create_event_config, get_or_create_game_config
 from app.core.event_constants import ROUND1_BASE_BID_DEFAULT, ROUND1_WINNER_COUNT, WILDCARD_BASE_BID_DEFAULT
 
@@ -140,17 +138,6 @@ def reset_imported_participant_credentials(db: Session, *, actor: User) -> dict:
     db.query(RegistrationImportRow).delete(synchronize_session=False)
     db.query(RegistrationImport).delete(synchronize_session=False)
 
-    record_event(
-        db,
-        "registration.credentials_reset",
-        actor=actor,
-        metadata={
-            "deleted_participant_accounts": deleted["participant_accounts"],
-            "deleted_imported_teams": deleted["teams"],
-            "deleted_registration_rows": deleted["registration_rows"],
-            "event_lifecycle_reset": False,
-        },
-    )
     return {
         "participant_accounts": deleted["participant_accounts"],
         "sessions_invalidated": len(accounts),
@@ -186,7 +173,6 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
         "final_results": db.query(FinalResult).count(),
         "exchange_requests": db.query(ExchangeRequest).count(),
         "wallet_transactions": db.query(WalletTransaction).count(),
-        "activity_entries": db.query(EventActivityLog).count(),
         "lab_assignments": db.query(LabAssignment).count(),
     }
 
@@ -205,7 +191,6 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
         LabAssignment,
     ):
         db.query(model).delete(synchronize_session=False)
-    db.query(EventActivityLog).delete(synchronize_session=False)
     allocation_state = db.query(LabAllocationState).filter(LabAllocationState.id == 1).one_or_none()
     if allocation_state:
         allocation_state.status = "NOT_READY"
@@ -259,13 +244,4 @@ def reset_event_and_imported_participants(db: Session, *, actor: User, action: s
     event.round1_minimum_bid = ROUND1_BASE_BID_DEFAULT
     event.wildcard_starting_bid = WILDCARD_BASE_BID_DEFAULT
 
-    record_event(
-        db,
-        action,
-        actor=actor,
-        metadata={
-            "preserved_teams": db.query(Team).count(),
-            "authentication_records_touched": False,
-        },
-    )
     return deleted

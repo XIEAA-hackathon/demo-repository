@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.main import process_expiry_cycle
-from app.models.models import EventActivityLog, EventConfig, GameConfig, ProblemStatement, RoundControl
+from app.models.models import EventConfig, GameConfig, ProblemStatement, RoundControl
 
 
 def prepare(client, db, headers):
@@ -79,7 +79,6 @@ def test_concurrent_start_clicks_share_one_timer(client, db, admin_headers):
         responses = list(pool.map(lambda _: client.post("/admin/rounds/round-1/bidding/start", headers=admin_headers), range(2)))
     assert all(response.status_code == 200 for response in responses)
     assert len({response.json()["event"]["timing"]["ends_at"] for response in responses}) == 1
-    assert db.query(EventActivityLog).filter_by(action="round1.bidding_started").count() == 1
 
 
 def test_wildcard_expiry_still_waits_for_finalization(db, session_factory):
@@ -94,3 +93,21 @@ def test_wildcard_expiry_still_waits_for_finalization(db, session_factory):
             assert payload["timing"]["ends_at"] is None
 
     assert asyncio.run(process_expiry_cycle(session_factory, Capture())) == ["wildcard.bidding_expired"]
+
+
+def test_coding_never_expires_or_emits_timer_sync(db, session_factory):
+    db.add_all([
+        EventConfig(submissions_open=True),
+        GameConfig(state="CODING", auction_timer_end=datetime.now(timezone.utc) - timedelta(seconds=1)),
+    ])
+    db.commit()
+    events = []
+
+    class Capture:
+        async def broadcast_event(self, kind, payload):
+            events.append((kind, payload))
+
+    assert asyncio.run(process_expiry_cycle(session_factory, Capture(), emit_timer_sync=True)) == []
+    db.expire_all()
+    assert db.query(GameConfig).one().state == "CODING"
+    assert events == []

@@ -380,7 +380,7 @@ class ConnectionManager:
                 await self._deliver_broadcast("lab_assignment_changed", change, exclude=None, roles={"admin", "lab_admin", "leader", "member"})
             payload = {key: value for key, value in (payload or {}).items() if key != "assignments"}
         # The shared version tracks events every client is eligible to receive.
-        # Admin-only presence messages must not create participant version gaps.
+        # Operator-only presence messages must not create participant version gaps.
         if roles is None:
             self._version += 1
         message = make_event(event_type, payload, version=self._version)
@@ -510,7 +510,7 @@ async def broadcast_presence_snapshot(
         "participant_presence_changed",
         presence,
         exclude=exclude,
-        roles={"admin"},
+        roles={"admin", "lab_admin"},
     )
     logger.info(
         "Participant presence rebuilt connected_teams=%s duration_ms=%.2f",

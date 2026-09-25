@@ -9,7 +9,6 @@ from app.api.auth import get_current_active_admin
 from app.core.database import get_db
 from app.core.security import get_password_hash
 from app.models.models import User
-from app.services.activity_log import record_event
 from app.services.participant_session import clear_user_session
 
 
@@ -76,14 +75,6 @@ def _create_user(payload: ManagedUserCreate, role: str, db: Session, actor: User
     )
     db.add(user)
     db.flush()
-    record_event(
-        db,
-        "management.user_created",
-        actor=actor,
-        entity_type="user",
-        entity_id=user.id,
-        metadata={"login_id": login_id, "role": role},
-    )
     db.commit()
     db.refresh(user)
     return _user_payload(user)
@@ -126,14 +117,6 @@ def reset_managed_user_password(
         raise HTTPException(status_code=403, detail="The permanent system Admin password is managed through backend configuration.")
     target.password_hash = get_password_hash(payload.new_password)
     clear_user_session(target)
-    record_event(
-        db,
-        "management.password_reset",
-        actor=current_user,
-        entity_type="user",
-        entity_id=target.id,
-        metadata={"login_id": target.email, "role": target.role},
-    )
     db.commit()
     return {"status": "password_reset", "user": _user_payload(target)}
 
@@ -158,12 +141,6 @@ def reset_managed_users(
     managed_ids = [user.id for user in managed_users]
     if managed_ids:
         db.query(User).filter(User.id.in_(managed_ids)).delete(synchronize_session=False)
-    record_event(
-        db,
-        "management.users_reset",
-        actor=current_user,
-        metadata={**deleted, "total": len(managed_ids)},
-    )
     db.commit()
     return {
         "status": "reset_complete",

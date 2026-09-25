@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models.models import (
+    Bid,
     Lab,
     LabAllocationState,
     LabAssignment,
@@ -16,8 +17,8 @@ from app.models.models import (
     RoundControl,
     Team,
     User,
+    Wildcard,
 )
-from app.services.activity_log import record_event
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -76,12 +77,18 @@ def _active_labs(db: Session, *, lock: bool = False) -> list[Lab]:
     return query.with_for_update().all() if lock else query.all()
 
 
-def _readiness(db: Session, teams: list[Team], labs: list[Lab]) -> tuple[bool, str]:
+def _readiness(
+    db: Session,
+    teams: list[Team],
+    labs: list[Lab],
+    *,
+    event_is_final: bool | None = None,
+) -> tuple[bool, str]:
     if not labs:
         return False, "Configure at least one active lab."
     if not teams:
         return False, "Waiting for approved participant teams with final problem assignments."
-    if not _event_is_final(db):
+    if not (_event_is_final(db) if event_is_final is None else event_is_final):
         return False, "Waiting for Wildcard and final problem assignments to finish."
     return True, "Final problem assignments are ready for lab allocation."
 
@@ -241,13 +248,6 @@ def allocate_labs(
     state.status = "ALLOCATED"
     state.allocated_at = now
     state.finalized_at = None
-    record_event(
-        db,
-        "lab.allocation_generated",
-        actor=actor,
-        actor_type="system" if actor is None else None,
-        metadata={"team_count": len(teams), "lab_count": len(labs)},
-    )
     persisted = _verify_persisted_allocation(db, teams, labs)
     logger.info("Lab allocation persisted assignments=%d", persisted)
     db.commit()
@@ -344,19 +344,6 @@ def move_team(
     assignment.moved_by_user_id = actor.id
     assignment.moved_at = datetime.now(timezone.utc)
     assignment.version += 1
-    record_event(
-        db,
-        "lab.assignment_moved",
-        actor=actor,
-        entity_type="team",
-        entity_id=assignment.team_id,
-        metadata={
-            "assignment_id": assignment.id,
-            "source_lab_id": source_lab_id,
-            "target_lab_id": target.id,
-            "constraint_override": False,
-        },
-    )
     db.commit()
     db.refresh(assignment)
     db.info["lab_assignment_changes"] = [{**lab_assignment_payloads(db, team_id=team.id)[0], "previous_lab_id": source_lab_id}]
@@ -374,20 +361,42 @@ def lab_assignment_payloads(db: Session, *, team_id: int | None = None) -> list[
             for assignment, lab, team in query.all() if lab.active and assignment.effective_ps_id == get_final_problem_id(team)]
 
 
-def lab_board(db: Session) -> dict[str, Any]:
+def lab_board(db: Session, *, logged_in_team_ids: set[int] | None = None) -> dict[str, Any]:
+    logged_in_team_ids = logged_in_team_ids or set()
     labs = _active_labs(db)
     participant_teams = _participant_teams(db)
     teams = [team for team in participant_teams if team.ps_id is not None]
     assignments = db.query(LabAssignment).order_by(LabAssignment.id.asc()).all()
     problem_ids = {
         problem_id
-        for team in teams
+        for team in participant_teams
         for problem_id in (team.ps_id, team.round1_problem_id, team.wildcard_problem_id)
         if problem_id is not None
     }
     problems = db.query(ProblemStatement).filter(ProblemStatement.id.in_(problem_ids)).all() if problem_ids else []
+    participant_team_ids = [team.id for team in participant_teams]
+    wildcards = db.query(Wildcard).filter(Wildcard.team_id.in_(participant_team_ids)).all()
+    round1_problem_ids = {
+        team.round1_problem_id for team in participant_teams if team.round1_problem_id is not None
+    }
+    bids = (
+        db.query(Bid)
+        .filter(Bid.round == 1, Bid.ps_id.in_(round1_problem_ids))
+        .order_by(Bid.ps_id.asc(), Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc())
+        .all()
+    )
     problem_by_id = {problem.id: problem for problem in problems}
     team_by_id = {team.id: team for team in teams}
+    wildcard_by_team = {wildcard.team_id: wildcard for wildcard in wildcards}
+    participant_team_by_id = {team.id: team for team in participant_teams}
+    round1_places: dict[int, int] = {}
+    place_by_problem: dict[int, int] = {}
+    for bid in bids:
+        team = participant_team_by_id.get(bid.team_id)
+        if not team or team.round1_assignment_type != "BID_WINNER" or team.round1_problem_id != bid.ps_id:
+            continue
+        place_by_problem[bid.ps_id] = place_by_problem.get(bid.ps_id, 0) + 1
+        round1_places[team.id] = place_by_problem[bid.ps_id]
     active_lab_ids = {lab.id for lab in labs}
     assignment_by_team = {}
     assigned_pairs = set()
@@ -397,7 +406,8 @@ def lab_board(db: Session) -> dict[str, Any]:
         if team and row.current_lab_id in active_lab_ids and row.effective_ps_id == get_final_problem_id(team) and pair not in assigned_pairs:
             assignment_by_team[row.team_id] = row
             assigned_pairs.add(pair)
-    ready, readiness_message = _readiness(db, teams, labs)
+    event_is_final = _event_is_final(db)
+    ready, readiness_message = _readiness(db, teams, labs, event_is_final=event_is_final)
     current = _assignments_are_current(teams, labs, assignments)
     state = db.query(LabAllocationState).filter(LabAllocationState.id == 1).one_or_none()
     status = (state.status if state and state.status == "FINALIZED" else "ALLOCATED") if current else ("READY" if ready else "NOT_READY")
@@ -412,6 +422,8 @@ def lab_board(db: Session) -> dict[str, Any]:
     def team_payload(team: Team) -> dict[str, Any]:
         effective = problem_by_id.get(team.ps_id)
         original = problem_by_id.get(team.round1_problem_id)
+        wildcard_problem = problem_by_id.get(team.wildcard_problem_id)
+        wildcard_row = wildcard_by_team.get(team.id)
         wildcard = bool(team.wildcard_problem_id and team.wildcard_problem_id == team.ps_id)
         return {
             "id": team.id,
@@ -427,6 +439,35 @@ def lab_board(db: Session) -> dict[str, Any]:
             ),
             "wildcard": wildcard,
             "changed_from": original.ps_number if wildcard and original and original.id != team.ps_id else None,
+            "logged_in": team.id in logged_in_team_ids,
+            "round1": (
+                {
+                    "id": original.id,
+                    "problem_number": original.ps_number,
+                    "problem_title": original.title,
+                    "winning_bid": team.round1_assignment_cost,
+                    "assignment_type": team.round1_assignment_type,
+                    "place": round1_places.get(team.id),
+                }
+                if original else None
+            ),
+            "wildcard_history": {
+                "selected": wildcard_problem is not None,
+                **(
+                    {
+                        "id": wildcard_problem.id,
+                        "problem_number": wildcard_problem.ps_number,
+                        "problem_title": wildcard_problem.title,
+                    }
+                    if wildcard_problem else {}
+                ),
+                "winning_bid": wildcard_row.winning_bid if wildcard_row else None,
+                "place": wildcard_row.rank if wildcard_row else None,
+            },
+            "final_problem": (
+                {"id": effective.id, "problem_number": effective.ps_number, "problem_title": effective.title}
+                if effective else None
+            ),
         }
 
     team_rows = [team_payload(team) for team in participant_teams]
@@ -472,7 +513,7 @@ def lab_board(db: Session) -> dict[str, Any]:
         "status": status,
         "message": message,
         "can_allocate": ready and not current,
-        "can_move": _event_is_final(db),
+        "can_move": event_is_final,
         "allocated_at": state.allocated_at if state else None,
         "labs": buckets,
         "teams": team_rows,
@@ -486,5 +527,7 @@ def lab_board(db: Session) -> dict[str, Any]:
         "unassigned_count": len(eligible_unassigned),
         "max_flow_value": max_flow,
         "team_count": len(participant_teams),
+        "logged_in_team_ids": sorted(logged_in_team_ids),
+        "participant_logged_in_count": sum(team.id in logged_in_team_ids for team in participant_teams),
         "total_capacity": sum(lab.capacity for lab in labs),
     }

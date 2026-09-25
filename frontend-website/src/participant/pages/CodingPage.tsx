@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useParticipant } from '../ParticipantContext'
 import { getParticipantPermissions } from '../permissions'
-import Countdown from '../components/Countdown'
 import { Button, Card, CoinBalance, PageHeading, Stat } from '../components/ui'
 import AllocatedLab from '../components/AllocatedLab'
 
@@ -31,7 +30,7 @@ export default function CodingPage() {
 
   return (
     <div className="stack coding-page">
-      <PageHeading eyebrow="Coding round" title="Build and submit your solution">Your coding timer and repository submission stay together here.</PageHeading>
+      <PageHeading eyebrow="Coding round" title="Build and submit your solution">Work on your final problem and submit your repository before the admin closes Coding.</PageHeading>
       <Card className="challenge-card submission-problem">
         <p className="eyebrow">Final problem</p>
         {finalProblem && <small>Problem #{String(finalProblem.number).padStart(2, '0')}</small>}
@@ -40,7 +39,6 @@ export default function CodingPage() {
         <AllocatedLab dashboard={dashboard} />
       </Card>
       <div className="stats-grid">
-        <Stat label="Time remaining" value={<Countdown timing={dashboard.timing} showHours />} />
         <Stat label="Team coins" value={<CoinBalance value={dashboard.wallet.balance} />} />
         <Stat label="Submission status" value={submitted ? 'Submitted' : 'Not submitted'} />
       </div>

@@ -11,7 +11,6 @@ from app.api.websockets import manager
 from app.core.database import get_db
 from app.models.models import EventConfig, FinalResult, GameConfig, ProblemStatement, RoundControl, Team, User
 from app.schemas.schemas import JudgingWinnersUpdate
-from app.services.activity_log import record_event
 from app.services.event_service import (
     event_snapshot,
     transition_event_state,
@@ -98,7 +97,6 @@ def save_winners(
     result.saved_at = datetime.now(timezone.utc)
     result.published_at = None
     result.result_status = "WAITING"
-    record_event(db, "judging.winners_saved", actor=current_user)
     db.commit()
     db.refresh(result)
     return _result_payload(db, result, include_waiting_winners=True)
@@ -126,7 +124,6 @@ async def publish_winners(
         result.result_status = "PUBLISHED"
         result.published_at = datetime.now(timezone.utc)
         transition_event_state(db, "RESULTS", validate=False, commit=False)
-        record_event(db, "judging.results_published", actor=current_user)
         db.commit()
     public_result = _result_payload(db, result, include_waiting_winners=False)
     snapshot = event_snapshot(db)

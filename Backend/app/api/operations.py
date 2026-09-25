@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
@@ -13,7 +13,6 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.models import (
     Bid,
-    EventActivityLog,
     EventConfig,
     GameConfig,
     ProblemStatement,
@@ -28,7 +27,6 @@ from app.models.models import (
     LabAllocationState,
     LabAssignment,
 )
-from app.services.activity_log import activity_payload, record_event
 from app.services.event_service import (
     event_snapshot,
     event_timing,
@@ -143,7 +141,6 @@ async def recovery_resume_timer(db: Session = Depends(get_db), current_user: Use
     if not game.timer_paused:
         return recovery_snapshot(db, current_user)
     resume_event_timer(db)
-    record_event(db, "recovery.timer_resumed", actor=current_user)
     db.commit()
     snapshot = event_snapshot(db)
     response = recovery_snapshot(db, current_user)
@@ -154,14 +151,12 @@ async def recovery_resume_timer(db: Session = Depends(get_db), current_user: Use
 
 @router.post("/admin/recovery/reload-state")
 def recovery_reload_state(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
-    record_event(db, "recovery.state_reloaded", actor=current_user)
     db.commit()
     return recovery_snapshot(db, current_user)
 
 
 @router.post("/admin/recovery/resync-clients")
 async def recovery_resync_clients(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
-    record_event(db, "recovery.clients_resynced", actor=current_user)
     db.commit()
     snapshot = event_snapshot(db)
     response = recovery_snapshot(db, current_user)
@@ -173,20 +168,8 @@ async def recovery_resync_clients(db: Session = Depends(get_db), current_user: U
 @router.post("/admin/recovery/retry-transition")
 def recovery_retry_transition(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     actions = sync_expired_event_state(db)
-    record_event(db, "recovery.transition_retried", actor=current_user, metadata={"expiry_actions": actions})
     db.commit()
     return recovery_snapshot(db, current_user)
-
-
-@router.get("/admin/activity-log")
-def activity_log(
-    limit: int = Query(default=200, ge=1, le=1000),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_admin),
-):
-    del current_user
-    rows = db.query(EventActivityLog).order_by(EventActivityLog.id.desc()).limit(limit).all()
-    return {"rows": [activity_payload(row) for row in rows], "count": len(rows)}
 
 
 @router.post("/admin/event-data/reset")
@@ -284,7 +267,6 @@ async def development_reset(
         ),
         RoundControl(round_type="WILDCARD", status="NOT_STARTED", ended=False, applications_open=False),
     ])
-    record_event(db, "development.event_reset", actor=current_user, metadata={"mode": "development_only"})
     db.commit()
     snapshot = event_snapshot(db)
     db.close()

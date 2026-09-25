@@ -11,7 +11,6 @@ from app.api.auction import BidCooldownActive, _place_round1_bid_transaction, fi
 from app.core.security import create_access_token
 from app.models.models import (
     Bid,
-    EventActivityLog,
     EventConfig,
     GameConfig,
     ProblemStatement,
@@ -126,7 +125,6 @@ def test_ten_simultaneous_bids_are_unique_sequential_and_preserve_wallets(db, se
     assert amounts == list(range(30, 80, 5))
     assert len({result.amount for result in results}) == 10
     assert db.query(Team).filter(Team.coins != 5000).count() == 0
-    assert db.query(EventActivityLog).filter(EventActivityLog.action == "round1.bid_placed").count() == 10
 
 
 def test_rapid_duplicate_bid_is_blocked_by_server_cooldown(db, session_factory):
@@ -138,7 +136,6 @@ def test_rapid_duplicate_bid_is_blocked_by_server_cooldown(db, session_factory):
     assert 0 < rejected.value.remaining_seconds <= 5
     db.expire_all()
     assert db.query(Bid).filter(Bid.ps_id == problem_id).one().amount == first.amount
-    assert db.query(EventActivityLog).filter(EventActivityLog.action == "round1.bid_placed").count() == 1
 
 
 def test_two_tabs_cannot_bypass_team_cooldown(db, session_factory):
@@ -160,7 +157,6 @@ def test_two_tabs_cannot_bypass_team_cooldown(db, session_factory):
     assert sum(outcome == "cooldown" for outcome in outcomes) == 1
     db.expire_all()
     assert db.query(Bid).count() == 1
-    assert db.query(EventActivityLog).filter(EventActivityLog.action == "round1.bid_placed").count() == 1
 
 
 def test_bid_racing_expiry_cannot_enter_after_authoritative_deadline(db, session_factory):
@@ -284,21 +280,6 @@ def test_bid_racing_finalization_is_atomic_and_charges_at_most_once(
         assert team.coins == 5000 - bids[0].amount
 
 
-def test_database_failure_rolls_back_bid_and_activity(db, session_factory, monkeypatch):
-    problem_id, accounts = _active_round_one(db, team_count=1)
-
-    def fail_event_recording(*_args, **_kwargs):
-        raise RuntimeError("injected activity log failure")
-
-    monkeypatch.setattr(auction, "record_event", fail_event_recording)
-    with pytest.raises(RuntimeError, match="injected activity log failure"):
-        _bid_once(session_factory, problem_id, accounts[0])
-
-    db.expire_all()
-    assert db.query(Bid).count() == 0
-    assert db.query(EventActivityLog).count() == 0
-
-
 def test_bid_lock_timeout_returns_retryable_error_without_writes_or_broadcast(
     client,
     db,
@@ -323,42 +304,9 @@ def test_bid_lock_timeout_returns_retryable_error_without_writes_or_broadcast(
     assert broadcasts == []
     db.expire_all()
     assert db.query(Bid).count() == 0
-    assert db.query(EventActivityLog).count() == 0
     assert db.query(Team).filter(Team.id == team_id).one().coins == 5000
 
     retry = client.post("/bid", json={"ps_id": problem_id, "increment": 5}, headers=headers)
     assert retry.status_code == 200
     assert db.query(Bid).count() == 1
     assert len(broadcasts) == 1
-
-
-def test_finalization_failure_rolls_back_wallet_and_assignment(db, session_factory, monkeypatch):
-    problem_id, accounts = _active_round_one(db, team_count=1)
-    placed = _bid_once(session_factory, problem_id, accounts[0])
-    admin = User(
-        name="Rollback Admin",
-        email="rollback-admin@test.local",
-        password_hash="unused-test-hash",
-        role="admin",
-        session_id="rollback-admin-session",
-    )
-    db.add(admin)
-    db.commit()
-    admin_id = admin.id
-
-    def fail_finalization_event(*_args, **_kwargs):
-        raise RuntimeError("injected finalization event failure")
-
-    monkeypatch.setattr(auction, "record_event", fail_finalization_event)
-    with pytest.raises(RuntimeError, match="injected finalization event failure"):
-        with session_factory() as finalize_db:
-            current_admin = finalize_db.query(User).filter(User.id == admin_id).one()
-            asyncio.run(finalize_round_one(problem_id, db=finalize_db, current_user=current_admin))
-
-    db.expire_all()
-    team = db.query(Team).filter(Team.id == accounts[0][2]).one()
-    assert team.coins == 5000
-    assert team.ps_id is None
-    assert team.round1_problem_id is None
-    assert db.query(WalletTransaction).filter(WalletTransaction.team_id == team.id).count() == 0
-    assert db.query(Bid).filter(Bid.id == placed.bid_id).count() == 1

@@ -18,7 +18,7 @@
 .lab-section-heading h3 { margin: 0 0 5px; color: #f5eef8; font-size: 15px; letter-spacing: -.01em; }
 .lab-section-heading > span { color: #94849d; font-size: 10px; font-variant-numeric: tabular-nums; }
 .team-allotment-list { border-top: 1px solid rgba(190,91,243,.12); }
-.team-allotment-list__head, .team-allotment-row { display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(160px,.7fr) minmax(160px,.8fr); align-items: center; gap: 14px; min-height: 36px; padding: 0 20px; }
+.team-allotment-list__head, .team-allotment-row { display: grid; grid-template-columns: minmax(220px, 1.2fr) minmax(100px,.45fr) minmax(160px,.8fr) minmax(120px,.5fr); align-items: center; gap: 14px; min-height: 36px; padding: 0 20px; }
 .team-allotment-list__head { min-height: 32px; color: #81738a; background: rgba(255,255,255,.018); font-size: 8px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
 .team-allotment-row { border-top: 1px solid rgba(255,255,255,.04); color: #cfc4d5; font-size: 10px; }
 .team-allotment-row:hover { background: rgba(188,92,235,.045); }
@@ -26,6 +26,9 @@
 .team-identity b, .lab-team-row > b { color: #9d8aa8; font: 700 9px/1 ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
 .team-identity strong { overflow: hidden; color: #eee6f2; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .team-allotment-row > span:nth-child(2) { display: flex; align-items: center; gap: 7px; }
+.team-presence { width: max-content; padding: 4px 8px; color: #a99bad; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); border-radius: 999px; font-size: 9px; font-weight: 850; }
+.team-presence--online { color: #8ce1b1; background: rgba(56,233,139,.07); border-color: rgba(56,233,139,.2); }
+.team-allotment-row .secondary-button { width: auto; min-height: 34px; padding: 7px 10px; }
 .problem-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 3px 7px; color: #e3d7e9; background: rgba(173,66,255,.1); border: 1px solid rgba(181,76,255,.2); border-radius: 6px; font-size: 9px; font-style: normal; font-weight: 850; letter-spacing: .02em; white-space: nowrap; }
 .problem-badge--wildcard { color: #f1ce75; background: rgba(233,184,79,.08); border-color: rgba(233,184,79,.22); }
 .wildcard-label, .override-label { color: #d8b85f; font-size: 7px; font-weight: 900; letter-spacing: .06em; }
@@ -68,6 +71,8 @@
   .lab-workspace__actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
   .team-allotment-list__head { display: none; }
   .team-allotment-row { grid-template-columns: 1fr auto; gap: 7px 12px; padding: 10px 14px; }
+  .team-allotment-row > span:nth-child(3) { grid-column: 1; }
+  .team-allotment-row > span:last-child { grid-column: 2; grid-row: 1 / span 2; }
   .team-history { grid-column: 1 / -1; }
   .lab-bucket-grid { grid-template-columns: 1fr; }
   .lab-team-row { grid-template-columns: 42px minmax(76px,1fr) auto auto; }

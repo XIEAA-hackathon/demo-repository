@@ -29,7 +29,6 @@ Base = declarative_base()
 
 REQUIRED_TABLES = {
     "bids",
-    "event_activity_log",
     "event_config",
     "exchange_requests",
     "final_results",

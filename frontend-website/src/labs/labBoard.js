@@ -15,6 +15,19 @@ export function applyLabChange(board, change) {
   };
 }
 
+export function applyParticipantPresence(board, payload) {
+  if (!board) return board;
+  const loggedIn = new Set(payload?.logged_in_team_ids || []);
+  const update = team => ({ ...team, logged_in: loggedIn.has(team.id) });
+  return {
+    ...board,
+    logged_in_team_ids: [...loggedIn],
+    participant_logged_in_count: loggedIn.size,
+    teams: board.teams.map(update),
+    labs: board.labs.map(lab => ({ ...lab, teams: lab.teams.map(update) })),
+  };
+}
+
 export function invalidDrop(team, lab) {
   if (!team.effective_problem) return 'Final problem pending';
   if (lab.id === team.current_lab_id) return 'Current lab';

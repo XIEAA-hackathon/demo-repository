@@ -6,7 +6,6 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import ProblemStatement, RoundControl, Team, User, WalletTransaction
-from app.services.activity_log import record_event
 from app.services.event_service import get_or_create_event_config, get_or_create_round_control, transition_event_state
 
 
@@ -211,22 +210,6 @@ def change_round1_problem_assignment(
                 if new_balance is not None:
                     team.coins = new_balance
 
-            record_event(
-                db,
-                "round1.assignment_changed",
-                actor=actor,
-                entity_type="team",
-                entity_id=team.id,
-                metadata={
-                    "previous_problem_id": previous_problem_id,
-                    "target_problem_id": target.id,
-                    "coins_before": coins_before,
-                    "coins_after": team.coins or 0,
-                    "balance_changed": coins_before != (team.coins or 0),
-                    "balance_override_requested": new_balance is not None,
-                    "round1_closed": bool(control.ended),
-                },
-            )
             db.flush()
             db.commit()
 
@@ -466,6 +449,7 @@ def manually_assign_problem(
                 "team_id": team.id,
                 "team_name": team.team_name,
                 "amount": deduction,
+                "coins": team.coins,
             })
 
         problem.status = "completed"
@@ -481,17 +465,6 @@ def manually_assign_problem(
             transition_event_state(db, "ROUND1_RESULT", validate=False, commit=False)
         else:
             control.status = "READY"
-        record_event(
-            db,
-            "round1.problem_manually_assigned",
-            actor=actor,
-            entity_type="problem",
-            entity_id=problem.id,
-            metadata={
-                "team_ids": [team.id for team in selected],
-                "deduction_per_team": deduction,
-            },
-        )
         db.flush()
         return {
             "idempotent": False,

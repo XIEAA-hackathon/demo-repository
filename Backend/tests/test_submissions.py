@@ -6,7 +6,7 @@ import pytest
 
 from app.api import participant
 from app.core.security import get_password_hash
-from app.models.models import EventActivityLog, EventConfig, GameConfig, ProblemStatement, RoundControl, Submission, Team, User
+from app.models.models import EventConfig, GameConfig, ProblemStatement, RoundControl, Submission, Team, User
 from app.schemas.schemas import EVENT_STATES
 from app.services.event_service import event_snapshot, get_or_create_game_config
 
@@ -75,7 +75,9 @@ def test_submission_monitor_open_close_and_final_problem(client, admin_headers, 
     game = db.query(GameConfig).one()
     first_timer_end = game.auction_timer_end
     assert game.state == "CODING"
-    assert (game.auction_timer_end - game.phase_started_at).total_seconds() == 7200
+    assert first_timer_end is None
+    assert game.timer_paused is False
+    assert game.timer_paused_remaining_seconds is None
     assert db.query(EventConfig).one().submissions_open is True
     assert [call.args[0] for call in broadcast.await_args_list] == ["submission_updated", "event_state_changed"]
 
@@ -156,7 +158,7 @@ def test_open_coding_requires_completed_wildcard(client, admin_headers, db):
 
 
 @pytest.mark.parametrize("duration_seconds", [3600, 7200, 12600, 14400])
-def test_open_coding_uses_duration_persisted_through_admin_api(
+def test_open_coding_ignores_legacy_duration_persisted_through_admin_api(
     duration_seconds, client, admin_headers, db,
 ):
     db.query(GameConfig).one().state = "WILDCARD_FINAL_CHOICE"
@@ -179,13 +181,16 @@ def test_open_coding_uses_duration_persisted_through_admin_api(
     db.expire_all()
     game = db.query(GameConfig).one()
     assert game.state == "CODING"
-    assert (game.auction_timer_end - game.phase_started_at).total_seconds() == duration_seconds
+    assert game.auction_timer_end is None
+    assert game.timer_paused is False
+    assert game.timer_paused_remaining_seconds is None
     snapshot = event_snapshot(db)
     assert snapshot["timing"]["started_at"] == game.phase_started_at
-    assert snapshot["timing"]["ends_at"] == game.auction_timer_end
+    assert snapshot["timing"]["ends_at"] is None
+    assert snapshot["timing"]["remaining_seconds"] is None
 
 
-def test_concurrent_and_repeated_open_coding_keeps_first_timer(client, admin_headers, db):
+def test_concurrent_and_repeated_open_coding_remains_untimed(client, admin_headers, db):
     db.query(GameConfig).one().state = "WILDCARD_FINAL_CHOICE"
     db.add(RoundControl(round_type="WILDCARD", status="COMPLETE", ended=True))
     db.commit()
@@ -207,8 +212,7 @@ def test_concurrent_and_repeated_open_coding_keeps_first_timer(client, admin_hea
     db.expire_all()
     game = db.query(GameConfig).one()
     first_timer_end = game.auction_timer_end
-    assert (game.auction_timer_end - game.phase_started_at).total_seconds() == 7200
-    assert db.query(EventActivityLog).filter(EventActivityLog.action == "submissions.opened").count() == 1
+    assert first_timer_end is None
 
     repeated = client.post("/admin/submissions/open", headers=admin_headers)
     assert repeated.status_code == 200
