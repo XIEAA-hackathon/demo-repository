@@ -1,5 +1,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { LabAdminBoard } from './LabAdminApp'
 import { ordinal } from '../labs/LabAllocationPanel'
@@ -74,17 +76,20 @@ const nav = label => Array.from(host.querySelectorAll('.sidebar-nav button')).fi
 const rowFor = name => Array.from(host.querySelectorAll('.team-allotment-row')).find(row => row.querySelector('strong')?.textContent === name)
 const summaryValue = label => Array.from(host.querySelectorAll('.lab-allocation-summary > div')).find(card => card.querySelector('dt')?.textContent === label)?.querySelector('dd')?.textContent
 const openDetails = name => act(() => rowFor(name).querySelector('button').click())
+const detailsDialog = () => document.body.querySelector('.team-details-modal')
+const modalStyles = readFileSync(resolve(process.cwd(), 'src/labs/LabAllocationPanel.modal.css'), 'utf8')
 const setSelect = (select, value) => { Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, value); select.dispatchEvent(new Event('change', { bubbles: true })) }
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   vi.useFakeTimers(); vi.clearAllMocks()
+  document.body.style.overflow = ''
   host = document.createElement('div'); root = createRoot(host)
   vi.mocked(getLabAllocation).mockResolvedValueOnce(baseBoard).mockResolvedValue(ready)
   vi.mocked(moveLabAssignment).mockImplementation(async (id, payload) => ({ team_id: id, assignment_id: id, version: 2, lab: { id: payload.lab_id, name: payload.lab_id === 2 ? 'Network Lab' : 'Software Lab' } }))
   vi.mocked(connectReconnectingSocket).mockImplementation(options => { socket = options; return () => {} })
 })
-afterEach(() => { act(() => root.unmount()); vi.useRealTimers() })
+afterEach(() => { act(() => root.unmount()); document.body.style.overflow = ''; vi.useRealTimers() })
 
 it('uses Team Details and Labs navigation and renders a lightweight presence-aligned team list', async () => {
   await act(async () => root.render(<LabAdminBoard session={{ name: 'Lab Admin' }} onLogout={vi.fn()} />))
@@ -142,45 +147,69 @@ it('shows complete assignment history, arbitrary ordinals, final problem and lab
   await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />))
 
   await openDetails('Alpha')
-  let dialog = host.querySelector('[role="dialog"]')
-  for (const value of ['Alpha', 'Final / Current Problem', 'WC-02 — AI Resource Optimization', 'Round 1', 'PS-04', 'Smart Campus Navigation', '420 coins', 'Round 1 Place', '1st', 'Wildcard', '300 coins', 'Wildcard Place', '5th', 'Lab Allocation', 'Software Lab']) expect(dialog.textContent).toContain(value)
+  let dialog = detailsDialog()
+  const backdrop = dialog.closest('.team-details-modal-backdrop')
+  expect(host.querySelector('[role="dialog"]')).toBeNull()
+  expect(backdrop.parentElement).toBe(document.body)
+  expect(modalStyles).toContain('.team-details-modal-backdrop { position: fixed;')
+  expect(modalStyles).not.toMatch(/\.(?:lab-admin-shell|lab-workspace|page-content)[^{,\n]*\.team-details-modal/)
+  expect(modalStyles).toMatch(/\.team-details-modal \{[^}]*width: min\(960px, calc\(100vw - 120px\)\)/)
+  expect(modalStyles).toMatch(/\.team-details-modal h2 \{[^}]*font-size: 32px/)
+  expect(modalStyles).toMatch(/\.assignment-problem span \{[^}]*font-size: 16px/)
+  expect(modalStyles).toMatch(/\.assignment-stats dd \{[^}]*font-size: 17px/)
+  expect(modalStyles).toMatch(/\.team-details-lab strong \{[^}]*font-size: 17px/)
+  expect(dialog.getAttribute('aria-modal')).toBe('true')
+  expect(dialog.querySelector(`#${dialog.getAttribute('aria-labelledby')}`).textContent).toBe('Alpha')
+  for (const value of ['Alpha', 'T-001', 'Final / Current Problem', 'WC-02', 'AI Resource Optimization', 'Round 1', 'PS-04', 'Smart Campus Navigation', '420 coins', '1st', 'Wildcard', '300 coins', '5th', 'Lab Allocation', 'Software Lab']) expect(dialog.textContent).toContain(value)
   for (const forbidden of ['FinalResult', 'Top 3', 'Pending', 'Not Placed', 'overall']) expect(dialog.textContent).not.toContain(forbidden)
   act(() => dialog.querySelector('[aria-label="Close details"]').click())
 
   for (const [name, place] of [['Beta', '2nd'], ['Gamma', '3rd'], ['Delta', '4th'], ['Epsilon', '5th']]) {
     await openDetails(name)
-    dialog = host.querySelector('[role="dialog"]')
+    dialog = detailsDialog()
     expect(dialog.textContent).toContain(place)
     act(() => dialog.querySelector('[aria-label="Close details"]').click())
   }
 
   await openDetails('Zeta')
-  dialog = host.querySelector('[role="dialog"]')
+  dialog = detailsDialog()
   expect(dialog.textContent).toContain('Manual Assignment')
   expect(dialog.textContent).toContain('4th')
   act(() => dialog.querySelector('[aria-label="Close details"]').click())
 
   await openDetails('Beta')
-  expect(host.querySelector('[role="dialog"]').textContent).toContain('Not selected')
+  dialog = detailsDialog()
+  const emptyWildcard = dialog.querySelector('.assignment-history-card--wildcard')
+  expect(emptyWildcard.textContent).toContain('Not selected')
+  expect(emptyWildcard.querySelector('.assignment-history-card__body')).toBeNull()
+  expect(emptyWildcard.querySelector('.assignment-stats')).toBeNull()
 })
 
 it('closes team details by button, Escape, backdrop, or navigation without leaking another socket', async () => {
   await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />))
+  document.body.style.overflow = 'scroll'
   await openDetails('Alpha')
-  act(() => Array.from(host.querySelectorAll('[role="dialog"] button')).find(button => button.textContent === 'Close').click())
-  expect(host.querySelector('[role="dialog"]')).toBeNull()
+  expect(document.body.style.overflow).toBe('hidden')
+  act(() => Array.from(detailsDialog().querySelectorAll('button')).find(button => button.textContent === 'Close').click())
+  expect(detailsDialog()).toBeNull()
+  expect(document.body.style.overflow).toBe('scroll')
 
   await openDetails('Alpha')
   act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-  expect(host.querySelector('[role="dialog"]')).toBeNull()
+  expect(detailsDialog()).toBeNull()
 
   await openDetails('Alpha')
-  act(() => host.querySelector('.team-details-modal-backdrop').dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-  expect(host.querySelector('[role="dialog"]')).toBeNull()
+  act(() => detailsDialog().querySelector('[aria-label="Close details"]').click())
+  expect(detailsDialog()).toBeNull()
+
+  await openDetails('Alpha')
+  act(() => document.body.querySelector('.team-details-modal-backdrop').dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+  expect(detailsDialog()).toBeNull()
 
   await openDetails('Alpha')
   act(() => nav('Labs').click())
-  expect(host.querySelector('[role="dialog"]')).toBeNull()
+  expect(detailsDialog()).toBeNull()
+  expect(document.body.style.overflow).toBe('scroll')
   act(() => nav('Team Details').click())
   expect(connectReconnectingSocket).toHaveBeenCalledTimes(1)
 })

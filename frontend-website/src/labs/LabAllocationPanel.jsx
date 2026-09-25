@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import "./LabAllocationPanel.modal.css";
 import { applyLabChange, invalidDrop } from "./labBoard";
 
 const coins = value => value == null ? "Not recorded" : `${Number(value).toLocaleString()} coins`;
@@ -13,13 +15,15 @@ export const ordinal = value => {
 function AssignmentCard({ type, problem, bid, place, assignmentType, selected = true }) {
   const wildcard = type === "Wildcard";
   const placeLabel = assignmentType === "MANUAL_ASSIGNMENT" ? "Manual Assignment" : ordinal(place);
-  return <article className={`assignment-history-card ${wildcard ? "assignment-history-card--wildcard" : ""}`}>
-    <header><span>{type}</span>{!selected && <strong>{wildcard ? "Not selected" : "Not assigned"}</strong>}</header>
-    {selected && <dl>
-      <div><dt>Problem Statement</dt><dd><strong>{problem.problem_number}</strong><span>{problem.problem_title}</span></dd></div>
-      <div><dt>{wildcard ? "Wildcard Bid" : "Winning Bid / Assignment Cost"}</dt><dd><strong>{assignmentType === "MANUAL_ASSIGNMENT" && bid == null ? "Manual Assignment" : coins(bid)}</strong></dd></div>
-      <div><dt>{wildcard ? "Wildcard Place" : "Round 1 Place"}</dt><dd><span className={`assignment-place ${assignmentType === "MANUAL_ASSIGNMENT" ? "assignment-place--manual" : ""}`}>{placeLabel}</span></dd></div>
-    </dl>}
+  return <article className={`assignment-history-card ${wildcard ? "assignment-history-card--wildcard" : ""} ${selected ? "" : "assignment-history-card--empty"}`}>
+    <header><span>{type}</span></header>
+    {selected ? <div className="assignment-history-card__body">
+      <div className="assignment-problem"><strong>{problem.problem_number}</strong><span>{problem.problem_title}</span></div>
+      <dl className="assignment-stats">
+        <div><dt>{wildcard ? "Bid" : "Bid / Cost"}</dt><dd>{coins(bid)}</dd></div>
+        <div><dt>Place</dt><dd className={assignmentType === "MANUAL_ASSIGNMENT" ? "assignment-place--manual" : ""}>{placeLabel}</dd></div>
+      </dl>
+    </div> : <p className="assignment-history-card__empty">{wildcard ? "Not selected" : "Not assigned"}</p>}
   </article>;
 }
 
@@ -134,20 +138,22 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
         {unassigned.length > 0 && <p role="status">These teams still need a lab assignment.</p>}{unassigned.map(teamEntry)}
       </section>
     </>}
-    {selectedTeam && <div className="team-details-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSelectedTeamId(null); }}>
+    {selectedTeam && createPortal(<div className="team-details-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSelectedTeamId(null); }}>
       <section className="team-details-modal" role="dialog" aria-modal="true" aria-labelledby={`team-details-${selectedTeam.id}`}>
-        <header><div><span>Team details</span><h2 id={`team-details-${selectedTeam.id}`}>{selectedTeam.team_name}</h2></div><button ref={closeButton} type="button" className="team-details-modal__x" aria-label="Close details" onClick={() => setSelectedTeamId(null)}>×</button></header>
-        <section className="team-details-final-problem"><span>Final / Current Problem</span>{selectedTeam.final_problem
-          ? <strong>{selectedTeam.final_problem.problem_number} — {selectedTeam.final_problem.problem_title}</strong>
-          : <strong>Not assigned</strong>}</section>
-        <div className="assignment-history-grid">
-          <AssignmentCard type="Round 1" problem={selectedTeam.round1} bid={selectedTeam.round1?.winning_bid} place={selectedTeam.round1?.place} assignmentType={selectedTeam.round1?.assignment_type} selected={Boolean(selectedTeam.round1)} />
-          <AssignmentCard type="Wildcard" problem={selectedTeam.wildcard_history} bid={selectedTeam.wildcard_history?.winning_bid} place={selectedTeam.wildcard_history?.place} selected={Boolean(selectedTeam.wildcard_history?.selected)} />
+        <header><div><span>Team details</span><h2 id={`team-details-${selectedTeam.id}`}>{selectedTeam.team_name}</h2>{selectedTeam.team_code && <small>{selectedTeam.team_code}</small>}</div><button ref={closeButton} type="button" className="team-details-modal__x" aria-label="Close details" onClick={() => setSelectedTeamId(null)}>×</button></header>
+        <div className="team-details-modal__body">
+          <section className="team-details-final-problem"><span>Final / Current Problem</span>{selectedTeam.final_problem
+            ? <div><strong>{selectedTeam.final_problem.problem_number}</strong><b>{selectedTeam.final_problem.problem_title}</b></div>
+            : <b>Not assigned</b>}</section>
+          <div className="assignment-history-grid">
+            <AssignmentCard type="Round 1" problem={selectedTeam.round1} bid={selectedTeam.round1?.winning_bid} place={selectedTeam.round1?.place} assignmentType={selectedTeam.round1?.assignment_type} selected={Boolean(selectedTeam.round1)} />
+            <AssignmentCard type="Wildcard" problem={selectedTeam.wildcard_history} bid={selectedTeam.wildcard_history?.winning_bid} place={selectedTeam.wildcard_history?.place} selected={Boolean(selectedTeam.wildcard_history?.selected)} />
+          </div>
+          <section className="team-details-lab"><span>Lab Allocation</span><strong>{selectedTeam.lab_name || "Not assigned"}</strong></section>
         </div>
-        <section className="team-details-lab"><span>Lab Allocation</span><strong>{selectedTeam.lab_name || "Not assigned"}</strong></section>
         <footer><button type="button" className="secondary-button" onClick={() => setSelectedTeamId(null)}>Close</button></footer>
       </section>
-    </div>}
+    </div>, document.body)}
     {picker && <form className="lab-move-picker" onSubmit={event => { event.preventDefault(); const lab = shown.labs.find(row => row.id === Number(target)); if (lab) void move(picker, lab); }}>
       <h3>Move {picker.team_name}</h3><label>Target lab<select autoFocus value={target} onChange={event => setTarget(event.target.value)}><option value="">Choose lab</option>
         {shown.labs.filter(lab => lab.id !== picker.current_lab_id).map(lab => <option key={lab.id} value={lab.id} disabled={Boolean(invalidDrop(picker, lab))}>{lab.name} · {invalidDrop(picker, lab) || `${lab.occupancy}/${lab.capacity}`}</option>)}</select></label>
