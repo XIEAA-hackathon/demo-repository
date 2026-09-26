@@ -35,6 +35,7 @@ def remaining_capacity(db: Session, problem_id: int) -> int:
 
 def _management_problem_payload(problem: ProblemStatement, assigned_count: int) -> dict:
     source = "EXTERNAL" if problem.round == EXTERNAL_PROBLEM_ROUND else "ROUND1"
+    auction_capacity_remaining = max(0, ROUND1_PROBLEM_CAPACITY - assigned_count)
     return {
         "id": problem.id,
         "problem_number": _display_number(problem),
@@ -45,8 +46,11 @@ def _management_problem_payload(problem: ProblemStatement, assigned_count: int) 
         "source_label": "External" if source == "EXTERNAL" else "Round 1",
         "assigned_team_count": assigned_count,
         "capacity": ROUND1_PROBLEM_CAPACITY,
-        "capacity_remaining": max(0, ROUND1_PROBLEM_CAPACITY - assigned_count),
+        "capacity_remaining": auction_capacity_remaining,
         "is_full": assigned_count >= ROUND1_PROBLEM_CAPACITY,
+        "auction_capacity": ROUND1_PROBLEM_CAPACITY,
+        "auction_capacity_remaining": auction_capacity_remaining,
+        "auction_full": assigned_count >= ROUND1_PROBLEM_CAPACITY,
     }
 
 
@@ -183,13 +187,6 @@ def change_round1_problem_assignment(
                     **snapshot,
                 }
 
-            target_count = assigned_team_count(db, target.id)
-            if target_count >= ROUND1_PROBLEM_CAPACITY:
-                raise Round1AssignmentError(
-                    f"Problem {target.ps_number} is full ({target_count}/{ROUND1_PROBLEM_CAPACITY}). "
-                    "The original assignment was not changed."
-                )
-
             coins_before = team.coins or 0
             if previous_problem_id is not None and new_balance is not None:
                 raise Round1AssignmentError(
@@ -294,7 +291,7 @@ def remaining_problems_payload(db: Session, control: RoundControl) -> dict:
         count = len(problem_teams)
         capacity = max(0, ROUND1_PROBLEM_CAPACITY - count)
         assignment_status = "ASSIGNED" if capacity == 0 else "PARTIAL" if count else "UNASSIGNED"
-        actionable = not control.ended and no_active_auction and capacity > 0
+        can_manage = not control.ended and no_active_auction
         rows.append({
             "id": problem.id,
             "problem_number": _display_number(problem),
@@ -304,6 +301,9 @@ def remaining_problems_payload(db: Session, control: RoundControl) -> dict:
             "assignment_status": assignment_status,
             "assigned_team_count": count,
             "capacity_remaining": capacity,
+            "auction_capacity": ROUND1_PROBLEM_CAPACITY,
+            "auction_capacity_remaining": capacity,
+            "auction_full": capacity == 0,
             "assigned_teams": [
                 {
                     "team_id": team.id,
@@ -313,8 +313,9 @@ def remaining_problems_payload(db: Session, control: RoundControl) -> dict:
                 }
                 for team in problem_teams
             ],
-            "can_rebid": actionable,
-            "can_assign": actionable and bool(eligible),
+            "can_rebid": can_manage and capacity > 0,
+            "can_assign": can_manage and bool(eligible),
+            "manual_assignment_allowed": can_manage and bool(eligible),
         })
     return {
         "problems": rows,
@@ -418,13 +419,6 @@ def manually_assign_problem(
                 f"Unavailable: {', '.join(invalid)}."
             )
 
-        current_count = assigned_team_count(db, problem.id)
-        capacity = max(0, ROUND1_PROBLEM_CAPACITY - current_count)
-        if len(selected) > capacity:
-            raise Round1AssignmentError(
-                f"Problem {problem.ps_number} has room for {capacity} more "
-                f"team{'s' if capacity != 1 else ''}; {len(selected)} were selected."
-            )
         insufficient = [team.team_name for team in selected if (team.coins or 0) < deduction]
         if insufficient:
             raise Round1AssignmentError(

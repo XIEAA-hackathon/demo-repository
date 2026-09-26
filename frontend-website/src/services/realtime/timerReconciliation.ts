@@ -74,20 +74,27 @@ export function deriveServerRemaining(timing: TimerTiming | null | undefined, lo
   // An authoritative snapshot without a deadline is inactive, even if a
   // configured duration or a stale remaining-seconds value is still present.
   if (!Number.isFinite(endsAt)) return 0
+  const authoritativeRemaining = finiteSeconds(valueFrom(timing, 'remaining_seconds', 'remainingSeconds'))
   const rawOffset = valueFrom<number>(timing, 'clock_offset_ms', 'clockOffsetMs')
   const measuredOffset = rawOffset == null ? NaN : Number(rawOffset)
+  let calculatedRemaining: number
   if (Number.isFinite(endsAt) && Number.isFinite(measuredOffset)) {
-    return Math.max(0, Math.ceil((endsAt - (localNow + measuredOffset)) / 1000))
-  }
-  const serverTime = Date.parse(valueFrom<string>(timing, 'server_time', 'serverTime') ?? '')
-  const rawReceivedAt = valueFrom<number>(timing, 'received_at', 'receivedAt')
-  const receivedAt = rawReceivedAt == null ? NaN : Number(rawReceivedAt)
-  if (Number.isFinite(endsAt) && Number.isFinite(serverTime) && Number.isFinite(receivedAt)) {
-    const serverOffset = serverTime - receivedAt
-    return Math.max(0, Math.ceil((endsAt - (localNow + serverOffset)) / 1000))
+    calculatedRemaining = Math.max(0, Math.ceil((endsAt - (localNow + measuredOffset)) / 1000))
+  } else {
+    const serverTime = Date.parse(valueFrom<string>(timing, 'server_time', 'serverTime') ?? '')
+    const rawReceivedAt = valueFrom<number>(timing, 'received_at', 'receivedAt')
+    const receivedAt = rawReceivedAt == null ? NaN : Number(rawReceivedAt)
+    if (Number.isFinite(endsAt) && Number.isFinite(serverTime) && Number.isFinite(receivedAt)) {
+      const serverOffset = serverTime - receivedAt
+      calculatedRemaining = Math.max(0, Math.ceil((endsAt - (localNow + serverOffset)) / 1000))
+    } else {
+      calculatedRemaining = Math.max(0, Math.ceil((endsAt - localNow) / 1000))
+    }
   }
 
-  return Math.max(0, Math.ceil((endsAt - localNow) / 1000))
+  return authoritativeRemaining == null
+    ? calculatedRemaining
+    : Math.min(calculatedRemaining, authoritativeRemaining)
 }
 
 export function projectCountdown(anchor: CountdownAnchor | null, localNow = Date.now()) {

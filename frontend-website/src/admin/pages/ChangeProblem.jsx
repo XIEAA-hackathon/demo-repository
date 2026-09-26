@@ -31,8 +31,8 @@ function ProblemSelect({ problems, currentProblemId, value, onChange, id, disabl
         const options = problems.filter((problem) => problem.source === source && problem.id !== currentProblemId);
         return options.length ? <optgroup key={source} label={label}>
           {options.map((problem) => (
-            <option key={problem.id} value={problem.id} disabled={problem.is_full}>
-              {problemLabel(problem)} — {problem.assigned_team_count}/{problem.capacity}{problem.is_full ? " · FULL" : ""}
+            <option key={problem.id} value={problem.id}>
+              {problemLabel(problem)} — {problem.assigned_team_count} teams assigned{problem.source === "ROUND1" ? ` · auction ${Math.min(problem.assigned_team_count, problem.auction_capacity ?? problem.capacity)}/${problem.auction_capacity ?? problem.capacity}` : ""}
             </option>
           ))}
         </optgroup> : null;
@@ -118,10 +118,10 @@ function AssignmentDialog({ team, problems, initialProblemId, working, onCancel,
             </div>
           </>}
         </dl>
-        {target && <p className="change-problem-capacity-note">Target capacity after this {action}: <strong>{target.assigned_team_count + 1} / {target.capacity}</strong></p>}
+        {target && <p className="change-problem-capacity-note">Teams assigned after this {action}: <strong>{target.assigned_team_count + 1}</strong>{target.source === "ROUND1" ? <> · Auction capacity: <strong>{Math.min(target.assigned_team_count + 1, target.auction_capacity ?? target.capacity)} / {target.auction_capacity ?? target.capacity}</strong></> : null}</p>}
         <footer>
           <button className="secondary-button" disabled={working} onClick={onCancel}>Cancel</button>
-          <button className="primary-button" disabled={working || !targetProblemId || target?.is_full || !balanceValid} onClick={() => onConfirm(targetProblemId, current ? null : parsedBalance)}>
+          <button className="primary-button" disabled={working || !targetProblemId || !balanceValid} onClick={() => onConfirm(targetProblemId, current ? null : parsedBalance)}>
             {working ? "Applying…" : current ? "Confirm Change" : "Confirm Assignment"}
           </button>
         </footer>
@@ -298,8 +298,8 @@ export default function ChangeProblemPage({ realtimeEvent = null }) {
         {data.external_problems.length ? <div className="external-problems-list">
           {data.external_problems.map((problem) => <article key={problem.id}>
             <div><strong>{problemLabel(problem)}</strong><span>{problem.description}</span></div>
-            <span>{problem.assigned_team_count} / {problem.capacity} assigned</span>
-            <b className={problem.is_full ? "is-full" : ""}>{problem.is_full ? "Full" : `${problem.capacity_remaining} available`}</b>
+            <span>{problem.assigned_team_count} teams assigned</span>
+            <b>Manual assignment</b>
           </article>)}
         </div> : <div className="external-problems-empty">
           <strong>No external problems imported</strong>
@@ -310,7 +310,7 @@ export default function ChangeProblemPage({ realtimeEvent = null }) {
       <div className="change-problem-summary" aria-label="Round 1 assignment summary">
         <div><span>Participant teams</span><strong>{data.teams.length}</strong></div>
         <div><span>Without a problem</span><strong>{data.unassigned_teams.length}</strong></div>
-        <div><span>Capacity rule</span><strong>{data.capacity_per_problem} per problem</strong></div>
+        <div><span>Auction capacity</span><strong>{data.capacity_per_problem} per problem</strong></div>
         <div><span>Financial control</span><strong>Optional final balance</strong></div>
       </div>
 

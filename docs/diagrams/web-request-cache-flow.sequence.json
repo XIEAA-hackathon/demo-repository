@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Web Request: Redis Cache Miss",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [960, 600]
+  },
+  "participants": [
+    { "id": "browser", "type": "frontend", "label": "Browser", "sublabel": "web client" },
+    { "id": "api", "type": "backend", "label": "API", "sublabel": "request handler" },
+    { "id": "redis", "type": "database", "label": "Redis", "sublabel": "cache" },
+    { "id": "postgres", "type": "database", "label": "PostgreSQL", "sublabel": "source of truth" }
+  ],
+  "segments": [
+    { "from": 155, "to": 225, "label": "Request" },
+    { "from": 230, "to": 315, "label": "Cache lookup" },
+    { "from": 320, "to": 430, "label": "Miss fallback" },
+    { "from": 435, "to": 500, "label": "Response" }
+  ],
+  "messages": [
+    { "id": "api-request", "from": "browser", "to": "api", "y": 175, "label": "HTTP request", "variant": "emphasis" },
+    { "id": "cache-read", "from": "api", "to": "redis", "y": 250, "label": "GET cache key", "variant": "default" },
+    { "id": "cache-miss", "from": "redis", "to": "api", "y": 290, "label": "cache miss", "variant": "return" },
+    { "id": "database-query", "from": "api", "to": "postgres", "y": 345, "label": "query data", "variant": "emphasis" },
+    { "id": "database-result", "from": "postgres", "to": "api", "y": 385, "label": "rows", "variant": "return" },
+    { "id": "cache-fill", "from": "api", "to": "redis", "y": 420, "label": "SET cache value + TTL", "variant": "dashed" },
+    { "id": "api-response", "from": "api", "to": "browser", "y": 465, "label": "HTTP response", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "api", "from": 170, "to": 475, "type": "backend" },
+    { "participant": "redis", "from": 245, "to": 300, "type": "database" },
+    { "participant": "postgres", "from": 340, "to": 395, "type": "database" }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Cache hit",
+      "items": [
+        "Redis returns the cached value",
+        "The API skips PostgreSQL and responds immediately"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Cache miss",
+      "items": [
+        "The API queries PostgreSQL as the source of truth",
+        "The result is stored in Redis before the response returns"
+      ]
+    }
+  ]
+}

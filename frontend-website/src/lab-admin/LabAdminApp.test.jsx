@@ -111,6 +111,30 @@ it('uses Team Details and Labs navigation and renders a lightweight presence-ali
   expect(connectReconnectingSocket).toHaveBeenCalledTimes(1)
 })
 
+it('renders all seven teams sharing one Round 1 problem without truncation', async () => {
+  const sharedProblem = { id: 90, number: 'PS-90', title: 'Shared challenge' }
+  const sharedTeams = Array.from({ length: 7 }, (_, index) => detailTeam(index + 1, `Shared ${index + 1}`, null, {
+    effective_problem: sharedProblem,
+    final_problem: { id: 90, problem_number: 'PS-90', problem_title: 'Shared challenge' },
+    original_problem: sharedProblem,
+    round1: { id: 90, problem_number: 'PS-90', problem_title: 'Shared challenge', winning_bid: null, assignment_type: 'MANUAL_ASSIGNMENT', place: null },
+  }))
+  vi.mocked(getLabAllocation).mockReset().mockResolvedValue({
+    ...baseBoard, labs: [], teams: sharedTeams, team_count: 7,
+    eligible_team_count: 7, assigned_count: 0, unassigned_count: 7,
+    unassigned_team_ids: sharedTeams.map(team => team.id),
+  })
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />))
+
+  expect(host.querySelectorAll('.team-allotment-row')).toHaveLength(7)
+  expect(summaryValue('Problem Assigned')).toBe('7 / 7')
+  for (const team of sharedTeams) {
+    await openDetails(team.team_name)
+    expect(detailsDialog().textContent).toContain('PS-90')
+    act(() => detailsDialog().querySelector('[aria-label="Close details"]').click())
+  }
+})
+
 it.each([
   ['no teams', [], '0 / 6'],
   ['only a Wildcard team and a team retaining Round 1', [1, 2], '2 / 6'],

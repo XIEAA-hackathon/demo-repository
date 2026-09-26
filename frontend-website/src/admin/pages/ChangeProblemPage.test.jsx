@@ -123,4 +123,28 @@ describe('ChangeProblemPage refresh boundaries', () => {
 
     expect(getRoundOneAssignments).toHaveBeenCalledTimes(1)
   })
+
+  it('allows an admin correction to an auction-full problem', async () => {
+    const fullProblem = {
+      ...problem(12, '12', 'Auction full'), assigned_team_count: 7,
+      capacity_remaining: 0, is_full: true, auction_capacity: 5,
+      auction_capacity_remaining: 0, auction_full: true,
+    }
+    getRoundOneAssignments.mockResolvedValue({ ...structuredClone(initial), problems: [...initial.problems, fullProblem] })
+    changeRoundOneAssignment.mockResolvedValue({ ...structuredClone(updated), message: 'Changed to auction-full problem.' })
+    await render()
+
+    const select = host.querySelector('#target-problem-1')
+    const fullOption = [...select.options].find(option => option.value === '12')
+    expect(fullOption.disabled).toBe(false)
+    expect(fullOption.textContent).toContain('7 teams assigned · auction 5/5')
+    await act(async () => {
+      select.value = '12'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await act(async () => button('Change').click())
+    expect(button('Confirm Change').disabled).toBe(false)
+    expect(host.textContent).toContain('Teams assigned after this change: 8')
+    expect(host.textContent).toContain('Auction capacity: 5 / 5')
+  })
 })

@@ -2,11 +2,12 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { RoundControlPage } from './App'
-import { downloadRoundOneAssignments, getRoundControl, startRoundBidding } from './services/api'
+import { assignRoundOneProblem, downloadRoundOneAssignments, getRoundControl, startRoundBidding } from './services/api'
 
 vi.mock('./services/api', async (original) => ({
   ...await original(),
   downloadRoundOneAssignments: vi.fn(),
+  assignRoundOneProblem: vi.fn(),
   getRoundControl: vi.fn(),
   startRoundBidding: vi.fn(),
 }))
@@ -85,4 +86,48 @@ it('generates the Round 1 export exactly once when clicked after completion', as
   await act(async () => download.click())
 
   expect(downloadRoundOneAssignments).toHaveBeenCalledTimes(1)
+})
+
+it('keeps manual assignment unlimited after auction capacity is full', async () => {
+  const eligibleTeams = Array.from({ length: 7 }, (_, index) => ({
+    team_id: index + 20, team_name: `Eligible ${index + 1}`, coins: 5000,
+  }))
+  getRoundControl.mockResolvedValue({
+    ...initial,
+    status: 'READY',
+    current_problem: null,
+    event: { event_state: 'WAITING' },
+    remaining_problems: {
+      eligible_teams: eligibleTeams,
+      unassigned_team_count: 7,
+      suggested_deduction: 100,
+      round1_winning_bid_sum: 500,
+      round1_winning_bid_count: 1,
+      problems: [{
+        id: 9, problem_number: '9', title: 'Shared challenge', assigned_team_count: 7,
+        assigned_teams: [], assignment_status: 'ASSIGNED', auction_capacity: 5,
+        auction_capacity_remaining: 0, auction_full: true, capacity_remaining: 0,
+        can_rebid: false, can_assign: true,
+      }],
+    },
+  })
+  await render(null)
+
+  const rebid = buttons().find(button => button.textContent === 'Re-bid')
+  const assign = buttons().find(button => button.textContent === 'Assign')
+  expect(rebid.disabled).toBe(true)
+  expect(assign.disabled).toBe(false)
+  expect(host.textContent).toContain('7 teams')
+  expect(host.textContent).toContain('Auction Full')
+
+  await act(async () => assign.click())
+  const checkboxes = [...host.querySelectorAll('.round-team-selector input[type="checkbox"]')]
+  expect(checkboxes).toHaveLength(7)
+  for (const checkbox of checkboxes) {
+    expect(checkbox.disabled).toBe(false)
+    await act(async () => checkbox.click())
+  }
+  expect(host.querySelector('.round-team-selector legend').textContent).toContain('7 selected')
+  expect(checkboxes.every(checkbox => !checkbox.disabled)).toBe(true)
+  expect(assignRoundOneProblem).not.toHaveBeenCalled()
 })

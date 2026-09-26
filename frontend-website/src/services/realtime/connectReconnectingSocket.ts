@@ -40,6 +40,8 @@ export function connectReconnectingSocket<T>({
     if (!token || stopped) return
 
     onStatus?.(attempt > 0 ? 'reconnecting' : 'connecting')
+    clockOffsetMs = undefined
+    bestRoundTripMs = Number.POSITIVE_INFINITY
     socket = new WebSocket(`${url}?token=${encodeURIComponent(token)}`)
     socket.onopen = () => {
       const recovered = attempt > 0

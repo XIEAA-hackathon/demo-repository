@@ -55,7 +55,7 @@ export default function WildcardSelectionPage() {
   if (wildcard?.status === 'eliminated') return <div className="stack"><PageHeading eyebrow="Wildcard · Result" title="Outside the qualifying slots" /><Card className="center-card"><p>Your slot bid did not finish in the top {wildcard.slotCount ?? dashboard.gameConfig.wildcardSlots}.</p></Card></div>
   if (wildcard?.status !== 'qualified') return <div className="stack"><PageHeading eyebrow="Wildcard · Problem selection" title="Selection in progress" /><Card className="center-card"><WaitingState text="Qualified teams are selecting their problems in rank order." /></Card></div>
   if (!wildcard.isSelectionTurn) return <div className="stack"><PageHeading eyebrow={`Wildcard · Rank #${wildcard.rank}`} title="Your selection slot is secured" /><Card className="center-card"><h2>{wildcard.currentSelectionTeam ?? 'The next team'} is choosing now</h2><p>Your winning bid was {wildcard.winningBid} coins. Your team’s balance has been updated.</p><WaitingState text={`Waiting for Rank #${wildcard.currentSelectionRank ?? 1} to choose.`} /></Card></div>
-  const selectionTiming = { ...dashboard.timing, startedAt: wildcard.selectionStartedAt, endsAt: wildcard.selectionEndsAt }
+  const selectionTiming = { ...dashboard.timing, startedAt: wildcard.selectionStartedAt, endsAt: wildcard.selectionEndsAt, remainingSeconds: wildcard.selectionRemainingSeconds }
   return (
     <div className="stack">
       <PageHeading eyebrow={`Wildcard · Rank #${wildcard.rank}`} title="Choose your final problem">It is your turn. Once confirmed, the next ranked team can choose.</PageHeading>

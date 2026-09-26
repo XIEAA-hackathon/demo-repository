@@ -29,6 +29,7 @@ tests/*
 !tests/test_bid_concurrency_safety.py
 !tests/test_startup_safety.py
 !tests/test_round1_preview_expiry.py
+!tests/test_round1_manual_assignment.py
 !tests/test_submissions.py
 !tests/test_wildcard_final_choice.py
 !tests/test_auth_role_separation.py
