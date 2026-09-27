@@ -34,7 +34,8 @@ build/
 coverage/
 *.tsbuildinfo
 deploy/*.zip
-
+/tests
+/docs
 <<<<<<< HEAD
 =======
 # Development artifacts live on the full-backup main branch, not main1.
