@@ -34,56 +34,32 @@ build/
 coverage/
 *.tsbuildinfo
 deploy/*.zip
-/tests
-/docs
-<<<<<<< HEAD
-=======
-# Development artifacts live on the full-backup main branch, not main1.
-Backend/tests/*
-!Backend/tests/conftest.py
-!Backend/tests/test_lab_allocation.py
-!Backend/tests/test_bid_increment_input.py
-!Backend/tests/test_websocket_pool.py
-!Backend/tests/test_bid_concurrency_safety.py
-!Backend/tests/test_startup_safety.py
-!Backend/tests/test_round1_preview_expiry.py
-!Backend/tests/test_submissions.py
-!Backend/tests/test_wildcard_final_choice.py
-!Backend/tests/test_auth_role_separation.py
-!Backend/tests/test_admin_export_performance.py
-!Backend/requirements-dev.txt
+
+# Tests / local development
+/tests/
+/Backend/tests/
 frontend-website/src/**/*.test.*
-!frontend-website/src/participant/components/BidIncrementForm.test.tsx
-!frontend-website/src/participant/components/ParticipantLayout.test.tsx
-!frontend-website/src/services/realtime/timerReconciliation.test.tsx
-!frontend-website/src/admin/RoundControlPage.test.jsx
-!frontend-website/src/participant/PreviewRealtime.test.tsx
-!frontend-website/src/labs/LabAllocationPanel.test.jsx
-!frontend-website/src/lab-admin/LabAdminApp.test.jsx
-!frontend-website/src/admin/SubmissionAdminPage.test.jsx
-!frontend-website/src/admin/pages/ChangeProblemPage.test.jsx
-!frontend-website/src/admin/AdminApplication.test.jsx
-!frontend-website/src/participant/auth/AuthContext.test.ts
-!frontend-website/src/leaderboard/LeaderboardDisplay.test.jsx
-!frontend-website/src/authPortalEndpoints.test.ts
-!frontend-website/src/participant/services/apiParticipantService.test.ts
-!frontend-website/src/participant/CodingFlow.test.tsx
+frontend-website/src/**/*.spec.*
+
+# Generated Graphify data
+/graphify-out/
+
+# Local Codex configuration
+/.codex/
+
+# Other development artifacts
+/docs/
 load_test/
 outputs/
-/graphify-out
 .impeccable/
-/tests
-/docs
+frontend-admin/
+frontend-participant/
 TEST_AND_AUDIT_REPORT.md
 demo.example.txt
 external-problems-demo.xlsx
 websocket_test.html
 
->>>>>>> 50b6b1d (fix-live Stale State)
 # Logs and local tooling
-tests/*
-
-
 work/
 logs/
 tmp/
@@ -99,12 +75,3 @@ pnpm-debug.log*
 *.suo
 *.swp
 *.exe
-
-# Historical/generated content excluded from the test branch
-outputs/
-.impeccable/
-frontend-admin/
-frontend-participant/
-TEST_AND_AUDIT_REPORT.md
-demo.example.txt
-websocket_test.html
