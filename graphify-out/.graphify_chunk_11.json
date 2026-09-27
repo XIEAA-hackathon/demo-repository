@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    {"id":"frontend_website_src_components_home_royalty_royalty_bonus_poster","label":"Royalty Bonus Poster","file_type":"image","source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},
+    {"id":"frontend_website_src_components_home_royalty_royalty_bonus","label":"Royalty Bonus","file_type":"concept","source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},
+    {"id":"frontend_website_src_components_home_royalty_remaining_alumnicoins","label":"Remaining AlumniCoins","file_type":"concept","source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},
+    {"id":"frontend_website_src_components_home_royalty_one_point_per_hundred_coins","label":"One Point per 100 AlumniCoins","file_type":"concept","source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},
+    {"id":"frontend_website_src_components_home_royalty_maximum_ten_points","label":"Maximum Royalty Bonus of 10 Points","file_type":"concept","source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},
+    {"id":"frontend_website_src_components_home_royalty_save_coins_to_score_higher","label":"Save Coins to Score Higher","file_type":"rationale","source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}
+  ],
+  "edges": [
+    {"source":"frontend_website_src_components_home_royalty_royalty_bonus_poster","target":"frontend_website_src_components_home_royalty_royalty_bonus","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"weight":1.0},
+    {"source":"frontend_website_src_components_home_royalty_royalty_bonus","target":"frontend_website_src_components_home_royalty_remaining_alumnicoins","relation":"shares_data_with","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"weight":1.0},
+    {"source":"frontend_website_src_components_home_royalty_royalty_bonus","target":"frontend_website_src_components_home_royalty_one_point_per_hundred_coins","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"weight":1.0},
+    {"source":"frontend_website_src_components_home_royalty_royalty_bonus","target":"frontend_website_src_components_home_royalty_maximum_ten_points","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"weight":1.0},
+    {"source":"frontend_website_src_components_home_royalty_save_coins_to_score_higher","target":"frontend_website_src_components_home_royalty_royalty_bonus","relation":"rationale_for","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\royalty.png","source_location":null,"weight":1.0}
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

@@ -1,0 +1,16 @@
+{
+  "nodes": [
+    {"id":"frontend_website_src_components_home_casinobg_casino_interior","label":"Luxury Casino Interior","file_type":"image","source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\casinobg.jpg","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},
+    {"id":"frontend_website_src_components_home_casinobg_roulette_tables","label":"Roulette Tables","file_type":"concept","source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\casinobg.jpg","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},
+    {"id":"frontend_website_src_components_home_casinobg_slot_machines","label":"Slot Machines","file_type":"concept","source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\casinobg.jpg","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},
+    {"id":"frontend_website_src_components_home_casinobg_luxury_gaming_atmosphere","label":"Luxury Gaming Atmosphere","file_type":"concept","source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\casinobg.jpg","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}
+  ],
+  "edges": [
+    {"source":"frontend_website_src_components_home_casinobg_casino_interior","target":"frontend_website_src_components_home_casinobg_roulette_tables","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\casinobg.jpg","source_location":null,"weight":1.0},
+    {"source":"frontend_website_src_components_home_casinobg_casino_interior","target":"frontend_website_src_components_home_casinobg_slot_machines","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\casinobg.jpg","source_location":null,"weight":1.0},
+    {"source":"frontend_website_src_components_home_casinobg_casino_interior","target":"frontend_website_src_components_home_casinobg_luxury_gaming_atmosphere","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.85,"source_file":"C:\\Users\\ADMIN\\Videos\\demo-repository\\frontend-website\\src\\components\\home\\casinobg.jpg","source_location":null,"weight":1.0}
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

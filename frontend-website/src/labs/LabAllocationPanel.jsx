@@ -44,8 +44,9 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
   const shown = pending ? applyLabChange(board, pending) : board;
   const editable = canMove && Boolean(board?.can_move) && !working;
   const assigned = (shown?.labs || []).flatMap(lab => lab.teams.map(team => ({ ...team, lab_name: lab.name })));
+  const allocatedTeamIds = new Set(assigned.map(team => team.id));
   const teams = (shown?.teams || []).map(team => assigned.find(row => row.id === team.id) || team);
-  const unassigned = teams.filter(team => shown.unassigned_team_ids.includes(team.id));
+  const unassigned = teams.filter(team => !allocatedTeamIds.has(team.id));
   const problemAssigned = teams.filter(team => team.final_problem != null).length;
   const selectedTeam = teams.find(team => team.id === selectedTeamId) || null;
 
@@ -93,7 +94,7 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
   if (loading && !board) return <p className="lab-panel-state">Loading lab allocation…</p>;
   if (!shown) return <p className="lab-inline-error" role="alert">{error || "Lab allocation unavailable."}</p>;
   const filtered = teams.filter(team => {
-    const allocated = Boolean(team.current_lab_id);
+    const allocated = allocatedTeamIds.has(team.id);
     const searchable = [team.team_name, team.team_code, team.round1?.problem_number, team.round1?.problem_title,
       team.wildcard_history?.problem_number, team.wildcard_history?.problem_title,
       team.final_problem?.problem_number, team.final_problem?.problem_title,

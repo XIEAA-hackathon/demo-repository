@@ -16,6 +16,11 @@ function Harness({ initial = board, onMove, view = 'labs' }) {
 }
 const render = async props => act(async () => root.render(<Harness {...props} />));
 const bucket = name => host.querySelector(`article[aria-label="${name}"]`);
+const teamNames = () => [...host.querySelectorAll('.team-allotment-row .team-identity strong')].map(row => row.textContent);
+function selectValue(element, value) {
+  Object.getOwnPropertyDescriptor(element.constructor.prototype, 'value').set.call(element, value);
+  element.dispatchEvent(new Event(element.type === 'search' ? 'input' : 'change', { bubbles: true }));
+}
 function drop(teamId, target) {
   const event = new Event('drop', { bubbles: true, cancelable: true });
   Object.defineProperty(event, 'dataTransfer', { value: { getData: () => String(teamId) } });
@@ -64,6 +69,52 @@ it('keeps team rows lightweight while searching already-loaded problem data', as
   const input = host.querySelector('input');
   act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'WC-7'); input.dispatchEvent(new Event('input', { bubbles: true })); });
   expect(host.textContent).toContain('Alpha'); expect(host.textContent).not.toContain('Pending team');
+});
+it('filters allocation status from visible lab membership and combines it with search', async () => {
+  const teamA = { ...team, team_name: 'Team A', current_lab_id: undefined };
+  const teamB = { ...pending, id: 3, team_name: 'Team B' };
+  const teamC = { ...pending, id: 4, team_name: 'Team C' };
+  const initial = {
+    ...board,
+    teams: [teamA, teamB, teamC],
+    labs: [
+      { ...board.labs[0], name: 'CC Lab', occupancy: 1, teams: [{ ...teamA, current_lab_id: 1 }] },
+      { ...board.labs[1], name: 'Network Lab', occupancy: 1, teams: [{ ...teamB, current_lab_id: 2 }] },
+    ],
+    unassigned_team_ids: [teamC.id],
+  };
+  await render({ initial, view: 'teams' });
+  const search = host.querySelector('input[type="search"]');
+  const status = host.querySelector('select');
+
+  expect(teamNames()).toEqual(['Team A', 'Team B', 'Team C']);
+  expect(host.querySelector('.team-allotment-row').textContent).toContain('CC Lab');
+  act(() => selectValue(status, 'allocated'));
+  expect(teamNames()).toEqual(['Team A', 'Team B']);
+  act(() => selectValue(search, 'Team A'));
+  expect(teamNames()).toEqual(['Team A']);
+  act(() => selectValue(search, 'Team C'));
+  expect(teamNames()).toEqual([]);
+  act(() => selectValue(status, 'pending'));
+  expect(teamNames()).toEqual(['Team C']);
+  act(() => selectValue(search, ''));
+  expect(teamNames()).toEqual(['Team C']);
+});
+it('keeps realtime lab additions and moves in the Allocated filter without a reload', async () => {
+  let current = board;
+  const renderCurrent = () => act(async () => root.render(<LabAllocationPanel board={current} view="teams" />));
+  await renderCurrent();
+  act(() => selectValue(host.querySelector('select'), 'allocated'));
+  expect(teamNames()).toEqual(['Alpha']);
+
+  current = applyLabChange(current, { team_id: 2, assignment_id: 2, version: 1, lab: { id: 2, name: 'Lab B' } });
+  await renderCurrent();
+  expect(teamNames()).toEqual(['Alpha', 'Pending team']);
+
+  current = applyLabChange(current, { team_id: 1, assignment_id: 1, version: 2, lab: { id: 3, name: 'Lab C' } });
+  await renderCurrent();
+  expect(teamNames()).toEqual(['Alpha', 'Pending team']);
+  expect(host.querySelectorAll('.team-allotment-row')[0].textContent).toContain('Lab C');
 });
 it('ignores a stale move delta', () => {
   const updated = applyLabChange(board, { team_id: 1, assignment_id: 1, version: 3, lab: { id: 3, name: 'Lab C' } });

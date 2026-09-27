@@ -1,0 +1,155 @@
+{
+  "nodes": [
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_final_registration_export_preview",
+      "label": "Final Registration Export Preview",
+      "file_type": "image",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_thirty_team_registration_records",
+      "label": "30-Team Registration Records",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_leader_login_accounts",
+      "label": "Leader Login Accounts",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_round_1_problem_assignments",
+      "label": "Round 1 Problem Assignments",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_wildcard_problem_assignments",
+      "label": "Wildcard Problem Assignments",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_final_problem_assignments",
+      "label": "Final Problem Assignments",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_final_registration_export_preview",
+      "target": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_thirty_team_registration_records",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_final_registration_export_preview",
+      "target": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_leader_login_accounts",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_final_registration_export_preview",
+      "target": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_round_1_problem_assignments",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_final_registration_export_preview",
+      "target": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_wildcard_problem_assignments",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_final_registration_export_preview",
+      "target": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_final_problem_assignments",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_thirty_team_registration_records",
+      "target": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_leader_login_accounts",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_final_problem_assignments",
+      "target": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_round_1_problem_assignments",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_final_problem_assignments",
+      "target": "outputs_hackathon_simulation_20260825_simulation_final_registration_export_preview_wildcard_problem_assignments",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_final_registration_export-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

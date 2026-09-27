@@ -49,6 +49,7 @@ Backend/tests/*
 !Backend/requirements-dev.txt
 frontend-website/src/**/*.test.*
 !frontend-website/src/participant/components/BidIncrementForm.test.tsx
+!frontend-website/src/participant/components/ParticipantLayout.test.tsx
 !frontend-website/src/services/realtime/timerReconciliation.test.tsx
 !frontend-website/src/admin/RoundControlPage.test.jsx
 !frontend-website/src/participant/PreviewRealtime.test.tsx
@@ -71,7 +72,7 @@ external-problems-demo.xlsx
 websocket_test.html
 
 # Logs and local tooling
-graphify-out/
+
 work/
 *.log
 npm-debug.log*

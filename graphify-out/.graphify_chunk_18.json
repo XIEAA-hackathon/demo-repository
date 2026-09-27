@@ -1,0 +1,83 @@
+{
+  "nodes": [
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_wildcard_problems_preview_wildcard_problem_catalog",
+      "label": "Wildcard Problem Catalog",
+      "file_type": "image",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_wildcard_problems-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_wildcard_problems_preview_adaptive_relief_routing",
+      "label": "Adaptive Relief Routing",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_wildcard_problems-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_wildcard_problems_preview_offline_medical_triage",
+      "label": "Offline Medical Triage",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_wildcard_problems-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "outputs_hackathon_simulation_20260825_simulation_wildcard_problems_preview_community_signal_mesh",
+      "label": "Community Signal Mesh",
+      "file_type": "concept",
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_wildcard_problems-preview.png",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_wildcard_problems_preview_wildcard_problem_catalog",
+      "target": "outputs_hackathon_simulation_20260825_simulation_wildcard_problems_preview_adaptive_relief_routing",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_wildcard_problems-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_wildcard_problems_preview_wildcard_problem_catalog",
+      "target": "outputs_hackathon_simulation_20260825_simulation_wildcard_problems_preview_offline_medical_triage",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_wildcard_problems-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "outputs_hackathon_simulation_20260825_simulation_wildcard_problems_preview_wildcard_problem_catalog",
+      "target": "outputs_hackathon_simulation_20260825_simulation_wildcard_problems_preview_community_signal_mesh",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "C:\\Users\\ADMIN\\Videos\\demo-repository\\outputs\\hackathon-simulation-20260825\\simulation_wildcard_problems-preview.png",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}
