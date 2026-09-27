@@ -30,9 +30,13 @@ venv/
 node_modules/
 dist/
 dist-ssr/
+build/
+coverage/
 *.tsbuildinfo
 deploy/*.zip
 
+<<<<<<< HEAD
+=======
 # Development artifacts live on the full-backup main branch, not main1.
 Backend/tests/*
 !Backend/tests/conftest.py
@@ -65,15 +69,22 @@ frontend-website/src/**/*.test.*
 !frontend-website/src/participant/CodingFlow.test.tsx
 load_test/
 outputs/
+/graphify-out
 .impeccable/
+/tests
+/docs
 TEST_AND_AUDIT_REPORT.md
 demo.example.txt
 external-problems-demo.xlsx
 websocket_test.html
 
+>>>>>>> 50b6b1d (fix-live Stale State)
 # Logs and local tooling
 
 work/
+logs/
+tmp/
+temp/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -85,3 +96,12 @@ pnpm-debug.log*
 *.suo
 *.swp
 *.exe
+
+# Historical/generated content excluded from the test branch
+outputs/
+.impeccable/
+frontend-admin/
+frontend-participant/
+TEST_AND_AUDIT_REPORT.md
+demo.example.txt
+websocket_test.html
