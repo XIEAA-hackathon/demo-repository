@@ -81,6 +81,8 @@ websocket_test.html
 
 >>>>>>> 50b6b1d (fix-live Stale State)
 # Logs and local tooling
+tests/*
+
 
 work/
 logs/
