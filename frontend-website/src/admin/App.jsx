@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRoundControlSnapshot } from "./useRoundControlSnapshot";
 import Login from "./pages/Login";
 import ChangeProblemPage from "./pages/ChangeProblem";
 import LabConfiguration from "./components/LabConfiguration";
@@ -11,7 +12,7 @@ import {
   getProblemStatements, getTeamCredentials, getTeams, hasToken, logout, pauseTimer,
   importRegistrations, removeTime, resetParticipantPassword, resumeTimer,
   resetRegistrationCredentials, getImportedParticipantAccounts, setImportedParticipantPassword,
-  updateAdminConfig, createTeamCredentials, getRoundControl, importRoundProblems, downloadRoundProblemSample,
+  updateAdminConfig, createTeamCredentials, importRoundProblems, downloadRoundProblemSample,
   downloadRoundOneAssignments, downloadWildcardAssignments,
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
   assignRoundOneProblem, rebidRoundOneProblem, endRoundOne, openWildcardApplications, closeWildcardApplications,
@@ -114,6 +115,7 @@ export function AdminApplication({ onLogout }) {
   const [wildcardEvent, setWildcardEvent] = useState(null);
   const [submissionEvent, setSubmissionEvent] = useState(null);
   const loadInFlight = useRef(null);
+  const loadPending = useRef(false);
   const teamLoadInFlight = useRef(null);
   const teamLoadPending = useRef(false);
   const problemLoadInFlight = useRef(null);
@@ -122,7 +124,7 @@ export function AdminApplication({ onLogout }) {
   const lastEventVersion = useRef(0);
 
   const load = useCallback(() => {
-    if (loadInFlight.current) return loadInFlight.current;
+    if (loadInFlight.current) { loadPending.current = true; return loadInFlight.current; }
     const startedAt = Date.now();
     const requestRevision = { ...realtimeRevision.current };
     const request = (async () => {
@@ -135,7 +137,7 @@ export function AdminApplication({ onLogout }) {
         const eventStateFresh = fulfilled(eventStateResult);
 
         if (fulfilled(teamResult) && shouldApplyHttpSnapshot(requestRevision.teams, realtimeRevision.current.teams)) setTeams(teamResult.value);
-        if (fulfilled(problemResult)) setProblems(problemResult.value);
+        if (fulfilled(problemResult) && shouldApplyHttpSnapshot(requestRevision.state, realtimeRevision.current.state)) setProblems(problemResult.value);
         if (fulfilled(bidResult) && shouldApplyHttpSnapshot(requestRevision.bids, realtimeRevision.current.bids)) setBids(bidResult.value);
         if (fulfilled(configResult)) setConfig(configResult.value);
 
@@ -166,7 +168,10 @@ export function AdminApplication({ onLogout }) {
       finally { setLoading(false); }
     })();
     loadInFlight.current = request;
-    void request.finally(() => { if (loadInFlight.current === request) loadInFlight.current = null; });
+    void request.finally(() => {
+      if (loadInFlight.current === request) loadInFlight.current = null;
+      if (loadPending.current) { loadPending.current = false; void load(); }
+    });
     return request;
   }, []);
 
@@ -279,12 +284,20 @@ export function AdminApplication({ onLogout }) {
       queueTeamRefresh();
     };
     const disconnect = connectAuctionSocket({
-      onStatus: (status) => { setSocketStatus(status); if (status === "reconnected") { lastEventVersion.current = 0; queueLoad(); } },
+      onStatus: (status) => { setSocketStatus(status); if (status === "reconnected") {
+        lastEventVersion.current = 0; realtimeRevision.current.state += 1;
+        const event = { type: "reconnected" }; setAssignmentEvent(event); setWildcardEvent(event); queueLoad();
+      } },
       onMessage: (message) => {
         const previousVersion = lastEventVersion.current;
         if (message.version > 0 && previousVersion > 0 && message.version < previousVersion) return;
         if (message.version > 0) lastEventVersion.current = message.version;
         if (previousVersion > 0 && message.version > previousVersion + 1) queueLoad();
+        if (["round_updated", "wildcard_updated"].includes(message.type) && message.payload?.action === "event_reset") {
+          realtimeRevision.current.state += 1; realtimeRevision.current.bids += 1; realtimeRevision.current.teams += 1;
+          setAssignmentEvent(message); setWildcardEvent(message);
+          setProblems([]); setBids([]); queueLoad(); return;
+        }
         if (message.type === "bid_updated") {
           const delta = parseBidDelta(message.payload || {});
           if (!delta) return;
@@ -347,7 +360,13 @@ export function AdminApplication({ onLogout }) {
         if (message.type === "lab_assignment_changed") { setLabEvent(message); return; }
         if (message.type === "submission_updated") { setSubmissionEvent(message); return; }
         if (["event_snapshot", "event_state_changed", "timer_sync"].includes(message.type) && message.payload?.event_state) {
-          if (message.type !== "timer_sync") setAssignmentEvent(message);
+          if (message.type !== "timer_sync") {
+            setAssignmentEvent(message); setWildcardEvent(message);
+            if (message.payload.event_state === "WAITING") {
+              realtimeRevision.current.bids += 1; realtimeRevision.current.teams += 1;
+              setProblems([]); setBids([]);
+            }
+          }
           realtimeRevision.current.state += 1;
           const syncedAt = Date.now();
           setState((current) => ({ ...current, ...message.payload, timing: { ...message.payload.timing, received_at: syncedAt } }));
@@ -373,6 +392,10 @@ export function AdminApplication({ onLogout }) {
   const action = async (operation, success) => {
     try { setError(""); setNotice(""); await operation(); setNotice(success); await load(); }
     catch (cause) { setError(cause.message || "Action failed."); }
+  };
+  const syncAfterMutation = async () => {
+    realtimeRevision.current.state += 1; realtimeRevision.current.bids += 1; realtimeRevision.current.teams += 1;
+    return load();
   };
   if (loading) return <div className="loading-screen"><div className="loader" />Loading live control center…</div>;
 
@@ -409,7 +432,7 @@ export function AdminApplication({ onLogout }) {
           {page === "leaderboard-users" && <ManagedUsersPage kind="leaderboard" />}
           {page === "teams" && <Teams teams={teams} onAction={action} />}
           {page === "imports" && <RegistrationImport onAction={action} />}
-          {page === "recovery" && <RecoveryPage onGlobalSync={load} onNavigate={setPage} />}
+          {page === "recovery" && <RecoveryPage onGlobalSync={syncAfterMutation} onNavigate={setPage} />}
         </div>
       </main>
     </div>
@@ -494,7 +517,6 @@ function LabAllocationAdminPage({ revision, realtimeEvent }) {
 
 export function RoundControlPage({ round, state, config, remaining, onConfig, realtimeEvent }) {
   const isWildcard = round === "wildcard";
-  const [roundData, setData] = useState(null);
   useEffect(() => {
     if (realtimeEvent?.type !== "bid_updated") return;
     const delta = parseBidDelta(realtimeEvent.payload || {});
@@ -503,13 +525,6 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
       ? { ...current, highest_bid: delta.amount, highest_team: delta.teamName } : current);
   }, [realtimeEvent]);
   const liveRound = state?.rounds?.[isWildcard ? "WILDCARD" : "ROUND1"];
-  const liveUpdatedAt = Date.parse(state?.last_state_update || state?.timing?.server_time || "");
-  const loadedUpdatedAt = Date.parse(roundData?.event?.last_state_update || roundData?.event?.timing?.server_time || "");
-  // Apply the round status carried by the expiry event immediately. An older
-  // in-flight HTTP response must not undo it while round details refresh.
-  const data = roundData && liveRound && liveUpdatedAt >= loadedUpdatedAt
-    ? { ...roundData, ...liveRound, event: state }
-    : roundData;
   const [file, setFile] = useState(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
@@ -519,21 +534,24 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
   const [assignmentDeduction, setAssignmentDeduction] = useState("");
   const [assignmentStage, setAssignmentStage] = useState("select");
   const [endConfirming, setEndConfirming] = useState(false);
-  const loadRoundInFlight = useRef(null);
-  const loadRound = useCallback(() => {
-    if (loadRoundInFlight.current) return loadRoundInFlight.current;
-    const request = getRoundControl(round)
-      .then((result) => {
-        setData(current => result.status === "BIDDING" && current?.status === "BIDDING"
-          && current.current_problem?.id === result.current_problem?.id && current.highest_bid > (result.highest_bid || 0)
-          ? { ...result, highest_bid: current.highest_bid, highest_team: current.highest_team } : result);
-        setError(""); return true;
-      })
-      .catch((cause) => { setError(cause.message || "Round controls could not be loaded."); return false; });
-    loadRoundInFlight.current = request;
-    void request.finally(() => { if (loadRoundInFlight.current === request) loadRoundInFlight.current = null; });
-    return request;
-  }, [round]);
+  const { data, setData, load: loadRound, invalidate, commit } = useRoundControlSnapshot(round, setError);
+  useEffect(() => {
+    invalidate();
+    if (state?.event_state === "WAITING") setData(null);
+    else if (liveRound) setData(current => current ? { ...current, ...liveRound, event: state } : current);
+    void loadRound();
+  }, [liveRound?.status, liveRound?.ended, liveRound?.current_problem_id, state?.event_state, invalidate, loadRound, setData]);
+  useEffect(() => {
+    if (!realtimeEvent || realtimeEvent.type === "bid_updated") return;
+    invalidate();
+    if (realtimeEvent.payload?.action === "event_reset") setData(null);
+    void loadRound();
+  }, [realtimeEvent, invalidate, loadRound, setData]);
+  useEffect(() => {
+    const resume = () => { if (!document.hidden) { invalidate(); void loadRound(); } };
+    document.addEventListener("visibilitychange", resume);
+    return () => document.removeEventListener("visibilitychange", resume);
+  }, [invalidate, loadRound]);
   useEffect(() => {
     let stopped = false; let timer; let retryDelay = 1000;
     const attempt = async () => {
@@ -546,7 +564,8 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
   }, [loadRound, state?.timing?.server_time]);
   const run = async (operation, success) => {
     setWorking(true); setError(""); setNotice("");
-    try { const result = await operation(); if (result?.round_type) setData(result); setNotice(typeof success === "function" ? success(result) : success); await loadRound(); return result; }
+    invalidate();
+    try { const result = await operation(); commit(result); setNotice(typeof success === "function" ? success(result) : success); await loadRound(); return result; }
     catch (cause) { setError(cause.message || "Action failed."); if (cause instanceof ApiError && [409, 503].includes(cause.status)) await loadRound(); return null; }
     finally { setWorking(false); }
   };
@@ -615,7 +634,7 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
   const eventState = data?.event?.event_state;
   const hasTimer = Boolean(state?.timing?.ends_at || state?.timing?.paused);
   const afterBidding = current && data?.status === "READY" && eventState === (isWildcard ? "WILDCARD_SELECTION" : "ROUND1_RESULT");
-  const roundEnded = Boolean(data?.ended || liveRound?.ended);
+  const roundEnded = Boolean(data?.ended);
   if (!data) return <div className="loading-screen"><div className="loader" />{error ? <><span>{error} Retrying automatically…</span><button className="secondary-button" onClick={() => void loadRound()}>Retry now</button></> : "Loading round controls…"}</div>;
 
   return <section className="round-console">
@@ -706,28 +725,31 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
 }
 
 export function WildcardControlPage({ state, config, remaining, onConfig, socketConnected, realtimeEvent }) {
-  const [data, setData] = useState(null);
   const [endConfirming, setEndConfirming] = useState(false);
-  const selectionRemaining = useServerCountdown({ server_time: data?.event?.timing?.server_time, ends_at: data?.selection?.ends_at, received_at: data?.selection?.received_at, remaining_seconds: data?.selection?.remaining_seconds, paused: false }, data?.selection?.current_rank);
   const [tab, setTab] = useState("applications");
   const [slots, setSlots] = useState(1);
   const [file, setFile] = useState(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const load = useCallback(async () => { try { const result = await getRoundControl("wildcard"); result.selection.received_at = Date.now(); setData(result); if (result.slots?.count || result.settings?.wildcard_slots) setSlots(result.slots?.count || result.settings.wildcard_slots); setError(""); return result; } catch (cause) { setError(cause.message); return null; } }, []);
+  const { data, setData, load, invalidate, commit } = useRoundControlSnapshot("wildcard", setError);
+  const selectionRemaining = useServerCountdown({ server_time: data?.event?.timing?.server_time, ends_at: data?.selection?.ends_at, received_at: data?.selection?.received_at, remaining_seconds: data?.selection?.remaining_seconds, paused: false }, data?.selection?.current_rank);
+  useEffect(() => { if (data?.slots?.count || data?.settings?.wildcard_slots) setSlots(data.slots.count || data.settings.wildcard_slots); }, [data?.slots?.count, data?.settings?.wildcard_slots]);
+  useEffect(() => {
+    invalidate();
+    if (state?.event_state === "WAITING") setData(null);
+    else if (state?.rounds?.WILDCARD) setData(current => current ? { ...current, ...state.rounds.WILDCARD, event: state } : current);
+    void load();
+  }, [state?.rounds?.WILDCARD?.status, state?.rounds?.WILDCARD?.ended, state?.rounds?.WILDCARD?.slot_count,
+    state?.rounds?.ROUND1?.ended, state?.event_state, invalidate, load, setData]);
   useEffect(() => {
     let stopped = false; let timer;
-    const poll = async () => { await load(); if (stopped) return; timer = setTimeout(poll, document.hidden ? 60000 : socketConnected ? 45000 : 7500); };
+    const poll = async () => { await load(); if (stopped) return; clearTimeout(timer); timer = setTimeout(poll, document.hidden ? 60000 : socketConnected ? 45000 : 7500); };
     void poll();
-    const onVisibility = () => { if (!document.hidden) { clearTimeout(timer); void poll(); } };
+    const onVisibility = () => { if (!document.hidden) { invalidate(); clearTimeout(timer); void poll(); } };
     document.addEventListener("visibilitychange", onVisibility);
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [load, socketConnected]);
-  useEffect(() => {
-    const serverStatus = state?.rounds?.WILDCARD?.status;
-    if (serverStatus && data?.status && serverStatus !== data.status) void load();
-  }, [data?.status, load, state?.rounds?.WILDCARD?.status]);
+  }, [load, socketConnected, invalidate]);
   useEffect(() => {
     if (!realtimeEvent) return;
     if (realtimeEvent.type === "wildcard_bid_updated") {
@@ -742,8 +764,10 @@ export function WildcardControlPage({ state, config, remaining, onConfig, socket
       });
       return;
     }
-    if (realtimeEvent.type === "wildcard_updated") void load();
-  }, [load, realtimeEvent]);
+    invalidate();
+    if (realtimeEvent.payload?.action === "event_reset") setData(null);
+    void load();
+  }, [load, realtimeEvent, invalidate, setData]);
   useEffect(() => {
     if (["NOT_STARTED", "APPLICATIONS_OPEN"].includes(data?.status)) setTab("applications");
     if (["APPLICATIONS_CLOSED", "BIDDING_OPEN", "BIDDING_CLOSED"].includes(data?.status)) setTab("bidding");
@@ -752,7 +776,8 @@ export function WildcardControlPage({ state, config, remaining, onConfig, socket
   }, [data?.status]);
   const run = async (operation, success) => {
     setWorking(true); setError(""); setNotice("");
-    try { await operation(); setNotice(success); await load(); }
+    invalidate();
+    try { const result = await operation(); commit(result); setNotice(success); await load(); }
     catch (cause) { setError(cause.message || "Action failed."); if (cause instanceof ApiError && [409, 503].includes(cause.status)) await load(); }
     finally { setWorking(false); }
   };
@@ -775,7 +800,7 @@ export function WildcardControlPage({ state, config, remaining, onConfig, socket
     finally { setWorking(false); }
   };
   if (!data) return <div className="loading-screen"><div className="loader" />Loading wildcard controls…</div>;
-  const wildcardEnded = Boolean(data.ended || state?.rounds?.WILDCARD?.ended);
+  const wildcardEnded = Boolean(data.ended);
   const maxSlots = data.slots.maximum || 0;
   const canConfirmSlots = data.status === "APPLICATIONS_CLOSED" && maxSlots > 0;
   const stageCopy = {

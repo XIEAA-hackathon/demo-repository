@@ -21,7 +21,7 @@ function board(title = 'Original PS', count = 1) {
     wildcard_history: { selected: true, problem_number: `WC-${index + 1}`, problem_title: title },
     assignment_id: index + 1, version: 1, current_lab_id: 1, original_lab_id: 1, assignment_source: 'AUTO',
   }))
-  return { teams, labs: [{ id: 1, name: 'Main Lab', capacity: 50, occupancy: count, teams }],
+  return { teams, labs: [{ id: 1, name: 'Main Lab', capacity: 50, occupancy: count, teams: [...teams] }],
     unassigned_team_ids: [], unassigned_teams: [], assigned_count: count, unassigned_count: 0,
     eligible_team_count: count, team_count: count, can_move: true, message: 'Allocated' }
 }
@@ -129,6 +129,52 @@ it('updates shared lab buckets and team details together for manual moves', () =
   const changed = applyLabChange(original, { team_id: 1, lab: { id: 1 }, assignment_id: 1, version: 2, assignment_source: 'MANUAL_OVERRIDE' })
   expect(changed.teams[0].version).toBe(2)
   expect(changed.labs[0].teams[0].version).toBe(2)
+})
+
+it('filters PS allocation independently of labs, including legacy R1 history', async () => {
+  const fixture = board()
+  fixture.teams[0].team_name = 'Team B'
+  fixture.teams.push({ id: 2, team_code: 'T-2', team_name: 'Team A', logged_in: false,
+    round1: { id: 20, problem_number: 'R1-2', problem_title: 'R1 history' },
+    final_problem: null, effective_problem: null } as any,
+    { id: 3, team_code: 'T-3', team_name: 'Team C', logged_in: false, final_problem: null, effective_problem: null } as any)
+  mocks.load.mockResolvedValue(fixture)
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />))
+  const filter = host.querySelector('.lab-filters select') as HTMLSelectElement
+  const select = async (value: string) => { await act(async () => { filter.value = value; filter.dispatchEvent(new Event('change', { bubbles: true })) }) }
+  await select('ps_allocated')
+  expect([...host.querySelectorAll('.team-identity strong')].map(row => row.textContent)).toEqual(['Team B', 'Team A'])
+  expect(host.querySelectorAll('.team-allotment-row')[0].textContent).toContain('PS AllocatedMain Lab')
+  expect(host.querySelectorAll('.team-allotment-row')[1].textContent).toContain('Lab pending')
+  await act(async () => (host.querySelectorAll('.team-allotment-row button')[1] as HTMLButtonElement).click())
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Lab pending')
+  await select('ps_not_allocated')
+  expect([...host.querySelectorAll('.team-identity strong')].map(row => row.textContent)).toEqual(['Team C'])
+  expect(host.querySelector('.team-allotment-row')?.textContent).toContain('Awaiting problem')
+})
+
+it('updates R1 PS status immediately through the existing event and retains both histories after Wildcard', async () => {
+  const base = { id: 1, team_code: 'T-1', team_name: 'Team Alpha', logged_in: false }
+  const initial: any = { ...board(), labs: [], teams: [{ ...base, final_problem: null, problem_assignment_status: 'not_allocated' }] }
+  const r1 = { id: 4, problem_number: 'R1-4', problem_title: 'R1 history', winning_bid: 100, place: 1 }
+  const assigned: any = { ...initial, teams: [{ ...base, round1: r1, final_problem: r1, problem_assignment_status: 'allocated' }] }
+  const wc = { id: 20, problem_number: 'WC-2', problem_title: 'WC history', selected: true, winning_bid: 200, place: 1 }
+  const final: any = { ...assigned, teams: [{ ...assigned.teams[0], wildcard_history: wc, final_problem: wc }] }
+  mocks.load.mockResolvedValueOnce(initial).mockResolvedValueOnce(assigned).mockResolvedValueOnce(final)
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />))
+  expect(host.querySelector('.team-allotment-row')?.textContent).toContain('PS Not Allocated')
+  await emit('round_updated', { action: 'winners_assigned' })
+  expect(host.querySelector('.team-allotment-row')?.textContent).toContain('PS Allocated')
+  expect(host.querySelector('.team-allotment-row')?.textContent).toContain('Lab pending')
+  await act(async () => (host.querySelector('.team-allotment-row button') as HTMLButtonElement).click())
+  expect(document.querySelector('.team-details-final-problem')?.textContent).toContain('R1-4')
+  await emit('wildcard_updated', { action: 'final_problem_confirmed' })
+  expect(document.querySelector('.team-details-final-problem')?.textContent).toContain('WC-2')
+  expect(document.querySelector('.assignment-history-grid')?.textContent).toContain('R1-4')
+  expect(document.querySelector('.assignment-history-grid')?.textContent).toContain('WC-2')
+  expect(host.querySelector('.team-allotment-row')?.textContent).toContain('PS Allocated')
+  expect(mocks.socket).toHaveBeenCalledTimes(1)
+  expect(mocks.load).toHaveBeenCalledTimes(3)
 })
 
 it.each(['ROUND1', 'WILDCARD'])('uses the Wildcard delta ordering for %s display rows', round => {

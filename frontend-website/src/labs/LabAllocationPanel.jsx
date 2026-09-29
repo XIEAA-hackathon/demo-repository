@@ -4,6 +4,10 @@ import "./LabAllocationPanel.modal.css";
 import { applyLabChange, invalidDrop } from "./labBoard";
 
 const coins = value => value == null ? "Not recorded" : `${Number(value).toLocaleString()} coins`;
+export const hasAssignedProblem = team => team.problem_assignment_status
+  ? team.problem_assignment_status === "allocated"
+  : Boolean(team.final_problem || team.effective_problem || team.round1 || team.wildcard_history?.selected);
+const labStatus = team => team.lab_name || (hasAssignedProblem(team) ? "Lab pending" : "Awaiting problem");
 export const ordinal = value => {
   const number = Number(value);
   if (!Number.isInteger(number) || number < 1) return "—";
@@ -47,7 +51,7 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
   const allocatedTeamIds = new Set(assigned.map(team => team.id));
   const teams = (shown?.teams || []).map(team => assigned.find(row => row.id === team.id) || team);
   const unassigned = teams.filter(team => !allocatedTeamIds.has(team.id));
-  const problemAssigned = teams.filter(team => team.final_problem != null).length;
+  const problemAssigned = teams.filter(hasAssignedProblem).length;
   const selectedTeam = teams.find(team => team.id === selectedTeamId) || null;
 
   useEffect(() => {
@@ -60,6 +64,7 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
     return () => { document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", handleKeyDown); };
   }, [selectedTeamId]);
   useEffect(() => { if (view !== "teams") setSelectedTeamId(null); }, [view]);
+  useEffect(() => { setFilter("all"); }, [view]);
 
   const move = async (team, lab) => {
     if (!editable || !onMove || inFlight.current) return;
@@ -99,8 +104,9 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
       team.wildcard_history?.problem_number, team.wildcard_history?.problem_title,
       team.final_problem?.problem_number, team.final_problem?.problem_title,
       team.effective_problem?.number, team.effective_problem?.title, team.lab_name].join(" ").toLowerCase();
-    return searchable.includes(query.toLowerCase()) && (filter === "all" || (filter === "allocated" && allocated)
-      || (filter === "pending" && !allocated && Boolean(team.final_problem)) || (filter === "awaiting" && !team.final_problem));
+    return searchable.includes(query.toLowerCase()) && (filter === "all"
+      || (view === "teams" ? (filter === "ps_allocated" && hasAssignedProblem(team)) || (filter === "ps_not_allocated" && !hasAssignedProblem(team))
+        : (filter === "allocated" && allocated) || (filter === "pending" && !allocated && hasAssignedProblem(team)) || (filter === "awaiting" && !hasAssignedProblem(team))));
   });
   return <section className="lab-workspace" aria-busy={working}>
     <header className="lab-workspace__header"><div><h2>{view === "teams" ? "Team Details" : "Labs"}</h2><p>{shown.message}</p></div>
@@ -115,11 +121,14 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
       : <dl className="lab-allocation-summary"><div><dt>Eligible teams</dt><dd>{shown.allocation_eligible_count ?? shown.eligible_team_count ?? 0}</dd></div><div><dt>Assigned</dt><dd>{shown.assigned_count ?? assigned.length}</dd></div><div><dt>Lab pending</dt><dd>{shown.unallocated_eligible_count ?? unassigned.filter(team => team.final_problem).length}</dd></div><div><dt>Awaiting problem</dt><dd>{shown.awaiting_problem_count ?? teams.filter(team => !team.final_problem).length}</dd></div></dl>}
     {view !== "labs" && <section className="team-allotment-panel" aria-label="Teams">
       <div className="lab-filters"><label>Search teams<input type="search" value={query} onChange={event => setQuery(event.target.value)} /></label>
-        <label>Allocation status<select value={filter} onChange={event => setFilter(event.target.value)}><option value="all">All teams</option><option value="allocated">Allocated</option><option value="pending">Lab pending</option><option value="awaiting">Awaiting problem</option></select></label></div>
-      <div className="team-allotment-list"><div className="team-allotment-list__head"><span>Team</span><span>Logged In</span><span>Assigned Lab</span><span>Action</span></div>
+        <label>{view === "teams" ? "PS status" : "Allocation status"}<select value={filter} onChange={event => setFilter(event.target.value)}><option value="all">All Teams</option>{view === "teams"
+          ? <><option value="ps_allocated">PS Allocated</option><option value="ps_not_allocated">PS Not Allocated</option></>
+          : <><option value="allocated">Allocated</option><option value="pending">Lab pending</option><option value="awaiting">Awaiting problem</option></>}</select></label></div>
+      <div className={`team-allotment-list ${view === "teams" ? "team-allotment-list--ps" : ""}`}><div className="team-allotment-list__head"><span>Team</span><span>Logged In</span>{view === "teams" && <span>PS Status</span>}<span>Lab Status</span><span>Action</span></div>
         {filtered.map(team => <div className="team-allotment-row" key={team.id}><span className="team-identity"><b>{team.team_code}</b><strong>{team.team_name}</strong></span>
           <span className={`team-presence ${team.logged_in ? "team-presence--online" : ""}`}>{team.logged_in ? "YES" : "NO"}</span>
-          <span>{team.lab_name || (team.final_problem ? "Lab pending" : "Awaiting problem")}</span>
+          {view === "teams" && <span>{hasAssignedProblem(team) ? "PS Allocated" : "PS Not Allocated"}</span>}
+          <span>{labStatus(team)}</span>
           <span><button type="button" className="secondary-button" onClick={() => setSelectedTeamId(team.id)}>View Details</button></span></div>)}
         {!filtered.length && <p className="lab-empty-row">No teams match these filters.</p>}</div>
     </section>}
@@ -151,7 +160,7 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
             <AssignmentCard type="Round 1" problem={selectedTeam.round1} bid={selectedTeam.round1?.winning_bid} place={selectedTeam.round1?.place} assignmentType={selectedTeam.round1?.assignment_type} selected={Boolean(selectedTeam.round1)} />
             <AssignmentCard type="Wildcard" problem={selectedTeam.wildcard_history} bid={selectedTeam.wildcard_history?.winning_bid} place={selectedTeam.wildcard_history?.place} selected={Boolean(selectedTeam.wildcard_history?.selected)} />
           </div>
-          <section className="team-details-lab"><span>Lab Allocation</span><strong>{selectedTeam.lab_name || "Not assigned"}</strong></section>
+          <section className="team-details-lab"><span>Lab Allocation</span><strong>{labStatus(selectedTeam)}</strong></section>
         </div>
         <footer><button type="button" className="secondary-button" onClick={() => setSelectedTeamId(null)}>Close</button></footer>
       </section>

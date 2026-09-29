@@ -460,9 +460,10 @@ def lab_board(db: Session, *, logged_in_team_ids: set[int] | None = None) -> dic
     )
 
     def team_payload(team: Team) -> dict[str, Any]:
-        effective = problem_by_id.get(team.ps_id)
         original = problem_by_id.get(team.round1_problem_id)
         wildcard_problem = problem_by_id.get(team.wildcard_problem_id)
+        # Display fallback only: do not repair legacy rows or change the graph.
+        effective = problem_by_id.get(team.ps_id) or original or wildcard_problem
         wildcard_row = wildcard_by_team.get(team.id)
         wildcard = bool(team.wildcard_problem_id and team.wildcard_problem_id == team.ps_id)
         return {
@@ -480,6 +481,7 @@ def lab_board(db: Session, *, logged_in_team_ids: set[int] | None = None) -> dic
             "wildcard": wildcard,
             "changed_from": original.ps_number if wildcard and original and original.id != team.ps_id else None,
             "logged_in": team.id in logged_in_team_ids,
+            "problem_assignment_status": "allocated" if effective else "not_allocated",
             "allocation_status": "allocated" if team.id in assignment_by_team else "lab_pending" if effective else "awaiting_problem",
             "round1": (
                 {

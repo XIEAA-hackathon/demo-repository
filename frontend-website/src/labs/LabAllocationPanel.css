@@ -22,6 +22,7 @@
 .team-allotment-list__head { min-height: 32px; color: #81738a; background: rgba(255,255,255,.018); font-size: 8px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
 .team-allotment-row { border-top: 1px solid rgba(255,255,255,.04); color: #cfc4d5; font-size: 10px; }
 .team-allotment-row:hover { background: rgba(188,92,235,.045); }
+.team-allotment-list--ps .team-allotment-list__head, .team-allotment-list--ps .team-allotment-row { grid-template-columns: minmax(150px, 1.2fr) minmax(70px,.45fr) minmax(110px,.7fr) minmax(110px,.7fr) minmax(110px,.6fr); }
 .team-identity { min-width: 0; display: flex; align-items: center; gap: 10px; }
 .team-identity b, .lab-team-row > b { color: #9d8aa8; font: 700 9px/1 ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
 .team-identity strong { overflow: hidden; color: #eee6f2; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
@@ -71,6 +72,9 @@
   .lab-workspace__actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
   .team-allotment-list__head { display: none; }
   .team-allotment-row { grid-template-columns: 1fr auto; gap: 7px 12px; padding: 10px 14px; }
+  .team-allotment-list--ps .team-allotment-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .team-allotment-list--ps .team-allotment-row > span:nth-child(4) { grid-column: 1; }
+  .team-allotment-list--ps .team-allotment-row > span:last-child { grid-row: 1 / span 3; }
   .team-allotment-row > span:nth-child(3) { grid-column: 1; }
   .team-allotment-row > span:last-child { grid-column: 2; grid-row: 1 / span 2; }
   .team-history { grid-column: 1 / -1; }
