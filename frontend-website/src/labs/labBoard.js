@@ -5,10 +5,12 @@ export function applyLabChange(board, change) {
       || (existing.assignment_id === change.assignment_id && existing.version > change.version))) return board;
   const team = existing || board.teams.find(row => row.id === change.team_id);
   if (!team || !board.labs.some(lab => lab.id === change.lab.id)) return board;
-  const moved = { ...team, ...change, id: team.id, current_lab_id: change.lab.id };
+  const moved = { ...team, ...change, id: team.id, current_lab_id: change.lab.id, lab_allocation_status: "assigned", lab_conflict_reason: null, lab_unassigned_reason: null };
   const unassignedIds = board.unassigned_team_ids.filter(id => id !== team.id);
   const pendingCount = board.teams.filter(row => row.final_problem && unassignedIds.includes(row.id)).length;
   return { ...board, unassigned_team_ids: unassignedIds,
+    conflict_count: Math.max(0, (board.conflict_count || 0) - (team.lab_allocation_status === "conflict" ? 1 : 0)),
+    lab_unassigned_count: Math.max(0, (board.lab_unassigned_count || 0) - (team.lab_allocation_status === "unassigned" ? 1 : 0)),
     teams: board.teams.map(row => row.id === team.id ? moved : row),
     unassigned_teams: (board.unassigned_teams || []).filter(row => row.id !== team.id),
     assigned_count: board.teams.length - unassignedIds.length,

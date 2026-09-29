@@ -55,6 +55,11 @@ class LabMoveRequest(BaseModel):
     allow_constraint_override: bool = False
 
 
+class ConflictLabAssignmentRequest(BaseModel):
+    lab_id: int = Field(gt=0, strict=True)
+    allow_constraint_override: bool = Field(default=False, strict=True)
+
+
 class TeamLabMoveRequest(BaseModel):
     lab_id: int = Field(gt=0, strict=True)
     expected_version: int = Field(default=0, ge=0, strict=True)
@@ -186,7 +191,7 @@ async def generate_lab_allocation(
     current_user: User = Depends(get_current_active_admin),
 ):
     try:
-        changed, team_count = allocate_labs(db, actor=current_user, replace_manual=True)
+        changed, team_count = allocate_labs(db, actor=current_user, regenerate_auto=True)
     except LabAllocationError as exc:
         db.rollback()
         _raise_allocation_error(exc)
@@ -206,13 +211,13 @@ async def generate_lab_allocation(
     return board
 
 
-@router.put("/lab-allocation/assignments/{assignment_id}/move")
-async def move_lab_assignment(
+async def _move_lab_assignment(
     assignment_id: int,
     payload: LabMoveRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin_or_lab_admin),
     team_id: int | None = None,
+    conflict_assignment: bool = False,
 ):
     try:
         assignment = move_team(
@@ -223,6 +228,7 @@ async def move_lab_assignment(
             allow_constraint_override=payload.allow_constraint_override,
             actor=current_user,
             team_id=team_id,
+            conflict_assignment=conflict_assignment,
         )
     except LabAllocationError as exc:
         db.rollback()
@@ -246,6 +252,17 @@ async def move_lab_assignment(
     return result
 
 
+@router.put("/lab-allocation/assignments/{assignment_id}/move")
+async def move_lab_assignment(assignment_id: int, payload: LabMoveRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin_or_lab_admin)):
+    return await _move_lab_assignment(assignment_id, payload, db, current_user)
+
+
 @router.put("/lab-admin/teams/{team_id}/lab")
 async def move_or_assign_team_lab(team_id: int, payload: TeamLabMoveRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin_or_lab_admin)):
-    return await move_lab_assignment(0, LabMoveRequest(target_lab_id=payload.lab_id, expected_version=payload.expected_version), db, current_user, team_id=team_id)
+    return await _move_lab_assignment(0, LabMoveRequest(target_lab_id=payload.lab_id, expected_version=payload.expected_version), db, current_user, team_id=team_id)
+
+
+@router.put("/lab-admin/teams/{team_id}/conflict-assignment")
+async def assign_conflict_team_lab(team_id: int, payload: ConflictLabAssignmentRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin_or_lab_admin)):
+    return await _move_lab_assignment(0, LabMoveRequest(target_lab_id=payload.lab_id, expected_version=0,
+        allow_constraint_override=payload.allow_constraint_override), db, current_user, team_id=team_id, conflict_assignment=True)

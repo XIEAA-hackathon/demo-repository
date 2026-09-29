@@ -49,7 +49,7 @@ def test_33_resolved_allocate_and_two_awaiting_remain_visible(db):
     assert allocate_labs(db) == (False, 33)
 
 
-def test_allocation_endpoint_returns_clear_409(db):
+def test_allocation_endpoint_persists_partial_capacity_result(db):
     seed_35(db)
     for index, lab in enumerate(db.query(Lab).order_by(Lab.id).all()):
         lab.capacity = 6 if index < 4 else 7
@@ -60,13 +60,14 @@ def test_allocation_endpoint_returns_clear_409(db):
     app.dependency_overrides[get_current_active_admin] = lambda: None
     with TestClient(app) as client:
         response = client.post("/admin/lab-allocation/allocate")
-    assert response.status_code == 409
-    assert response.json()["detail"]["expected_count"] == 33
-    assert response.json()["detail"]["allocated_count"] == 31
-    assert len(response.json()["detail"]["unassigned_teams"]) == 2
+    assert response.status_code == 200
+    assert response.json()["allocation_diagnostics"]["expected_count"] == 33
+    assert response.json()["assigned_count"] == 31
+    assert response.json()["conflict_count"] == 0
+    assert db.query(LabAssignment).count() == 31
 
 
-def test_incremental_resolution_preserves_33_and_manual_history(db):
+def test_regeneration_preserves_manual_history_and_refreshes_auto(db):
     teams, problems = seed_35(db)
     allocate_labs(db)
     first = db.query(LabAssignment).order_by(LabAssignment.id).first()
@@ -76,7 +77,9 @@ def test_incremental_resolution_preserves_33_and_manual_history(db):
     db.commit()
     assert lab_board(db)["unallocated_eligible_count"] == 1
     assert allocate_labs(db) == (True, 34)
-    assert [(r.id, r.team_id, r.current_lab_id, r.version, r.assignment_source) for r in db.query(LabAssignment).filter(LabAssignment.team_id.in_([t.id for t in teams[:33]])).all()] == before
+    row = db.get(LabAssignment, first.id)
+    assert (row.id, row.team_id, row.current_lab_id, row.version, row.assignment_source) == before[0]
+    assert db.query(LabAssignment).filter_by(assignment_source="AUTO").count() == 33
     assert allocate_labs(db) == (False, 34)
     assert lab_board(db)["awaiting_problem_count"] == 1
 
@@ -112,7 +115,7 @@ def test_login_projection_is_bulk_and_supports_legacy_leader_link(db):
     assert len(statements) == 2  # One session/team join plus approved participant IDs.
 
 
-def test_incremental_conflict_exposes_explicit_regeneration_without_reshuffling(db):
+def test_regeneration_rearranges_old_auto_placements_to_reach_full_flow(db):
     a = ProblemStatement(ps_number="A", title="A", round=1)
     b = ProblemStatement(ps_number="B", title="B", round=1)
     left, right = Lab(name="Left", capacity=2), Lab(name="Right", capacity=1)
@@ -122,13 +125,10 @@ def test_incremental_conflict_exposes_explicit_regeneration_without_reshuffling(
     db.add_all([LabAssignment(team_id=teams[0].id, original_lab_id=left.id, current_lab_id=left.id, effective_ps_id=a.id, assignment_source="MANUAL_OVERRIDE"),
                 LabAssignment(team_id=teams[1].id, original_lab_id=right.id, current_lab_id=right.id, effective_ps_id=b.id)])
     db.commit()
-    with pytest.raises(LabAllocationError) as error:
-        allocate_labs(db)
-    assert error.value.code == "regeneration_required"
-    assert error.value.context["regeneration_possible"] is True
-    db.rollback()
-    assert db.query(LabAssignment).count() == 2
-    assert allocate_labs(db, replace_manual=True) == (True, 3)
+    assert allocate_labs(db) == (True, 3)
+    assert db.query(LabAssignment).count() == 3
+    assert db.query(LabAssignment).filter_by(team_id=teams[1].id).one().current_lab_id == left.id
+    assert db.query(LabAssignment).filter_by(team_id=teams[0].id).one().assignment_source == "MANUAL_OVERRIDE"
 
 
 def test_extra_grid_35_of_35_and_idempotent_with_r1_frozen(db):
@@ -148,6 +148,7 @@ def test_extra_grid_35_of_35_and_idempotent_with_r1_frozen(db):
     assert allocate_labs(db) == (True, 35)
     assert db.info["lab_allocation_diagnostics"]["graph_team_count"] == 35
     assert db.query(LabAssignment).count() == 35
+    assert lab_board(db)["conflict_count"] == 0
     assert allocate_labs(db) == (False, 35)
 
 
@@ -203,19 +204,17 @@ def test_mixed_35_graph_uses_wildcard_final_choice_and_overrides_extra(db):
     assert db.query(Bid).count() == 30  # Five Extra/Grid entrants have no R1 bid.
 
 
-def test_infeasible_flow_preserves_existing_assignments(db):
+def test_infeasible_capacity_regenerates_and_persists_strict_partial(db):
     _, problems = seed_35(db)
     automatically_assign_extra_problems(db, problems[-1].id)
     allocate_labs(db)
-    before = [(row.id, row.team_id, row.current_lab_id) for row in db.query(LabAssignment).all()]
     db.query(Lab).update({Lab.capacity: 1})
     db.commit()
-    with pytest.raises(LabAllocationError) as error:
-        allocate_labs(db, replace_manual=True)
-    assert error.value.context["max_flow"] == 5
-    assert error.value.context["expected_count"] == 35
-    db.rollback()
-    assert [(row.id, row.team_id, row.current_lab_id) for row in db.query(LabAssignment).all()] == before
+    assert allocate_labs(db) == (True, 5)
+    assert db.info["lab_allocation_diagnostics"]["max_flow"] == 5
+    assert db.info["lab_allocation_diagnostics"]["expected_count"] == 35
+    assert db.query(LabAssignment).count() == 5
+    assert lab_board(db)["conflict_count"] == 0
 
 
 def test_lab_admin_receives_allocation_and_manual_change_events():
@@ -319,22 +318,21 @@ def test_dynamic_eligible_count_independent_of_presence(db, count):
     assert board["participant_logged_in_count"] == 0
 
 
-def test_35_resolved_teams_impossible_33_flow_is_not_committed(db):
+def test_35_resolved_teams_33_capacity_flow_is_persisted(db):
     _, problems = seed_35(db)
     automatically_assign_extra_problems(db, problems[-1].id)
     # Total capacity is exactly 33, although all 35 final problems are resolved.
     for index, lab in enumerate(db.query(Lab).order_by(Lab.id).all()):
         lab.capacity = 6 if index < 2 else 7
     db.commit()
-    with pytest.raises(LabAllocationError) as error:
-        allocate_labs(db)
-    detail = error.value.detail()
+    assert allocate_labs(db) == (True, 33)
+    detail = db.info["lab_allocation_diagnostics"]
     assert detail["expected_count"] == detail["graph_team_count"] == 35
     assert detail["max_flow"] == detail["allocated_count"] == 33
     assert len(detail["unassigned_teams"]) == 2
-    assert all(row["team_id"] and row["team_name"] for row in detail["unassigned_teams"])
-    db.rollback()
-    assert db.query(LabAssignment).count() == 0
+    assert all(row["reason"] == "NO_CAPACITY" for row in detail["unassigned_teams"])
+    assert db.query(LabAssignment).count() == 33
+    assert lab_board(db)["conflict_count"] == 0
 
 
 def test_extra_endpoint_notifies_then_keeps_labs_pending_until_authoritative_allocation(db, monkeypatch):
@@ -378,3 +376,96 @@ def test_extra_grid_uses_external_pool_when_r1_capacity_is_full(db):
     assert all(team.round1_problem_id is None for team in teams[-2:])
     assert automatically_assign_extra_problems(db, extra.id)["assignments"] == []
     assert allocate_labs(db)[1] == 35
+
+
+def seed_same_ps_conflicts(db):
+    teams, problems = seed_35(db)
+    # Seven teams on PS1, then five teams each on PS2..PS5 and four each on PS6..PS7.
+    distribution = [0] * 7 + [i for i in range(1, 5) for _ in range(5)] + [5] * 4 + [6] * 4
+    for team, index in zip(teams, distribution):
+        team.ps_id = problems[index].id
+    db.commit()
+    return teams, problems
+
+
+def test_strict_35_flow_persists_33_with_two_same_ps_conflicts(db):
+    seed_same_ps_conflicts(db)
+    assert allocate_labs(db) == (True, 33)
+    board = lab_board(db)
+    assert board["assigned_count"] == 33 and board["conflict_count"] == 2
+    assert board["lab_unassigned_count"] == board["awaiting_problem_count"] == 0
+    assert db.query(LabAssignment).count() == 33
+    for lab in board["labs"]:
+        assert len({team["effective_problem"]["id"] for team in lab["teams"]}) == lab["occupancy"]
+        assert lab["occupancy"] <= lab["capacity"]
+    assert {row["reason"] for row in db.info["lab_allocation_diagnostics"]["unassigned_teams"]} == {"SAME_PS_CONSTRAINT"}
+    assert all(team["final_problem"] for team in board["teams"] if team["lab_allocation_status"] == "conflict")
+
+
+def test_awaiting_problem_is_unassigned_and_not_conflict(db):
+    seed_35(db)
+    allocate_labs(db)
+    board = lab_board(db)
+    assert board["lab_unassigned_count"] == 2 and board["conflict_count"] == 0
+    awaiting = [team for team in board["teams"] if team["lab_allocation_status"] == "unassigned"]
+    assert all(team["lab_unassigned_reason"] == "NO_FINAL_PROBLEM" for team in awaiting)
+
+
+def test_manual_conflicts_require_explicit_override_capacity_and_publish_live(db, monkeypatch):
+    from app.api.auth import get_current_active_admin_or_lab_admin
+    seed_same_ps_conflicts(db)
+    allocate_labs(db)
+    actor = User(name="Lab Admin", email="labs@test.example", password_hash="unused", role="lab_admin")
+    db.add(actor); db.commit()
+    board = lab_board(db)
+    conflicts = [team for team in board["teams"] if team["lab_allocation_status"] == "conflict"]
+    target = next(lab for lab in board["labs"] if lab["occupancy"] < lab["capacity"])
+    full = next(lab for lab in board["labs"] if lab["occupancy"] == lab["capacity"])
+    events = []
+    async def broadcast(name, payload, **kwargs):
+        assert db.get_bind().pool.checkedout() == 0
+        events.append((name, payload, kwargs))
+    monkeypatch.setattr(labs.manager, "broadcast_event", broadcast)
+    app = FastAPI(); app.include_router(labs.router)
+    app.dependency_overrides[get_db] = lambda: db
+    from types import SimpleNamespace
+    claims = SimpleNamespace(id=actor.id)
+    app.dependency_overrides[get_current_active_admin_or_lab_admin] = lambda: claims
+    app.dependency_overrides[get_current_active_admin] = lambda: claims
+    with TestClient(app) as client:
+        url = f"/lab-admin/teams/{conflicts[0]['id']}/conflict-assignment"
+        assert client.put(url, json={"lab_id": full["id"], "allow_constraint_override": True}).status_code == 409
+        assert client.put(url, json={"lab_id": target["id"]}).status_code == 409
+        assert client.put(f"/lab-admin/teams/{conflicts[0]['id']}/lab", json={"lab_id": target["id"]}).status_code == 409
+        response = client.put(url, json={"lab_id": target["id"], "allow_constraint_override": True})
+        assert response.status_code == 200
+        assert response.json()["constraint_override"] is True
+        assert response.json()["assignment_source"] == "MANUAL_OVERRIDE"
+        assert response.json()["lab_allocation_status"] == "assigned"
+        assert client.put(url, json={"lab_id": target["id"], "allow_constraint_override": True}).status_code == 409
+        refreshed = lab_board(db)
+        assert refreshed["assigned_count"] == 34 and refreshed["conflict_count"] == 1
+        next_target = next(lab for lab in refreshed["labs"] if lab["occupancy"] < lab["capacity"])
+        response = client.put(f"/lab-admin/teams/{conflicts[1]['id']}/conflict-assignment", json={"lab_id": next_target["id"], "allow_constraint_override": True})
+        assert response.status_code == 200
+        final = lab_board(db)
+        assert final["assigned_count"] == 35 and final["conflict_count"] == 0
+        assert sum(team["constraint_override"] for lab in final["labs"] for team in lab["teams"]) == 2
+        assert client.post("/admin/lab-allocation/allocate").status_code == 200
+        assert db.query(LabAssignment).filter_by(assignment_source="MANUAL_OVERRIDE", constraint_override=True).count() == 2
+        assert lab_board(db)["assigned_count"] == 35
+    assert events[0][0] == "lab_assignment_changed" and "lab_admin" in events[0][2]["roles"]
+
+
+def test_conflicts_use_final_wildcard_ps_not_r1_history(db):
+    teams, problems = seed_same_ps_conflicts(db)
+    final = ProblemStatement(ps_number="WC-2", title="Final wildcard", round=2)
+    db.add(final); db.flush()
+    history = [team.round1_problem_id for team in teams[:7]]
+    for team in teams[:7]:
+        team.ps_id = final.id; team.wildcard_problem_id = final.id
+    db.commit()
+    assert allocate_labs(db) == (True, 33)
+    conflicts = [team for team in lab_board(db)["teams"] if team["lab_allocation_status"] == "conflict"]
+    assert len(conflicts) == 2 and all(team["final_problem"]["problem_number"] == "WC-2" for team in conflicts)
+    assert [team.round1_problem_id for team in teams[:7]] == history

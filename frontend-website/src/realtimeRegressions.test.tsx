@@ -5,12 +5,12 @@ import { LabAdminBoard } from './lab-admin/LabAdminApp'
 import { applyLabChange } from './labs/labBoard'
 import { applyBidDelta, applyDisplayBidDelta, parseBidDelta } from './participant/services/bidRealtime'
 
-const mocks = vi.hoisted(() => ({ load: vi.fn(), socket: vi.fn(), options: null as any }))
+const mocks = vi.hoisted(() => ({ load: vi.fn(), socket: vi.fn(), assign: vi.fn(), move: vi.fn(), options: null as any }))
 vi.mock('./services/realtime/connectReconnectingSocket', () => ({ connectReconnectingSocket: mocks.socket }))
 vi.mock('./lab-admin/services/api', () => ({
   getLabAllocation: mocks.load, getLabAdminToken: () => 'token',
   hasLabAdminToken: () => false, clearLabAdminToken: vi.fn(), getLabAdminSession: vi.fn(),
-  labAdminLogin: vi.fn(), labAdminLogout: vi.fn(), moveLabAssignment: vi.fn(),
+  labAdminLogin: vi.fn(), labAdminLogout: vi.fn(), moveLabAssignment: mocks.move, assignConflictTeamLab: mocks.assign,
 }))
 
 function board(title = 'Original PS', count = 1) {
@@ -31,7 +31,7 @@ let root: ReturnType<typeof createRoot>
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   vi.useFakeTimers()
-  mocks.load.mockReset(); mocks.socket.mockReset()
+  mocks.load.mockReset(); mocks.socket.mockReset(); mocks.assign.mockReset(); mocks.move.mockReset()
   mocks.socket.mockImplementation(options => { mocks.options = options; return vi.fn() })
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
 })
@@ -199,4 +199,76 @@ it.each(['ROUND1', 'WILDCARD'])('uses the Wildcard delta ordering for %s display
   expect(result.map(row => row.rank)).toEqual([1, 2])
   const participant = applyBidDelta(rows.map(row => ({ rank: row.rank, teamId: String(row.team_id), teamName: row.team_name, amount: row.value, placedAt: row.timestamp })), delta)
   expect(result.map(row => String(row.team_id))).toEqual(participant.map(row => row.teamId))
+})
+
+
+function conflictBoard() {
+  const data: any = board()
+  Object.assign(data.teams[0], { lab_allocation_status: 'assigned', constraint_override: false })
+  const conflict = { id: 2, team_code: 'T-2', team_name: 'Conflict Team', final_problem: data.teams[0].final_problem,
+    effective_problem: data.teams[0].effective_problem, lab_allocation_status: 'conflict', lab_conflict_reason: 'SAME_PS_CONSTRAINT' }
+  const awaiting = { id: 3, team_code: 'T-3', team_name: 'Awaiting Team', final_problem: null, effective_problem: null,
+    lab_allocation_status: 'unassigned', lab_unassigned_reason: 'NO_FINAL_PROBLEM' }
+  data.teams.push(conflict, awaiting)
+  data.labs[0].capacity = 2
+  data.labs.push({ id: 2, name: 'Full Lab', capacity: 0, occupancy: 0, teams: [] })
+  Object.assign(data, { unassigned_team_ids: [2, 3], unassigned_teams: [conflict], conflict_count: 1, lab_unassigned_count: 1, awaiting_problem_count: 1, team_count: 3 })
+  return data
+}
+const labsPage = async () => {
+  const button = [...host.querySelectorAll('button')].find(row => row.textContent === 'Labs')!
+  await act(async () => button.click())
+}
+const allocationFilter = async (value: string) => {
+  const select = host.querySelector('.lab-filters select') as HTMLSelectElement
+  await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })) })
+}
+
+it('filters Assigned, Unassigned and Conflict using the backend states', async () => {
+  mocks.load.mockResolvedValue(conflictBoard())
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />)); await labsPage()
+  for (const [filter, name] of [['assigned', 'Team 1'], ['unassigned', 'Awaiting Team'], ['conflict', 'Conflict Team']]) {
+    await allocationFilter(filter)
+    expect([...host.querySelectorAll('.team-allotment-row .team-identity strong')].map(row => row.textContent)).toEqual([name])
+  }
+  expect(host.querySelector('.team-allotment-row')?.textContent).toContain('WC-1')
+  expect(host.querySelector('.team-allotment-row')?.textContent).not.toContain('PS pending')
+})
+
+it('requires Assign Anyway before a same-PS conflict request and updates the counts locally', async () => {
+  mocks.load.mockResolvedValue(conflictBoard())
+  mocks.assign.mockResolvedValue({ team_id: 2, assignment_id: 2, version: 1, lab: { id: 1, name: 'Main Lab' },
+    assignment_source: 'MANUAL_OVERRIDE', constraint_override: true, lab_allocation_status: 'assigned' })
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />)); await labsPage(); await allocationFilter('conflict')
+  await act(async () => (host.querySelector('.team-allotment-row button') as HTMLButtonElement).click())
+  const picker = host.querySelector('.lab-move-picker select') as HTMLSelectElement
+  expect([...picker.options].map(row => row.textContent).join(' ')).not.toContain('Full Lab')
+  expect(picker.options[1].textContent).toContain('WC-1 already present')
+  await act(async () => { picker.value = '1'; picker.dispatchEvent(new Event('change', { bubbles: true })) })
+  await act(async () => (host.querySelector('.lab-move-picker button[type="submit"]') as HTMLButtonElement).click())
+  expect(host.querySelector('[role="dialog"]')?.textContent).toContain('Same PS conflict')
+  expect(mocks.assign).not.toHaveBeenCalled()
+  const confirm = [...host.querySelectorAll('button')].find(row => row.textContent === 'Assign Anyway')!
+  await act(async () => confirm.click())
+  expect(mocks.assign).toHaveBeenCalledWith(2, { lab_id: 1, allow_constraint_override: true })
+  expect(mocks.move).not.toHaveBeenCalled()
+  expect(host.querySelectorAll('.team-allotment-row')).toHaveLength(0)
+  expect(host.querySelector('.lab-allocation-summary')?.textContent).toContain('Assigned2')
+  expect(host.querySelector('.lab-allocation-summary')?.textContent).toContain('Conflict0')
+  expect(host.querySelector('.lab-override-badge')?.textContent).toBe('Same PS')
+})
+
+it('reconciles conflict resolution through the existing socket without reload or extra listeners', async () => {
+  const initial = conflictBoard()
+  const next = applyLabChange(initial, { team_id: 2, assignment_id: 2, version: 1, lab: { id: 1, name: 'Main Lab' },
+    assignment_source: 'MANUAL_OVERRIDE', constraint_override: true })
+  mocks.load.mockResolvedValueOnce(initial).mockResolvedValue(next)
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />)); await labsPage(); await allocationFilter('conflict')
+  expect(host.querySelectorAll('.team-allotment-row')).toHaveLength(1)
+  await emit('lab_assignment_changed', { team_id: 2, lab: { id: 1 } } as any)
+  expect(host.querySelectorAll('.team-allotment-row')).toHaveLength(0)
+  expect(host.querySelector('.lab-allocation-summary')?.textContent).toContain('Assigned2')
+  expect(host.querySelector('.lab-allocation-summary')?.textContent).toContain('Conflict0')
+  expect(mocks.load).toHaveBeenCalledTimes(2)
+  expect(mocks.socket).toHaveBeenCalledTimes(1)
 })

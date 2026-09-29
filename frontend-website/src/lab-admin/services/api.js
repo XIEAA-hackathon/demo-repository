@@ -38,3 +38,7 @@ export const moveLabAssignment = (id, payload) => request(`/lab-admin/teams/${id
   method: "PUT",
   body: JSON.stringify(payload),
 });
+
+export const assignConflictTeamLab = (id, payload) => request(`/lab-admin/teams/${id}/conflict-assignment`, {
+  method: "PUT", body: JSON.stringify(payload),
+});

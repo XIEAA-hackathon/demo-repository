@@ -13,6 +13,7 @@ import {
   labAdminLogin,
   labAdminLogout,
   moveLabAssignment,
+  assignConflictTeamLab,
 } from "./services/api";
 
 export default function LabAdminApp() {
@@ -128,7 +129,7 @@ export function LabAdminBoard({ onLogout, session = null }) {
       </aside>
       <main className="main-content">
         <header className="topbar"><div><h1>{title}</h1><p>{page === "teams" ? "Team presence, assignment history and current lab allocation" : "Final team placement after problem allocation"}</p></div><div className="lab-connection"><i className={`status-dot ${connected ? "online" : "degraded"}`} /><span>{connected ? "Live" : "Reconnecting"}</span></div></header>
-        <div className="page-content"><LabAllocationPanel board={board} loading={loading} error={error} onReload={load} onMove={moveLabAssignment} onBoardChange={change => { revision.current += 1; setBoard(change); }} view={page} canMove /></div>
+        <div className="page-content"><LabAllocationPanel board={board} loading={loading} error={error} onReload={load} onMove={moveLabAssignment} onAssignConflict={assignConflictTeamLab} onBoardChange={change => { revision.current += 1; setBoard(change); }} view={page} canMove /></div>
       </main>
     </div>
   );
