@@ -1,9 +1,9 @@
-"""Post-R1 Extra/Grid allocation; auction results/history remain immutable."""
+"""Extra/Grid assignment; auction results/history remain immutable."""
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import Bid, EventConfig, ProblemStatement, RoundControl, Team, WalletTransaction
-from app.services.round1_assignment import current_problem_teams, problem_capacity_remaining, round1_assignment_management_payload
+from app.services.round1_assignment import ROUND1_FINALIZATION_LOCK, current_problem_teams, problem_capacity_remaining, round1_assignment_management_payload
 
 
 class ExtraAssignmentError(ValueError):
@@ -46,19 +46,25 @@ def extra_assignment_payload(db: Session) -> dict:
         row["extra_assignment"] = team.ps_id in problems and team.round1_problem_id is None
     payload["unassigned_teams"] = [row for row in payload["teams"] if is_extra_assignment_candidate(by_id[row["team_id"]])]
     payload["remaining_team_count"] = len(payload["unassigned_teams"])
-    control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one_or_none()
-    payload["can_auto_assign"] = bool(control and control.ended)
+    payload["can_auto_assign"] = bool(payload["remaining_team_count"] and any(row["capacity_remaining"] > 0 for row in problems.values()))
     payload.update(automatic_assignment_price(db))
     return payload
 
 
 def automatically_assign_extra_problems(db: Session, problem_id: int, deduction: int | None = None) -> dict:
     """Fill only the selected problem in team ID order; retain existing assignments."""
+    with ROUND1_FINALIZATION_LOCK:
+        return _assign_extra_problems(db, problem_id, deduction)
+
+
+def _assign_extra_problems(db: Session, problem_id: int, deduction: int | None) -> dict:
     try:
-        # Match auction lock order, but never mutate RoundControl or R1 fields.
+        # Match auction lock order, but never change existing RoundControl or R1 assignment fields.
         control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").with_for_update().populate_existing().one_or_none()
-        if not control or not control.ended:
-            raise ExtraAssignmentError("End Round 1 before automatic Extra/Grid assignment.")
+        if control is None:
+            # Ensure there is a serialization row even before R1 is initialized.
+            db.add(RoundControl(round_type="ROUND1", status="IDLE"))
+            db.flush()
         if deduction is None:
             deduction = automatic_assignment_price(db)["suggested_auto_deduction"]
         if isinstance(deduction, bool) or not isinstance(deduction, int) or deduction < 0:

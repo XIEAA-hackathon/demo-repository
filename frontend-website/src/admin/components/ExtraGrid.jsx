@@ -64,7 +64,6 @@ export default function ExtraGrid({ realtimeEvent, onAssigned = null, selectedPr
       <label htmlFor="extra-assignment-deduction">Deduction per team<input id="extra-assignment-deduction" type="number" min="0" step="1" inputMode="numeric" value={deduction} disabled={working} onChange={event => { priceEdited.current = true; setDeduction(event.target.value); }} /></label>
       <button className="primary-button" disabled={working || !data.can_auto_assign || !data.remaining_team_count || !validDeduction || !target} onClick={() => void assign()}>{working ? "Assigning…" : "AUTO ASSIGN"}</button>
     </div>
-    {!data.can_auto_assign && <p>End Round 1 to enable automatic assignment.</p>}
     {error && <p role="alert">{error}</p>}
     {result && <p role="status">{result.assignments.length} teams assigned at {result.deduction} coins per team.</p>}
     {result?.failures.length > 0 && <ul role="alert">{result.failures.map(row => <li key={row.team_id}>{row.team_name}: {row.reason}{row.required != null ? ` (required ${row.required}, available ${row.available})` : ""}</li>)}</ul>}

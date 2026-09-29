@@ -151,15 +151,11 @@ def test_extra_grid_35_of_35_and_idempotent_with_r1_frozen(db):
     assert allocate_labs(db) == (False, 35)
 
 
-def test_extra_grid_cannot_run_during_r1_or_exceed_capacity(db):
+def test_extra_grid_rejects_ineligible_target_without_charge(db):
     teams, problems = seed_35(db)
     control = db.query(RoundControl).filter_by(round_type="ROUND1").one()
     control.ended = False
     db.commit()
-    with pytest.raises(ExtraAssignmentError):
-        automatically_assign_extra_problems(db, problems[-1].id)
-    assert teams[-1].ps_id is None
-    control.ended = True
     problems[-1].round = 2  # Remove the last remaining R1 capacity.
     db.commit()
     with pytest.raises(ExtraAssignmentError, match="not eligible"):

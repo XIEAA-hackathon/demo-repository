@@ -28,6 +28,7 @@ from app.services.participant_session import participant_session_needs_touch
 from app.services.round1_assignment import (
     ROUND1_FINALIZATION_LOCK,
     ROUND1_PROBLEM_CAPACITY,
+    occupied_problem_count,
     update_round1_winning_bid_aggregate,
 )
 
@@ -335,9 +336,9 @@ async def finalize_round_one(
 
         # The in-process lock protects one worker; these row locks also protect
         # against a second Uvicorn worker/admin request finalizing concurrently.
-        control = db.query(RoundControl).filter(RoundControl.id == control.id).with_for_update().one()
+        control = db.query(RoundControl).filter(RoundControl.id == control.id).with_for_update().populate_existing().one()
 
-        ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).with_for_update().first()
+        ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).with_for_update().populate_existing().first()
         if not ps:
             raise HTTPException(status_code=404, detail="Problem Statement not found")
         if ps.status in {"allocated", "completed", "no_bids"}:
@@ -354,13 +355,13 @@ async def finalize_round_one(
             Bid.round == config.current_round,
         ).order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).all()
 
-        existing_assignment_count = db.query(Team).filter(Team.round1_problem_id == ps.id).count()
+        existing_assignment_count = occupied_problem_count(db, ps.id)
         winner_count = max(0, ROUND1_PROBLEM_CAPACITY - existing_assignment_count)
         winners = []
         for bid in ranked_bids:
             if len(winners) >= winner_count:
                 break
-            winner_team = db.query(Team).filter(Team.id == bid.team_id).with_for_update().first()
+            winner_team = db.query(Team).filter(Team.id == bid.team_id).with_for_update().populate_existing().first()
             if not winner_team or winner_team.round1_problem_id is not None or winner_team.ps_id is not None:
                 continue  # team already has a problem; skip
             if winner_team.coins < bid.amount:

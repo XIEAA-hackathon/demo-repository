@@ -320,3 +320,20 @@ it('keeps manual corrections and external import on Change Problem without loadi
   await click('Assign Problem')
   expect(host.querySelector('[role="dialog"]')).toBeTruthy()
 })
+
+
+it('enables problem-specific Auto Assign while Round 1 is active', async () => {
+  mocks.get.mockResolvedValue(snapshot(false, 'BIDDING', false))
+  mocks.extra.mockResolvedValue(grid())
+  mocks.assign.mockResolvedValue({ ...grid(), assignments: [{ team_id: 1 }], failures: [], deduction: 300 })
+  await act(async () => renderR1())
+  await act(async () => (host.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement).click())
+  const select = host.querySelector('#extra-assignment-problem') as HTMLSelectElement
+  expect(select).toBeTruthy()
+  await act(async () => { select.value = '20'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+  expect(host.textContent).not.toContain('End Round 1 to enable automatic assignment.')
+  expect([...host.querySelectorAll('button')].find(row => row.textContent === 'AUTO ASSIGN')?.disabled).toBe(false)
+  await click('AUTO ASSIGN')
+  expect(mocks.assign).toHaveBeenCalledWith(20, 300)
+  expect(mocks.end).not.toHaveBeenCalled()
+})

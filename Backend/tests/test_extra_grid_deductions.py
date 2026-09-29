@@ -162,14 +162,13 @@ def test_selected_problem_only_capacity_no_spill_and_deterministic_order(db):
     assert db.query(WalletTransaction).count() == 2
 
 
-@pytest.mark.parametrize("invalid_target", ["missing", "wildcard", "full", "r1_open"])
-def test_invalid_target_or_active_r1_rejected_without_charge(db, invalid_target):
+@pytest.mark.parametrize("invalid_target", ["missing", "wildcard", "full"])
+def test_invalid_target_rejected_without_charge(db, invalid_target):
     team, target = seed(db)
     target_id = target.id
     if invalid_target == "missing": target_id = 99999
     elif invalid_target == "wildcard": target.round = 2
     elif invalid_target == "full": db.add_all([Team(team_name=f"Assigned {i}", ps_id=target.id) for i in range(5)])
-    else: db.query(RoundControl).filter_by(round_type="ROUND1").one().ended = False
     db.commit()
     with pytest.raises(ExtraAssignmentError): automatically_assign_extra_problems(db, target_id, 300)
     assert team.ps_id is None and team.coins == 5000
@@ -230,7 +229,7 @@ def test_auto_panel_and_remaining_share_post_r1_capacity_and_refresh_counts(db):
 
 
 def test_active_r1_remaining_uses_existing_history_and_controls(db):
-    _, target = seed(db)
+    team, target = seed(db)
     target.round = 1
     control = db.query(RoundControl).filter_by(round_type="ROUND1").one()
     control.ended = False; control.status = "READY"
@@ -243,5 +242,114 @@ def test_active_r1_remaining_uses_existing_history_and_controls(db):
     assert problem["assigned_team_count"] == 1 and problem["capacity_remaining"] == 4
     assert problem["assignment_status"] == "PARTIAL"
     assert problem["can_assign"] is problem["can_rebid"] is True
-    with pytest.raises(ExtraAssignmentError): automatically_assign_extra_problems(db, target.id, 167)
-    assert remaining_problems_payload(db, control) == before
+    assert extra_assignment_payload(db)["can_auto_assign"] is True
+    automatically_assign_extra_problems(db, target.id, 167)
+    assert team.ps_id == target.id and team.coins == 4833
+    assert team.round1_problem_id is None
+    assert (control.ended, control.status) == (False, "READY")
+    after = remaining_problems_payload(db, control)
+    row = next(row for row in after["problems"] if row["id"] == target.id)
+    for key in ["assigned_teams", "assigned_team_count", "capacity_remaining", "assignment_status", "can_rebid"]:
+        assert row[key] == problem[key]
+    assert after["unassigned_team_count"] == 0
+
+
+@pytest.mark.parametrize("ended", [False, True])
+@pytest.mark.parametrize("availability", ["available", "full", "no_candidates", "wildcard_only"])
+def test_availability_depends_only_on_candidates_and_eligible_capacity(db, ended, availability):
+    team, target = seed(db)
+    control = db.query(RoundControl).filter_by(round_type="ROUND1").one()
+    control.ended = ended
+    if availability == "full":
+        db.add_all([Team(team_name=f"Occupant {i}", ps_id=target.id) for i in range(5)])
+    elif availability == "no_candidates":
+        team.is_approved = False
+    elif availability == "wildcard_only":
+        target.round = 2
+    db.commit()
+    assert extra_assignment_payload(db)["can_auto_assign"] is (availability == "available")
+
+
+def test_active_r1_one_slot_two_teams_charged_once_in_id_order(db):
+    first, target = seed(db)
+    target.round = 1
+    control = db.query(RoundControl).filter_by(round_type="ROUND1").one()
+    control.ended = False; control.status = "BIDDING"
+    second = Team(team_name="Second candidate")
+    db.add_all([second] + [Team(team_name=f"Winner {i}", ps_id=target.id,
+        round1_problem_id=target.id, round1_assignment_type="BID_WINNER", round1_assignment_cost=100) for i in range(4)])
+    db.commit()
+    result = automatically_assign_extra_problems(db, target.id, 167)
+    assert [row["team_id"] for row in result["assignments"]] == [first.id]
+    assert db.query(Team).filter_by(ps_id=target.id).count() == 5
+    assert first.coins == 4833 and first.round1_problem_id is None
+    assert second.ps_id is None and second.coins == 5000
+    assert db.query(WalletTransaction).one().amount == -167
+    assert (control.ended, control.status) == (False, "BIDDING")
+    with pytest.raises(ExtraAssignmentError, match="no remaining capacity"):
+        automatically_assign_extra_problems(db, target.id, 167)
+    assert db.query(WalletTransaction).count() == 1
+
+
+@pytest.mark.parametrize("endpoint", ["rounds", "auction"])
+@pytest.mark.parametrize("order", ["auto_first", "r1_first", "concurrent"])
+def test_r1_finalization_and_auto_share_locked_capacity(db, session_factory, monkeypatch, endpoint, order):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from app.api import auction
+
+    first, target = seed(db)
+    target.round = 1; target.ps_number = "R1-1"; target.status = "visible"
+    second = Team(team_name="Higher bidder")
+    db.add(second); db.flush()
+    db.add_all([Team(team_name=f"Existing winner {i}", ps_id=target.id, round1_problem_id=target.id,
+        round1_assignment_type="BID_WINNER", round1_assignment_cost=100) for i in range(4)])
+    db.add_all([Bid(team_id=first.id, ps_id=target.id, round=1, amount=100),
+                Bid(team_id=second.id, ps_id=target.id, round=1, amount=200)])
+    control = db.query(RoundControl).filter_by(round_type="ROUND1").one()
+    control.ended = False; control.status = "READY"; control.current_problem_id = target.id
+    db.query(GameConfig).one().current_round = 1
+    db.commit()
+    target_id, first_id, second_id = target.id, first.id, second.id
+    db.close()
+    async def broadcast(*args, **kwargs): pass
+    monkeypatch.setattr(rounds.manager, "broadcast_event", broadcast)
+    monkeypatch.setattr(auction.manager, "broadcast_event", broadcast)
+    barrier = Barrier(2) if order == "concurrent" else None
+    def auto():
+        with session_factory() as session:
+            if barrier: barrier.wait(timeout=5)
+            try:
+                return automatically_assign_extra_problems(session, target_id, 167)
+            except ExtraAssignmentError as error:
+                assert "no remaining capacity" in str(error)
+                return None
+    def finalize():
+        with session_factory() as session:
+            if barrier: barrier.wait(timeout=5)
+            return asyncio.run(rounds.assign_winners("round-1", session, None) if endpoint == "rounds"
+                               else auction.finalize_round_one(target_id, session, None))
+    if order == "concurrent":
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            auto_future, r1_future = pool.submit(auto), pool.submit(finalize)
+            auto_future.result(timeout=15); r1_future.result(timeout=15)
+    elif order == "auto_first":
+        auto(); finalize()
+    else:
+        finalize(); auto()
+    with session_factory() as check:
+        assert check.query(Team).filter_by(ps_id=target_id).count() == 5
+        candidates = [check.get(Team, first_id), check.get(Team, second_id)]
+        assert sum(team.ps_id == target_id for team in candidates) == 1
+        ledger = check.query(WalletTransaction).one()
+        assigned = next(team for team in candidates if team.ps_id == target_id)
+        assert assigned.id == ledger.team_id and assigned.coins == 5000 + ledger.amount
+        if assigned.round1_problem_id is None:
+            assert assigned.id == first_id and ledger.amount == -167
+            assert ledger.transaction_type == "EXTRA_GRID_AUTO_ASSIGN"
+        else:
+            assert assigned.id == second_id and ledger.amount == -200
+            assert ledger.transaction_type == "ROUND1_WIN"
+        assert all(team.coins == 5000 for team in candidates if team.ps_id is None)
+        assert check.query(Team).filter_by(round1_assignment_type="BID_WINNER", round1_assignment_cost=100).count() == 4

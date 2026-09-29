@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from threading import RLock
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.models.models import ProblemStatement, RoundControl, Team, User, WalletTransaction
@@ -27,6 +27,11 @@ def _display_number(problem: ProblemStatement) -> str:
 
 def assigned_team_count(db: Session, problem_id: int) -> int:
     return db.query(Team).filter(Team.round1_problem_id == problem_id).count()
+
+
+def occupied_problem_count(db: Session, problem_id: int) -> int:
+    """Count reserved R1 seats and current Extra/Grid seats once per team."""
+    return db.query(Team).filter(or_(Team.round1_problem_id == problem_id, Team.ps_id == problem_id)).count()
 
 
 def remaining_capacity(db: Session, problem_id: int) -> int:

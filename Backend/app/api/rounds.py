@@ -35,6 +35,7 @@ from app.services.round1_assignment import (
     Round1AssignmentError,
     change_round1_problem_assignment,
     manually_assign_problem,
+    occupied_problem_count,
     round1_assignment_management_payload,
     remaining_problems_payload,
     update_round1_winning_bid_aggregate,
@@ -402,11 +403,11 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
         if control.current_problem_id is None and control.status in {"READY", "COMPLETE"}:
             logger.info("Duplicate Round 1 winner assignment request ignored; assignment is already complete.")
             return {"message": "Winner assignment already completed.", "winners": [], **_round_payload(db, meta)}
-        problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id, ProblemStatement.round == meta["number"]).first()
+        problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id, ProblemStatement.round == meta["number"]).with_for_update().populate_existing().first()
         if not problem or control.status != "READY":
             raise HTTPException(status_code=409, detail="Close bidding before assigning winners.")
         event_config = get_or_create_event_config(db)
-        existing_assignments = db.query(Team).filter(Team.round1_problem_id == problem.id).count()
+        existing_assignments = occupied_problem_count(db, problem.id)
         winner_limit = (
             max(0, ROUND1_PROBLEM_CAPACITY - existing_assignments)
             if meta["number"] == 1
@@ -417,7 +418,7 @@ async def assign_winners(round_slug: str, db: Session = Depends(get_db), current
         for bid in bids:
             if len(winners) >= winner_limit:
                 break
-            team = db.query(Team).filter(Team.id == bid.team_id).first()
+            team = db.query(Team).filter(Team.id == bid.team_id).with_for_update().populate_existing().first()
             if not team or team.round1_problem_id is not None or team.ps_id is not None or team.coins < bid.amount:
                 continue
             if meta["number"] == 2:
