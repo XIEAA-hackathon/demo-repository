@@ -2,6 +2,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { LabAdminBoard } from './lab-admin/LabAdminApp'
+import LabAllocationPanel from './labs/LabAllocationPanel'
 import { applyLabChange } from './labs/labBoard'
 import { applyBidDelta, applyDisplayBidDelta, parseBidDelta } from './participant/services/bidRealtime'
 
@@ -19,7 +20,7 @@ function board(title = 'Original PS', count = 1) {
     final_problem: { id: index + 100, problem_number: `WC-${index + 1}`, problem_title: title },
     effective_problem: { id: index + 100, number: `WC-${index + 1}`, title },
     wildcard_history: { selected: true, problem_number: `WC-${index + 1}`, problem_title: title },
-    assignment_id: index + 1, version: 1, current_lab_id: 1, original_lab_id: 1, assignment_source: 'AUTO',
+    assignment_id: index + 1, version: 1, current_lab_id: 1, original_lab_id: 1, assignment_source: 'AUTO', lab_allocation_status: 'assigned',
   }))
   return { teams, labs: [{ id: 1, name: 'Main Lab', capacity: 50, occupancy: count, teams: [...teams] }],
     unassigned_team_ids: [], unassigned_teams: [], assigned_count: count, unassigned_count: 0,
@@ -140,8 +141,7 @@ it('filters PS allocation independently of labs, including legacy R1 history', a
     { id: 3, team_code: 'T-3', team_name: 'Team C', logged_in: false, final_problem: null, effective_problem: null } as any)
   mocks.load.mockResolvedValue(fixture)
   await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />))
-  const filter = host.querySelector('.lab-filters select') as HTMLSelectElement
-  const select = async (value: string) => { await act(async () => { filter.value = value; filter.dispatchEvent(new Event('change', { bubbles: true })) }) }
+  const select = allocationFilter
   await select('ps_allocated')
   expect([...host.querySelectorAll('.team-identity strong')].map(row => row.textContent)).toEqual(['Team B', 'Team A'])
   expect(host.querySelectorAll('.team-allotment-row')[0].textContent).toContain('PS AllocatedMain Lab')
@@ -162,7 +162,7 @@ it('updates R1 PS status immediately through the existing event and retains both
   const final: any = { ...assigned, teams: [{ ...assigned.teams[0], wildcard_history: wc, final_problem: wc }] }
   mocks.load.mockResolvedValueOnce(initial).mockResolvedValueOnce(assigned).mockResolvedValueOnce(final)
   await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />))
-  expect(host.querySelector('.team-allotment-row')?.textContent).toContain('PS Not Allocated')
+  expect(host.querySelector('.team-allotment-row')?.textContent).toContain('PS Pending')
   await emit('round_updated', { action: 'winners_assigned' })
   expect(host.querySelector('.team-allotment-row')?.textContent).toContain('PS Allocated')
   expect(host.querySelector('.team-allotment-row')?.textContent).toContain('Lab pending')
@@ -220,8 +220,7 @@ const labsPage = async () => {
   await act(async () => button.click())
 }
 const allocationFilter = async (value: string) => {
-  const select = host.querySelector('.lab-filters select') as HTMLSelectElement
-  await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })) })
+  await act(async () => (host.querySelector(`[data-filter="${value}"]`) as HTMLButtonElement).click())
 }
 
 it('filters Assigned, Unassigned and Conflict using the backend states', async () => {
@@ -241,21 +240,28 @@ it('requires Assign Anyway before a same-PS conflict request and updates the cou
     assignment_source: 'MANUAL_OVERRIDE', constraint_override: true, lab_allocation_status: 'assigned' })
   await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />)); await labsPage(); await allocationFilter('conflict')
   await act(async () => (host.querySelector('.team-allotment-row button') as HTMLButtonElement).click())
-  const picker = host.querySelector('.lab-move-picker select') as HTMLSelectElement
-  expect([...picker.options].map(row => row.textContent).join(' ')).not.toContain('Full Lab')
-  expect(picker.options[1].textContent).toContain('WC-1 already present')
-  await act(async () => { picker.value = '1'; picker.dispatchEvent(new Event('change', { bubbles: true })) })
-  await act(async () => (host.querySelector('.lab-move-picker button[type="submit"]') as HTMLButtonElement).click())
-  expect(host.querySelector('[role="dialog"]')?.textContent).toContain('Same PS conflict')
+  const drawer = document.querySelector('.lab-drawer')!
+  expect(drawer.textContent).not.toContain('Full Lab')
+  expect(drawer.textContent).toContain('WC-1 already present')
+  await act(async () => (drawer.querySelector('input[value="1"]') as HTMLInputElement).click())
+  await act(async () => (drawer.querySelector('button[type="submit"]') as HTMLButtonElement).click())
+  expect(drawer.textContent).toContain('Same problem already present')
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1)
   expect(mocks.assign).not.toHaveBeenCalled()
-  const confirm = [...host.querySelectorAll('button')].find(row => row.textContent === 'Assign Anyway')!
+  await act(async () => ([...drawer.querySelectorAll('button')].find(row => row.textContent === 'Back') as HTMLButtonElement).click())
+  expect((drawer.querySelector('input[value="1"]') as HTMLInputElement).checked).toBe(true)
+  expect(document.activeElement).toBe(drawer.querySelector('input[value="1"]'))
+  await act(async () => (drawer.querySelector('button[type="submit"]') as HTMLButtonElement).click())
+  const confirm = [...drawer.querySelectorAll('button')].find(row => row.textContent === 'Assign anyway')!
   await act(async () => confirm.click())
   expect(mocks.assign).toHaveBeenCalledWith(2, { lab_id: 1, allow_constraint_override: true })
   expect(mocks.move).not.toHaveBeenCalled()
   expect(host.querySelectorAll('.team-allotment-row')).toHaveLength(0)
   expect(host.querySelector('.lab-allocation-summary')?.textContent).toContain('Assigned2')
   expect(host.querySelector('.lab-allocation-summary')?.textContent).toContain('Conflict0')
+  await allocationFilter('all')
   expect(host.querySelector('.lab-override-badge')?.textContent).toBe('Same PS')
+  expect(host.querySelector('.lab-override-badge')?.getAttribute('title')).toContain('manually placed')
 })
 
 it('reconciles conflict resolution through the existing socket without reload or extra listeners', async () => {
@@ -271,4 +277,114 @@ it('reconciles conflict resolution through the existing socket without reload or
   expect(host.querySelector('.lab-allocation-summary')?.textContent).toContain('Conflict0')
   expect(mocks.load).toHaveBeenCalledTimes(2)
   expect(mocks.socket).toHaveBeenCalledTimes(1)
+})
+
+it('shows compact counts, capacity and awaiting teams without impossible actions', async () => {
+  mocks.load.mockResolvedValue(conflictBoard())
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />)); await labsPage()
+  expect(host.querySelectorAll('.lab-allocation-summary > div')).toHaveLength(4)
+  expect([...host.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['All3', 'Assigned1', 'Conflict1', 'Unassigned1'])
+  expect(host.querySelector('.lab-allocation-summary')?.textContent).toContain('1 awaiting PS')
+  expect(host.querySelectorAll('.lab-slots')[0].textContent).toBe('1 seat available')
+  expect(host.querySelectorAll('.lab-slots')[1].textContent).toBe('Full')
+  expect(host.querySelector('.lab-bucket-empty')?.textContent).toContain('No teams assigned yet')
+  expect(host.querySelector('.lab-conflicts')).toBeTruthy()
+  expect(host.querySelector('.lab-unassigned button')).toBeNull()
+  expect(host.querySelector('button:disabled')).toBeNull()
+  expect([...host.querySelectorAll('button')].some(button => button.textContent === 'Generate allocation')).toBe(false)
+  await allocationFilter('unassigned')
+  expect(host.querySelector('.team-allotment-row button')).toBeNull()
+})
+
+it('supports segmented keyboard navigation and returns focus after ESC closes the drawer', async () => {
+  mocks.load.mockResolvedValue(conflictBoard())
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />)); await labsPage()
+  const all = host.querySelector('[data-filter="all"]') as HTMLButtonElement
+  all.focus()
+  await act(async () => all.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
+  expect(host.querySelector('[data-filter="assigned"]')?.getAttribute('aria-selected')).toBe('true')
+  expect(document.activeElement).toBe(host.querySelector('[data-filter="assigned"]'))
+  await allocationFilter('conflict')
+  const trigger = host.querySelector('.team-allotment-row button') as HTMLButtonElement
+  trigger.focus(); await act(async () => trigger.click())
+  const dialog = document.querySelector('.lab-drawer')!
+  expect(dialog.contains(document.activeElement)).toBe(true)
+  const cancel = [...dialog.querySelectorAll('button')].find(button => button.textContent === 'Cancel')!
+  cancel.focus()
+  await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })))
+  expect(document.activeElement).toBe(dialog.querySelector('button'))
+  await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+  expect(document.querySelector('.lab-drawer')).toBeNull()
+  expect(document.activeElement).toBe(trigger)
+  expect(mocks.assign).not.toHaveBeenCalled()
+  expect(mocks.load).toHaveBeenCalledTimes(1)
+})
+
+it('keeps ordinary moves strict and saves a permitted move with its existing version contract', async () => {
+  const fixture: any = board()
+  fixture.labs.push({ id: 2, name: 'Same PS Lab', capacity: 2, occupancy: 1, teams: [{ ...fixture.teams[0], id: 9 }] },
+    { id: 3, name: 'Free Lab', capacity: 4, occupancy: 0, teams: [] })
+  mocks.load.mockResolvedValue(fixture)
+  mocks.move.mockResolvedValue({ team_id: 1, lab: { id: 3, name: 'Free Lab' }, assignment_id: 1, version: 2 })
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />)); await labsPage(); await allocationFilter('assigned')
+  await act(async () => (host.querySelector('.team-allotment-row button') as HTMLButtonElement).click())
+  const drawer = document.querySelector('.lab-drawer')!
+  expect((drawer.querySelector('input[value="2"]') as HTMLInputElement).disabled).toBe(true)
+  expect(drawer.textContent).toContain('already contains')
+  await act(async () => (drawer.querySelector('input[value="3"]') as HTMLInputElement).click())
+  await act(async () => (drawer.querySelector('button[type="submit"]') as HTMLButtonElement).click())
+  expect(mocks.move).toHaveBeenCalledWith(1, { lab_id: 3, expected_version: 1 })
+  expect(mocks.assign).not.toHaveBeenCalled()
+  expect(document.querySelector('.lab-drawer')).toBeNull()
+  expect(host.querySelector('.team-lab')?.textContent).toContain('Free Lab')
+  expect(host.querySelector('.lab-save-status')?.textContent).toBe('Assignment updated')
+  expect(mocks.load).toHaveBeenCalledTimes(1)
+})
+
+it('keeps generation in the Event Admin header and prevents duplicate requests', async () => {
+  let finish!: () => void
+  const allocate = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  const reload = vi.fn()
+  await act(async () => root.render(<LabAllocationPanel board={{ ...board(), can_allocate: true }} canAllocate onAllocate={allocate} onReload={reload} onMove={undefined} onBoardChange={undefined} onAssignConflict={undefined} />))
+  const generate = host.querySelector('.lab-workspace__actions .primary-button') as HTMLButtonElement
+  await act(async () => { generate.click(); generate.click() })
+  expect(allocate).toHaveBeenCalledTimes(1)
+  expect(generate.disabled).toBe(true)
+  expect(generate.textContent).toBe('Generating…')
+  await act(async () => finish())
+  expect(reload).toHaveBeenCalledTimes(1)
+})
+
+it('keeps a failed move in the drawer and rolls back the local placement', async () => {
+  const fixture: any = board()
+  fixture.labs.push({ id: 2, name: 'Free Lab', capacity: 4, occupancy: 0, teams: [] })
+  mocks.load.mockResolvedValue(fixture)
+  mocks.move.mockRejectedValue(new Error('Assignment changed; refresh and try again.'))
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />)); await labsPage(); await allocationFilter('assigned')
+  await act(async () => (host.querySelector('.team-allotment-row button') as HTMLButtonElement).click())
+  const drawer = document.querySelector('.lab-drawer')!
+  await act(async () => (drawer.querySelector('input[value="2"]') as HTMLInputElement).click())
+  await act(async () => (drawer.querySelector('button[type="submit"]') as HTMLButtonElement).click())
+  expect(document.querySelector('.lab-drawer [role="alert"]')?.textContent).toContain('Assignment changed')
+  expect(host.querySelector('.team-lab')?.textContent).toBe('Main Lab')
+  expect(mocks.move).toHaveBeenCalledTimes(1)
+  expect(mocks.load).toHaveBeenCalledTimes(1)
+})
+
+it('rechecks live capacity while the same-PS confirmation is open', async () => {
+  const initial = conflictBoard()
+  const full = structuredClone(initial)
+  full.labs[0].occupancy = full.labs[0].capacity
+  mocks.load.mockResolvedValueOnce(initial).mockResolvedValue(full)
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />)); await labsPage(); await allocationFilter('conflict')
+  await act(async () => (host.querySelector('.team-allotment-row button') as HTMLButtonElement).click())
+  const drawer = document.querySelector('.lab-drawer')!
+  await act(async () => (drawer.querySelector('input[value="1"]') as HTMLInputElement).click())
+  await act(async () => (drawer.querySelector('button[type="submit"]') as HTMLButtonElement).click())
+  await emit('lab_assignment_changed', { team_id: 9 } as any)
+  expect(drawer.querySelector('[role="alert"]')?.textContent).toContain('no longer available')
+  const confirm = [...drawer.querySelectorAll('button')].find(button => button.textContent === 'Assign anyway')!
+  expect(confirm.disabled).toBe(true)
+  await act(async () => confirm.click())
+  expect(mocks.assign).not.toHaveBeenCalled()
 })

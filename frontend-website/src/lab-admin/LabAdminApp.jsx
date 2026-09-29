@@ -119,7 +119,7 @@ export function LabAdminBoard({ onLogout, session = null }) {
     };
   }, [load]);
   const connected = socketStatus === "connected" || socketStatus === "reconnected";
-  const title = page === "teams" ? "Team Details" : "Labs";
+  const title = page === "teams" ? "Teams" : "Lab Allocation";
   return (
     <div className="app-shell lab-admin-shell">
       <aside className="sidebar lab-admin-sidebar">
@@ -128,8 +128,8 @@ export function LabAdminBoard({ onLogout, session = null }) {
         <div className="sidebar-bottom"><div className="admin-profile"><div className="admin-avatar">L</div><div><strong>{session?.name || "Lab Admin"}</strong><span>Lab operations access</span></div></div><button className="logout-button" onClick={onLogout}>Log out</button></div>
       </aside>
       <main className="main-content">
-        <header className="topbar"><div><h1>{title}</h1><p>{page === "teams" ? "Team presence, assignment history and current lab allocation" : "Final team placement after problem allocation"}</p></div><div className="lab-connection"><i className={`status-dot ${connected ? "online" : "degraded"}`} /><span>{connected ? "Live" : "Reconnecting"}</span></div></header>
-        <div className="page-content"><LabAllocationPanel board={board} loading={loading} error={error} onReload={load} onMove={moveLabAssignment} onAssignConflict={assignConflictTeamLab} onBoardChange={change => { revision.current += 1; setBoard(change); }} view={page} canMove /></div>
+        <header className="topbar"><div><h1>{title}</h1><p>{page === "teams" ? "Problem and lab assignment status" : "Final placement for participating teams"}</p></div><div className="lab-admin-header-actions"><div className="lab-connection" role="status"><i className={`status-dot ${connected ? "online" : "degraded"}`} /><span>{connected ? "Live" : "Reconnecting"}</span></div><button type="button" className="lab-refresh" onClick={() => void load()}>Refresh</button></div></header>
+        <div className="page-content"><LabAllocationPanel board={board} loading={loading} error={error} onReload={load} onMove={moveLabAssignment} onAssignConflict={assignConflictTeamLab} onBoardChange={change => { revision.current += 1; setBoard(change); }} view={page} canMove showHeader={false} /></div>
       </main>
     </div>
   );
