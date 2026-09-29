@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.models.models import Bid, EventConfig, GameConfig, ProblemStatement, RoundControl, Team, WalletTransaction, WildcardBid
 from app.services.extra_assignment import automatic_assignment_price, automatically_assign_extra_problems, extra_assignment_payload, ExtraAssignmentError
 from app.services.lab_allocation import lab_board
+from app.services.round1_assignment import remaining_problems_payload
 
 
 def seed(db, amounts=()):
@@ -83,13 +84,17 @@ def test_insufficient_balance_skips_only_that_team(db):
     team, problem = seed(db)
     team.coins = 100
     funded = Team(team_name="Funded", coins=5000)
-    db.add(funded); db.commit()
+    next_funded = Team(team_name="Next funded", coins=5000)
+    db.add_all([funded, next_funded] + [Team(team_name=f"Occupant {i}", ps_id=problem.id) for i in range(3)]); db.commit()
     result = automatically_assign_extra_problems(db, problem.id, 300)
     assert result["failures"] == [{"team_id": team.id, "team_name": team.team_name,
         "reason": "Insufficient coins", "required": 300, "available": 100}]
     assert team.ps_id is None and team.coins == 100
     assert db.query(WalletTransaction).filter_by(team_id=team.id).count() == 0
-    assert funded.ps_id is not None and funded.coins == 4700
+    assert funded.ps_id == next_funded.ps_id == problem.id
+    assert funded.coins == next_funded.coins == 4700
+    assert db.query(Team).filter_by(ps_id=problem.id).count() == 5
+    assert db.query(WalletTransaction).count() == 2
 
 
 def test_assignment_charge_and_ledger_roll_back_together(db, monkeypatch):
@@ -183,10 +188,60 @@ def test_only_eligible_teams_and_current_assignments_count_for_extra_capacity(db
     previous_winners = [Team(team_name=f"WC winner {i}", ps_id=wildcard.id, round1_problem_id=target.id,
         wildcard_problem_id=wildcard.id) for i in range(5)]
     db.add_all(excluded + previous_winners); db.commit()
-    assert next(row for row in extra_assignment_payload(db)["problems"] if row["id"] == target.id)["capacity_remaining"] == 5
+    payload = extra_assignment_payload(db)
+    assert payload["remaining_team_count"] == 1
+    assert [row["team_id"] for row in payload["unassigned_teams"]] == [eligible.id]
+    assert next(row for row in payload["problems"] if row["id"] == target.id)["capacity_remaining"] == 5
     before = [(t.ps_id, t.round1_problem_id, t.wildcard_problem_id, t.coins) for t in excluded + previous_winners]
     result = automatically_assign_extra_problems(db, target.id, 300)
     assert [row["team_id"] for row in result["assignments"]] == [eligible.id]
     assert result["failures"] == []
     assert [(t.ps_id, t.round1_problem_id, t.wildcard_problem_id, t.coins) for t in excluded + previous_winners] == before
     assert db.query(WalletTransaction).count() == 1
+
+
+def test_auto_panel_and_remaining_share_post_r1_capacity_and_refresh_counts(db):
+    first, target = seed(db)
+    target.round = 1
+    occupants = [Team(team_name=f"R1 winner {i}", ps_id=target.id, round1_problem_id=target.id,
+        round1_assignment_type="BID_WINNER", round1_assignment_cost=100) for i in range(3)]
+    extra_candidates = [Team(team_name=f"Candidate {i}") for i in range(3)]
+    db.add_all(occupants + extra_candidates); db.commit()
+    control = db.query(RoundControl).filter_by(round_type="ROUND1").one()
+    def views():
+        auto = extra_assignment_payload(db)
+        remaining = remaining_problems_payload(db, control)
+        auto_problem = next(row for row in auto["problems"] if row["id"] == target.id)
+        remaining_problem = next(row for row in remaining["problems"] if row["id"] == target.id)
+        assert auto["remaining_team_count"] == remaining["unassigned_team_count"]
+        assert (auto_problem["assigned_team_count"], auto_problem["capacity_remaining"]) == (remaining_problem["assigned_team_count"], remaining_problem["capacity_remaining"])
+        assert remaining_problem["auction_capacity"] == 5
+        assert remaining_problem["can_assign"] is remaining_problem["can_rebid"] is False
+        return auto, remaining_problem
+    before, problem_before = views()
+    assert before["remaining_team_count"] == 4 and problem_before["capacity_remaining"] == 2
+    result = automatically_assign_extra_problems(db, target.id, 167)
+    assert [row["team_id"] for row in result["assignments"]] == [first.id, extra_candidates[0].id]
+    after, problem_after = views()
+    assert after["remaining_team_count"] == 2 and problem_after["capacity_remaining"] == 0
+    assert problem_after["assignment_status"] == "ASSIGNED" and problem_after["auction_full"] is True
+    assert [row["team_id"] for row in problem_after["assigned_teams"]] == sorted([t.id for t in occupants] + [first.id, extra_candidates[0].id])
+    assert first.round1_problem_id is first.round1_assignment_type is first.round1_assignment_cost is None
+
+
+def test_active_r1_remaining_uses_existing_history_and_controls(db):
+    _, target = seed(db)
+    target.round = 1
+    control = db.query(RoundControl).filter_by(round_type="ROUND1").one()
+    control.ended = False; control.status = "READY"
+    history = Team(team_name="Historical R1", round1_problem_id=target.id, round1_assignment_type="BID_WINNER", round1_assignment_cost=100)
+    current_only = Team(team_name="Current Extra", ps_id=target.id)
+    db.add_all([history, current_only]); db.commit()
+    before = remaining_problems_payload(db, control)
+    problem = next(row for row in before["problems"] if row["id"] == target.id)
+    assert [row["team_id"] for row in problem["assigned_teams"]] == [history.id]
+    assert problem["assigned_team_count"] == 1 and problem["capacity_remaining"] == 4
+    assert problem["assignment_status"] == "PARTIAL"
+    assert problem["can_assign"] is problem["can_rebid"] is True
+    with pytest.raises(ExtraAssignmentError): automatically_assign_extra_problems(db, target.id, 167)
+    assert remaining_problems_payload(db, control) == before

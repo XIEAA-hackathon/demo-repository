@@ -67,15 +67,10 @@ async def auto_assign_extra_grid(payload: ExtraGridAssignmentRequest,
     except (IntegrityError, OperationalError) as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Assignments changed concurrently. Refresh Extra/Grid and retry.") from exc
-    from app.services.lab_allocation import try_allocate_labs
-    allocated_count = try_allocate_labs(db) if result["assignments"] else None
-    changes = db.info.pop("lab_assignment_changes", [])
     db.close()
     if result["assignments"]:
         manager.publish_event("round_updated", {"round": "EXTRA", "action": "extra_grid_assigned",
                               "team_ids": [row["team_id"] for row in result["assignments"]], "assignments": result["assignments"]})
-    if allocated_count is not None:
-        manager.publish_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocated_count, "assignments": changes}, roles={"admin", "lab_admin"})
     return result
 
 ROUND_META = {

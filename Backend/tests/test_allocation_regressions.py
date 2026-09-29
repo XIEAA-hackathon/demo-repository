@@ -240,6 +240,9 @@ def test_lab_admin_receives_allocation_and_manual_change_events():
         assert [row["type"] for row in received[admin]] == ["lab_assignment_changed", "lab_allocation_updated", "lab_assignment_changed"]
         assert [row["type"] for row in received[participant]] == ["lab_assignment_changed", "lab_assignment_changed"]
         assert received[other] == []
+        await manager.broadcast_event("round_updated", {"action": "extra_grid_assigned", "team_ids": [1]})
+        await manager.wait_for_pending()
+        assert received[admin][-1]["payload"]["action"] == "extra_grid_assigned"
         await manager.stop()
     asyncio.run(scenario())
 
@@ -338,7 +341,7 @@ def test_35_resolved_teams_impossible_33_flow_is_not_committed(db):
     assert db.query(LabAssignment).count() == 0
 
 
-def test_extra_endpoint_commits_then_notifies_and_connects_lab_allocation(db, monkeypatch):
+def test_extra_endpoint_notifies_then_keeps_labs_pending_until_authoritative_allocation(db, monkeypatch):
     _, problems = seed_35(db)
     problem_id = problems[-1].id
     events = []
@@ -357,9 +360,14 @@ def test_extra_endpoint_commits_then_notifies_and_connects_lab_allocation(db, mo
     assert first.status_code == 200 and second.status_code == 409
     assert len(first.json()["assignments"]) == 2
     assert "no remaining capacity" in second.json()["detail"]
-    assert [row[0] for row in events] == ["round_updated", "lab_allocation_updated"]
-    assert events[1][1]["team_count"] == 35
-    assert "lab_admin" in events[1][2]["roles"]
+    assert [row[0] for row in events] == ["round_updated"]
+    assert events[0][1]["action"] == "extra_grid_assigned"
+    assert events[0][2].get("roles") is None  # Existing event reaches lab_admin too.
+    assert db.query(LabAssignment).count() == 0
+    board = lab_board(db)
+    assert len(board["teams"]) == 35
+    assert all(row["problem_assignment_status"] == "allocated" and row["allocation_status"] == "lab_pending" for row in board["teams"])
+    assert allocate_labs(db) == (True, 35)
     assert db.query(LabAssignment).count() == 35
 
 

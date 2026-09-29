@@ -2386,10 +2386,15 @@ td strong {
 .wildcard-stage-banner > strong { padding: 8px 11px; color: #edc66d; background: rgba(237,198,109,.08); border: 1px solid rgba(237,198,109,.2); border-radius: 999px; font-size: 8px; letter-spacing: .8px; }
 .wildcard-tabs { display: grid; grid-template-columns: repeat(4, 1fr); padding: 4px; background: rgba(255,255,255,.025); border: 1px solid rgba(190,91,243,.13); border-radius: 12px; }
 .round1-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.extra-grid-price { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 0 24px 20px; }
-.extra-grid-price label { display: grid; gap: 6px; color: #e9daef; font-size: 13px; }
-.extra-grid-price input { width: 160px; max-width: 100%; min-height: 44px; padding: 8px; color: #f5edf8; background: #13091b; border: 1px solid #79558b; border-radius: 8px; font-size: 16px; }
-.extra-grid-price p { flex: 1 1 240px; color: #bca5c8; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.extra-grid-summary { display: flex; flex-wrap: wrap; gap: 18px 36px; margin: 0; padding: 0 24px 18px; }
+.extra-grid-summary dt { color: #bca5c8; font-size: 12px; }
+.extra-grid-summary dd { margin: 5px 0; color: #f5edf8; font-size: 20px; font-weight: 800; }
+.extra-grid-summary small { color: #bca5c8; font-size: 12px; }
+.extra-grid-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 14px; padding: 0 24px 22px; }
+.extra-grid-controls label { display: grid; gap: 6px; min-width: 0; max-width: 100%; color: #e9daef; font-size: 13px; }
+.extra-grid-controls input, .extra-grid-controls select { box-sizing: border-box; width: 220px; max-width: 100%; min-height: 44px; padding: 8px; color: #f5edf8; background: #13091b; border: 1px solid #79558b; border-radius: 8px; font-size: 16px; }
+.extra-grid-controls input { width: 160px; }
+.extra-grid-controls button { min-height: 44px; }
 .extra-grid > p, .extra-grid > ul { margin: 12px 24px 20px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .wildcard-tabs button { min-height: 50px; display: flex; align-items: center; justify-content: center; gap: 9px; color: #84728d; background: transparent; border: 0; border-radius: 9px; font-size: 9px; font-weight: 900; letter-spacing: .4px; text-transform: uppercase; }
 .wildcard-tabs button span { width: 22px; height: 22px; display: grid; place-items: center; color: #8c7598; border: 1px solid rgba(193,91,242,.2); border-radius: 50%; }

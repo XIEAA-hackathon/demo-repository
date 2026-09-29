@@ -3,7 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import Bid, EventConfig, ProblemStatement, RoundControl, Team, WalletTransaction
-from app.services.round1_assignment import ROUND1_PROBLEM_CAPACITY, round1_assignment_management_payload
+from app.services.round1_assignment import current_problem_teams, problem_capacity_remaining, round1_assignment_management_payload
 
 
 class ExtraAssignmentError(ValueError):
@@ -11,6 +11,11 @@ class ExtraAssignmentError(ValueError):
 
 
 EXTRA_GRID_TRANSACTION = "EXTRA_GRID_AUTO_ASSIGN"
+
+
+def is_extra_assignment_candidate(team: Team) -> bool:
+    return (team.is_approved and not team.is_system_team and team.ps_id is None
+            and team.round1_problem_id is None and team.wildcard_problem_id is None)
 
 
 def automatic_assignment_price(db: Session) -> dict:
@@ -27,14 +32,11 @@ def extra_assignment_payload(db: Session) -> dict:
     # Reuse the existing grid projection, overlaying final/current assignments.
     payload = round1_assignment_management_payload(db)
     teams = db.query(Team).order_by(Team.id.asc()).all()
-    counts = {}
-    for team in teams:
-        if team.ps_id is not None:
-            counts[team.ps_id] = counts.get(team.ps_id, 0) + 1
+    groups = current_problem_teams(teams)
     problems = {row["id"]: row for row in payload["problems"]}
     for row in problems.values():
-        row["assigned_team_count"] = counts.get(row["id"], 0)
-        row["capacity_remaining"] = max(0, ROUND1_PROBLEM_CAPACITY - row["assigned_team_count"])
+        row["assigned_team_count"] = len(groups.get(row["id"], []))
+        row["capacity_remaining"] = problem_capacity_remaining(row["assigned_team_count"])
         row["is_full"] = row["capacity_remaining"] == 0
     by_id = {team.id: team for team in teams}
     for row in payload["teams"]:
@@ -42,7 +44,8 @@ def extra_assignment_payload(db: Session) -> dict:
         row["current_problem"] = problems.get(team.ps_id)
         row["assignment_status"] = "ASSIGNED" if team.ps_id is not None else "NOT_ASSIGNED"
         row["extra_assignment"] = team.ps_id in problems and team.round1_problem_id is None
-    payload["unassigned_teams"] = [row for row in payload["teams"] if row["assignment_status"] == "NOT_ASSIGNED"]
+    payload["unassigned_teams"] = [row for row in payload["teams"] if is_extra_assignment_candidate(by_id[row["team_id"]])]
+    payload["remaining_team_count"] = len(payload["unassigned_teams"])
     control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one_or_none()
     payload["can_auto_assign"] = bool(control and control.ended)
     payload.update(automatic_assignment_price(db))
@@ -66,15 +69,14 @@ def automatically_assign_extra_problems(db: Session, problem_id: int, deduction:
         if problem.round not in (1, 0):
             raise ExtraAssignmentError("Target problem is not eligible for Extra/Grid assignment.")
         teams = db.query(Team).order_by(Team.id.asc()).with_for_update().populate_existing().all()
-        free_slots = ROUND1_PROBLEM_CAPACITY - sum(team.ps_id == problem.id for team in teams)
+        free_slots = problem_capacity_remaining(len(current_problem_teams(teams).get(problem.id, [])))
         if free_slots <= 0:
             raise ExtraAssignmentError("Target problem has no remaining capacity.")
         assignments, failures = [], []
         for team in teams:
             if free_slots == 0:
                 break
-            if (not team.is_approved or team.is_system_team or team.ps_id is not None
-                    or team.round1_problem_id is not None or team.wildcard_problem_id is not None):
+            if not is_extra_assignment_candidate(team):
                 continue
             if team.coins < deduction:
                 failures.append({"team_id": team.id, "team_name": team.team_name, "reason": "Insufficient coins",

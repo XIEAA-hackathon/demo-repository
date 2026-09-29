@@ -33,9 +33,22 @@ def remaining_capacity(db: Session, problem_id: int) -> int:
     return max(0, ROUND1_PROBLEM_CAPACITY - assigned_team_count(db, problem_id))
 
 
+def problem_capacity_remaining(assigned_count: int) -> int:
+    return max(0, ROUND1_PROBLEM_CAPACITY - assigned_count)
+
+
+def current_problem_teams(teams: list[Team]) -> dict[int, list[Team]]:
+    """Group current assignments for the post-R1 views and Extra/Grid allocator."""
+    groups: dict[int, list[Team]] = {}
+    for team in teams:
+        if team.ps_id is not None:
+            groups.setdefault(team.ps_id, []).append(team)
+    return groups
+
+
 def _management_problem_payload(problem: ProblemStatement, assigned_count: int) -> dict:
     source = "EXTERNAL" if problem.round == EXTERNAL_PROBLEM_ROUND else "ROUND1"
-    auction_capacity_remaining = max(0, ROUND1_PROBLEM_CAPACITY - assigned_count)
+    auction_capacity_remaining = problem_capacity_remaining(assigned_count)
     return {
         "id": problem.id,
         "problem_number": _display_number(problem),
@@ -276,20 +289,23 @@ def remaining_problems_payload(db: Session, control: RoundControl) -> dict:
     )
     assigned = (
         db.query(Team)
-        .filter(Team.round1_problem_id.is_not(None))
+        .filter(Team.ps_id.is_not(None) if control.ended else Team.round1_problem_id.is_not(None))
         .order_by(Team.id.asc())
         .all()
     )
-    teams_by_problem: dict[int, list[Team]] = {}
-    for team in assigned:
-        teams_by_problem.setdefault(team.round1_problem_id, []).append(team)
+    teams_by_problem = current_problem_teams(assigned) if control.ended else {}
+    if not control.ended:
+        for team in assigned:
+            teams_by_problem.setdefault(team.round1_problem_id, []).append(team)
     eligible = eligible_round1_teams(db)
+    if control.ended:
+        eligible = [team for team in eligible if team.wildcard_problem_id is None]
     no_active_auction = control.current_problem_id is None and control.status not in {"PREVIEW", "BIDDING"}
     rows = []
     for problem in problems:
         problem_teams = teams_by_problem.get(problem.id, [])
         count = len(problem_teams)
-        capacity = max(0, ROUND1_PROBLEM_CAPACITY - count)
+        capacity = problem_capacity_remaining(count)
         assignment_status = "ASSIGNED" if capacity == 0 else "PARTIAL" if count else "UNASSIGNED"
         can_manage = not control.ended and no_active_auction
         rows.append({
