@@ -38,7 +38,6 @@ export default function FinalizedLeaderboard({ round }: { round: Bid['round'] })
     window.addEventListener('participant:leaderboard-resync', resync)
     document.addEventListener('visibilitychange', visible)
     return () => {
-      revision.current += 1
       refreshQueued.current = false
       window.removeEventListener('participant:leaderboard-resync', resync)
       document.removeEventListener('visibilitychange', visible)

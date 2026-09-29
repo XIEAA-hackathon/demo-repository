@@ -1,4 +1,4 @@
-import { act } from 'react'
+import { act, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import BiddingPanel from './components/BiddingPanel'
@@ -61,6 +61,15 @@ it('shows ten finalized Wildcard rows with backend qualification flags', async (
   await act(async () => root.render(<FinalizedLeaderboard round="WILDCARD" />))
   expect(host.querySelectorAll('li')).toHaveLength(10)
   expect([...host.querySelectorAll('li')].filter(row => !row.textContent?.includes('NOT QUALIFIED'))).toHaveLength(3)
+})
+it('reuses the pending final-ranking request during StrictMode effect replay', async () => {
+  let resolve!: (value: any) => void
+  mock.context.service.getLeaderboard.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+  await act(async () => root.render(<StrictMode><FinalizedLeaderboard round="WILDCARD" /></StrictMode>))
+  await act(async () => resolve(rows().map(row => ({ ...row, finalized: true, qualified: row.rank <= 3 }))))
+  expect(host.querySelectorAll('li')).toHaveLength(10)
+  expect(host.textContent).toContain('NOT QUALIFIED')
+  expect(mock.context.service.getLeaderboard).toHaveBeenCalledTimes(1)
 })
 it('keeps timestamp then team-ID tie order in the shared Top 10 reducer', () => {
   const entries = rows().map(row => ({ ...row, amount: 100, placedAt: '2026-09-29T10:00:00Z' })).reverse()
