@@ -4,6 +4,7 @@ import ChangeProblemPage from "./pages/ChangeProblem";
 import LabConfiguration from "./components/LabConfiguration";
 import LabAllocationPanel from "../labs/LabAllocationPanel";
 import { applyLabChange } from "../labs/labBoard";
+import { parseBidDelta } from "../participant/services/bidRealtime";
 import {
   addTime, approveTeam, clearToken, deleteTeam, downloadRegistrationAssignments, downloadRegistrationCredentials, downloadRegistrationDemo, downloadRegistrationSample,
   getAdminConfig, getAdminState, getBidHistory,
@@ -285,13 +286,15 @@ export function AdminApplication({ onLogout }) {
         if (message.version > 0) lastEventVersion.current = message.version;
         if (previousVersion > 0 && message.version > previousVersion + 1) queueLoad();
         if (message.type === "bid_updated") {
-          const nextBid = message.payload?.bid;
-          if (!nextBid) return;
+          const delta = parseBidDelta(message.payload || {});
+          if (!delta) return;
+          const nextBid = { id: Number(delta.bidId), team_id: Number(delta.teamId), ps_id: Number(delta.problemId), round: 1, amount: delta.amount, timestamp: delta.placedAt };
           realtimeRevision.current.bids += 1;
           setBids((current) => [
             nextBid,
             ...current.filter((bid) => !(bid.team_id === nextBid.team_id && bid.ps_id === nextBid.ps_id && bid.round === nextBid.round)),
           ]);
+          setAssignmentEvent(message);
           return;
         }
         if (message.type === "participant_presence_changed") {
@@ -318,6 +321,10 @@ export function AdminApplication({ onLogout }) {
           && ["winners_assigned", "problem_manually_assigned"].includes(message.payload?.action)
         ) {
           applyCoinsOrRefresh(message.payload?.winners || message.payload?.assignments);
+          return;
+        }
+        if (message.type === "round_updated" && message.payload?.action === "extra_grid_assigned") {
+          setAssignmentEvent(message);
           return;
         }
         if (message.type === "auction_finalized") {
@@ -392,7 +399,7 @@ export function AdminApplication({ onLogout }) {
           {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
           {notice && <div className="admin-notice">{notice}</div>}
           {page === "dashboard" && <Dashboard teams={teams} problems={problems} bids={bids} state={state} remaining={remaining} config={config} onConfig={setConfig} labRevision={labRevision} />}
-          {page === "round1" && <RoundControlPage round="round-1" state={state} config={config} remaining={remaining} onConfig={setConfig} />}
+          {page === "round1" && <RoundControlPage round="round-1" state={state} config={config} remaining={remaining} onConfig={setConfig} realtimeEvent={assignmentEvent} />}
           {page === "change-problem" && <ChangeProblemPage realtimeEvent={assignmentEvent} />}
           {page === "wildcard" && <WildcardControlPage state={state} config={config} remaining={remaining} onConfig={setConfig} socketConnected={socketConnected} realtimeEvent={wildcardEvent} />}
           {page === "team-allotment" && <LabAllocationAdminPage revision={labRevision} realtimeEvent={labEvent} />}
@@ -485,9 +492,16 @@ function LabAllocationAdminPage({ revision, realtimeEvent }) {
   return <LabAllocationPanel board={board} loading={loading} error={error} onReload={load} onAllocate={generateLabAllocation} canAllocate />;
 }
 
-export function RoundControlPage({ round, state, config, remaining, onConfig }) {
+export function RoundControlPage({ round, state, config, remaining, onConfig, realtimeEvent }) {
   const isWildcard = round === "wildcard";
   const [roundData, setData] = useState(null);
+  useEffect(() => {
+    if (realtimeEvent?.type !== "bid_updated") return;
+    const delta = parseBidDelta(realtimeEvent.payload || {});
+    if (!delta) return;
+    setData(current => current && String(current.current_problem?.id) === delta.problemId && delta.amount >= (current.highest_bid || 0)
+      ? { ...current, highest_bid: delta.amount, highest_team: delta.teamName } : current);
+  }, [realtimeEvent]);
   const liveRound = state?.rounds?.[isWildcard ? "WILDCARD" : "ROUND1"];
   const liveUpdatedAt = Date.parse(state?.last_state_update || state?.timing?.server_time || "");
   const loadedUpdatedAt = Date.parse(roundData?.event?.last_state_update || roundData?.event?.timing?.server_time || "");

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ExtraGrid from "../components/ExtraGrid";
 import {
   changeRoundOneAssignment,
   downloadExternalProblemSample,
@@ -257,6 +258,7 @@ export default function ChangeProblemPage({ realtimeEvent = null }) {
 
   return (
     <section className="change-problem-page">
+      <ExtraGrid realtimeEvent={realtimeEvent} />
       <header className="change-problem-header">
         <div>
           <h2>Change Problem</h2>

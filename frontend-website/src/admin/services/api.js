@@ -88,6 +88,8 @@ export const getTeamCredentials = (teamId) => request(`/admin/teams/${teamId}/cr
 export const resetParticipantPassword = (userId) => request(`/admin/participant-accounts/${userId}/reset-password`, { method: "POST" });
 export const getRoundControl = (round) => request(`/admin/rounds/${round}`);
 export const getRoundOneAssignments = () => request("/admin/rounds/round-1/assignments");
+export const getExtraGrid = () => request("/admin/extra-grid");
+export const autoAssignExtraGrid = () => request("/admin/extra-grid/auto-assign", { method: "POST" });
 export const changeRoundOneAssignment = (teamId, targetProblemId, newBalance) => request(`/admin/rounds/round-1/assignments/${teamId}`, {
   method: "PUT",
   body: JSON.stringify({

@@ -178,6 +178,7 @@ def public_event_display(
             "event_state": game.state,
             "status_label": "Round 1 — Live Bidding",
             "problem": ({
+                "id": problem.id,
                 "problem_number": problem.ps_number.split("-", 1)[-1],
                 "number": problem.ps_number.split("-", 1)[-1],
                 "title": problem.title,

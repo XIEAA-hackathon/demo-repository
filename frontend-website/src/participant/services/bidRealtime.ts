@@ -68,6 +68,26 @@ export function parseBidDelta(payload: Record<string, unknown>): BidDelta | null
   }
 }
 
+export interface DisplayBidRow {
+  rank: number
+  team_id: number
+  team_name: string
+  value: number
+  timestamp?: string
+  qualified?: boolean
+}
+
+// Adapt display rows to the participant Wildcard's known-good delta reducer.
+export function applyDisplayBidDelta(rows: DisplayBidRow[], delta: BidDelta): DisplayBidRow[] {
+  return applyBidDelta(rows.map((row) => ({
+    rank: row.rank, teamId: String(row.team_id), teamName: row.team_name,
+    amount: row.value, placedAt: row.timestamp ?? null,
+  })), delta).map((row) => ({
+    rank: row.rank, team_id: Number(row.teamId), team_name: row.teamName,
+    value: row.amount, timestamp: row.placedAt ?? undefined,
+  }))
+}
+
 export const jitterMilliseconds = (minimum: number, maximum: number): number => (
   Math.round(minimum + Math.random() * (maximum - minimum))
 )

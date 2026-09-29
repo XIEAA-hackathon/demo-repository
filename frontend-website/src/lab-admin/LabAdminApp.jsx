@@ -3,7 +3,7 @@ import Login from "../admin/pages/Login";
 import { connectReconnectingSocket } from "../services/realtime/connectReconnectingSocket";
 import { WS_URL } from "../services/api/config";
 import LabAllocationPanel from "../labs/LabAllocationPanel";
-import { applyLabChange, applyParticipantPresence } from "../labs/labBoard";
+import { applyParticipantPresence } from "../labs/labBoard";
 import {
   clearLabAdminToken,
   getLabAdminSession,
@@ -61,12 +61,21 @@ export function LabAdminBoard({ onLogout, session = null }) {
   const wildcardReadySeen = useRef(false);
   useEffect(() => { if (board?.can_move) wildcardReadySeen.current = true; }, [board?.can_move]);
   useEffect(() => {
+    const invalidate = () => {
+      // Invalidate in-flight snapshots immediately; coalesce a bulk event's deltas.
+      revision.current += 1;
+      if (assignmentRefreshTimer.current !== null) return;
+      assignmentRefreshTimer.current = window.setTimeout(() => {
+        assignmentRefreshTimer.current = null;
+        void load();
+      }, 150);
+    };
     const disconnect = connectReconnectingSocket({
       url: `${WS_URL}/ws/auction`,
       getToken: getLabAdminToken,
-      onStatus: setSocketStatus,
+      onStatus: status => { setSocketStatus(status); if (status === "reconnected") { revision.current += 1; void load(); } },
       onMessage: (message) => {
-        if (message.type === "lab_assignment_changed") { revision.current += 1; setBoard(current => applyLabChange(current, message.payload)); return; }
+        if (message.type === "lab_assignment_changed") { invalidate(); return; }
         if (message.type === "participant_presence_changed") {
           latestPresence.current = message.payload;
           setBoard(current => applyParticipantPresence(current, message.payload));
@@ -77,13 +86,11 @@ export function LabAdminBoard({ onLogout, session = null }) {
         const newlyCompletedWildcard = wildcardEnded && !wildcardReadySeen.current;
         const round1Changed = message.type === "round1_assignment_changed"
           || (message.type === "round_updated" && ["winners_assigned", "problem_manually_assigned"].includes(message.payload?.action));
-        if ((round1Changed || newlyCompletedWildcard) && assignmentRefreshTimer.current === null) {
-          assignmentRefreshTimer.current = window.setTimeout(() => {
-            assignmentRefreshTimer.current = null;
-            revision.current += 1;
-            void load();
-          }, 150);
-        }
+        const allocationChanged = ["lab_allocation_updated", "lab_configuration_updated"].includes(message.type)
+          || (message.type === "round_updated" && message.payload?.action === "extra_grid_assigned");
+        const wildcardProblemChanged = message.type === "wildcard_updated" && (message.payload?.problem_id != null
+          || ["final_problem_confirmed", "final_choice_completed", "final_choice_ended"].includes(message.payload?.action));
+        if (round1Changed || newlyCompletedWildcard || allocationChanged || wildcardProblemChanged || message.type === "auction_finalized") invalidate();
         if (newlyCompletedWildcard) {
           wildcardReadySeen.current = true;
         }

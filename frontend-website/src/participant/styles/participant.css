@@ -75,7 +75,7 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 .page-heading { max-width: 780px; }
 .page-heading__copy, .muted { color: var(--muted); line-height: 1.65; }
 .eyebrow { margin-bottom: .65rem; color: var(--purple-neon); font-size: .68rem; font-weight: 700; letter-spacing: .28em; text-transform: uppercase; }
-.card { padding: 1.35rem; border: 1px solid rgba(180,25,255,.24); border-radius: .9rem; background: linear-gradient(145deg, rgba(23,12,39,.88), rgba(13,6,24,.88)); box-shadow: 0 10px 34px rgba(0,0,0,.28); }
+.card { min-width: 0; overflow-wrap: anywhere; padding: 1.35rem; border: 1px solid rgba(180,25,255,.24); border-radius: .9rem; background: linear-gradient(145deg, rgba(23,12,39,.88), rgba(13,6,24,.88)); box-shadow: 0 10px 34px rgba(0,0,0,.28); }
 .card:hover { border-color: rgba(218,50,255,.42); }
 .button { width: max-content; min-height: 42px; padding: .7rem 1.15rem; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: .6rem; cursor: pointer; color: #fff; font-size: .75rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; transition: .18s ease; }
 .button:hover:not(:disabled) { transform: translateY(-1px); }
@@ -396,3 +396,21 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 .allocated-lab { display: grid; gap: 6px; margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border, #493052); }
 .allocated-lab span { font-size: 14px; color: #c7b8cf; }
 .allocated-lab strong { font-size: 18px; }
+.result-card__inner { grid-template-columns: minmax(0, 1fr); overflow-wrap: anywhere; }
+.result-card__inner > * { min-width: 0; max-width: 100%; }
+.repository-record a { overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .topbar { flex-wrap: wrap; }
+  .top-status__stage { min-width: 0; flex-wrap: wrap; }
+  .card, .stack, .hero-state, .waiting-room, .final-choice-card { min-width: 0; }
+  .card, .page-heading, .waiting-room, .participant-identity { overflow-wrap: anywhere; }
+  .button { max-width: 100%; white-space: normal; }
+  .leaderboard li > span { min-width: 0; overflow-wrap: anywhere; }
+  .leaderboard li > strong { flex-shrink: 0; }
+  .problem-swap { grid-template-columns: 1fr; }
+  .problem-swap__arrow { justify-self: center; }
+  .coin-balance, .stat strong { flex-wrap: wrap; }
+  .modal__actions { flex-direction: column; }
+  .result-card__stats div { flex-wrap: wrap; }
+}

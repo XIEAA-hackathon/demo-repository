@@ -190,6 +190,11 @@ async def generate_lab_allocation(
         db.rollback()
         _raise_allocation_error(exc)
     board = lab_board(db, logged_in_team_ids=manager.participant_team_ids())
+    board["allocation_diagnostics"] = db.info.pop("lab_allocation_diagnostics", {
+        "eligible_team_count": team_count, "expected_count": team_count,
+        "graph_team_count": team_count, "max_flow": team_count,
+        "allocated_count": team_count, "unassigned_teams": [],
+    })
     db.close()
     if changed:
         await manager.broadcast_event(

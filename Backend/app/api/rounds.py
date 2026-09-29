@@ -40,9 +40,35 @@ from app.services.round1_assignment import (
     update_round1_winning_bid_aggregate,
 )
 from app.services.wildcard_service import ranking_payload, wildcard_payload
+from app.services.extra_assignment import ExtraAssignmentError, automatically_assign_extra_problems, extra_assignment_payload
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
+
+
+@router.get("/admin/extra-grid")
+def get_extra_grid(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
+    return extra_assignment_payload(db)
+
+
+@router.post("/admin/extra-grid/auto-assign")
+async def auto_assign_extra_grid(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
+    try:
+        result = automatically_assign_extra_problems(db)
+    except ExtraAssignmentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (IntegrityError, OperationalError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Assignments changed concurrently. Refresh Extra/Grid and retry.") from exc
+    from app.services.lab_allocation import try_allocate_labs
+    allocated_count = try_allocate_labs(db) if result["assignments"] else None
+    changes = db.info.pop("lab_assignment_changes", [])
+    db.close()
+    if result["assignments"]:
+        manager.publish_event("round_updated", {"round": "EXTRA", "action": "extra_grid_assigned", "team_ids": [row["team_id"] for row in result["assignments"]]})
+    if allocated_count is not None:
+        manager.publish_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocated_count, "assignments": changes}, roles={"admin", "lab_admin"})
+    return result
 
 ROUND_META = {
     "round-1": {"type": "ROUND1", "number": 1, "prefix": "R1", "label": "Round 1"},
@@ -839,7 +865,7 @@ def _leaderboard_payload(
         if bid.team_id not in highest_by_team or bid.amount > highest_by_team[bid.team_id].amount:
             highest_by_team[bid.team_id] = (bid, team)
     rows = [
-        {"team_id": team.id, "team_name": team.team_name, "value": bid.amount, "problem_id": bid.ps_id}
+        {"team_id": team.id, "team_name": team.team_name, "value": bid.amount, "problem_id": bid.ps_id, "timestamp": bid.timestamp}
         for bid, team in highest_by_team.values()
     ]
     rows.sort(key=lambda row: (-row["value"], row["team_id"]))

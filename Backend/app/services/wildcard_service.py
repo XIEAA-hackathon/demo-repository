@@ -395,7 +395,7 @@ def _assign_locked_selection(
 
     if team.round1_problem_id is None and team.ps_id:
         previous = db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first()
-        if previous and previous.round == 1:
+        if previous and previous.round == 1 and team.round1_assignment_type in {"BID_WINNER", "MANUAL_ASSIGNMENT"}:
             team.round1_problem_id = previous.id
     team.wildcard_problem_id = problem.id
 

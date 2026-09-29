@@ -4,6 +4,7 @@ import { WS_URL } from "../services/api/config";
 import { connectReconnectingSocket } from "../services/realtime/connectReconnectingSocket";
 import { useReconciledCountdown } from "../services/realtime/useReconciledCountdown";
 import "./Dashboard.css";
+import { applyDisplayBidDelta, parseBidDelta } from "../participant/services/bidRealtime";
 
 const formatTime = (seconds) => {
   const safe = Math.max(0, seconds);
@@ -22,6 +23,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
     let inFlight = false;
     let refreshQueued = false;
     let socketConnected = false;
+    let bidRevision = 0;
     const schedule = (delay) => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(load, delay);
@@ -32,6 +34,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
         return;
       }
       inFlight = true;
+      const startedRevision = bidRevision;
       try {
         const response = await fetch(`${API_URL}/public/leaderboard`, {
           cache: "no-store",
@@ -47,7 +50,8 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
         if (active) {
           failures = 0;
           hasDisplay = true;
-          setDisplay(payload);
+          if (startedRevision === bidRevision) setDisplay(payload);
+          else refreshQueued = true;
           setApiStatus("healthy");
         }
       } catch {
@@ -74,15 +78,17 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
       },
       onMessage: (message) => {
         if (message.type === "bid_updated" || message.type === "wildcard_bid_updated") {
-          const liveRound = message.payload?.round;
-          const rows = message.payload?.leaderboard;
-          if (!Array.isArray(rows)) return;
+          const delta = parseBidDelta(message.payload || {});
+          if (!delta) return;
+          bidRevision += 1;
           setDisplay((current) => {
-            if (!current || (liveRound === "ROUND1" && current.mode !== "ROUND1_LIVE") || (liveRound === "WILDCARD" && current.mode !== "WILDCARD_LIVE")) return current;
-            return { ...current, rows: rows.map((row) => ({ rank: row.rank, team_id: row.team_id, team_name: row.team_name, value: row.amount })) };
+            if (!current || (delta.round === "ROUND1" && current.mode !== "ROUND1_LIVE") || (delta.round === "WILDCARD" && current.mode !== "WILDCARD_LIVE")) return current;
+            if (delta.round === "ROUND1" && String(current.problem?.id) !== delta.problemId) return current;
+            return { ...current, rows: applyDisplayBidDelta(current.rows, delta) };
           });
           return;
         }
+        if (message.type === "session_heartbeat" || message.type === "participant_presence_changed" || message.type === "lab_assignment_changed") return;
         schedule(200);
       },
     });

@@ -6,7 +6,12 @@ export function applyLabChange(board, change) {
   const team = existing || board.teams.find(row => row.id === change.team_id);
   if (!team || !board.labs.some(lab => lab.id === change.lab.id)) return board;
   const moved = { ...team, ...change, id: team.id, current_lab_id: change.lab.id };
-  return { ...board, unassigned_team_ids: board.unassigned_team_ids.filter(id => id !== team.id),
+  const unassignedIds = board.unassigned_team_ids.filter(id => id !== team.id);
+  return { ...board, unassigned_team_ids: unassignedIds,
+    teams: board.teams.map(row => row.id === team.id ? moved : row),
+    unassigned_teams: (board.unassigned_teams || []).filter(row => row.id !== team.id),
+    assigned_count: board.teams.length - unassignedIds.length,
+    unassigned_count: unassignedIds.length,
     labs: board.labs.map(lab => {
       const teams = lab.teams.filter(row => row.id !== team.id);
       if (lab.id === change.lab.id) teams.push(moved);

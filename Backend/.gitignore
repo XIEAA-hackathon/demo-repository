@@ -22,3 +22,4 @@ websocket_test.html
 
 # Local test suite
 tests/
+!tests/
