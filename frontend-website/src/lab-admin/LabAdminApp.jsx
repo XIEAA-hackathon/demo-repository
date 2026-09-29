@@ -52,7 +52,7 @@ export function LabAdminBoard({ onLogout, session = null }) {
       .finally(() => {
         setLoading(false); loadInFlight.current = null;
         // A delta may have arrived before the initial board existed.
-        if (revision.current !== startedRevision) void load();
+        if (revision.current !== startedRevision && assignmentRefreshTimer.current === null) void load();
       });
     loadInFlight.current = request;
     return request;
@@ -89,7 +89,7 @@ export function LabAdminBoard({ onLogout, session = null }) {
         const allocationChanged = ["lab_allocation_updated", "lab_configuration_updated"].includes(message.type)
           || (message.type === "round_updated" && message.payload?.action === "extra_grid_assigned");
         const wildcardProblemChanged = message.type === "wildcard_updated" && (message.payload?.problem_id != null
-          || ["final_problem_confirmed", "final_choice_completed", "final_choice_ended"].includes(message.payload?.action));
+          || ["final_problem_confirmed", "final_choice_completed", "final_choice_ended", "final_choice_timeout"].includes(message.payload?.action));
         if (round1Changed || newlyCompletedWildcard || allocationChanged || wildcardProblemChanged || message.type === "auction_finalized") invalidate();
         if (newlyCompletedWildcard) {
           wildcardReadySeen.current = true;

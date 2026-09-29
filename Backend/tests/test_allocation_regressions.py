@@ -7,10 +7,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event
 
 from app.api.auth import BidAuthClaims, get_bid_auth_claims, get_current_active_admin
-from app.api import labs, wildcard
+from app.api import labs, rounds, wildcard
 from app.api.websockets import ConnectionManager
 from app.core.database import get_db
-from app.models.models import EventConfig, GameConfig, Lab, LabAssignment, ProblemStatement, RoundControl, Team, User, WalletTransaction, Wildcard, WildcardBid, WildcardSelectionPool
+from app.models.models import Bid, EventConfig, GameConfig, Lab, LabAssignment, ProblemStatement, RoundControl, Team, User, WalletTransaction, Wildcard, WildcardBid, WildcardSelectionPool
 from app.schemas.schemas import BidIncrementRequest
 from app.services.extra_assignment import ExtraAssignmentError, automatically_assign_extra_problems
 from app.services.lab_allocation import LabAllocationError, allocate_labs, lab_board
@@ -29,6 +29,8 @@ def seed_35(db):
                   round1_assignment_type="BID_WINNER" if i < 30 else None,
                   round1_assignment_cost=100 if i < 30 else None) for i in range(35)]
     db.add_all(teams)
+    db.flush()
+    db.add_all([Bid(team_id=team.id, ps_id=team.ps_id, round=1, amount=100) for team in teams[:30]])
     db.commit()
     return teams, problems
 
@@ -130,6 +132,7 @@ def test_mixed_35_graph_uses_wildcard_final_choice_and_overrides_extra(db):
     rows = db.query(LabAssignment).all()
     assert {row.team_id for row in rows} == {team.id for team in teams}
     assert {row.team_id: row.effective_ps_id for row in rows} == {team.id: team.ps_id for team in teams}
+    assert db.query(Bid).count() == 30  # Five Extra/Grid entrants have no R1 bid.
 
 
 def test_infeasible_flow_preserves_existing_assignments(db):
@@ -252,3 +255,40 @@ def test_35_resolved_teams_impossible_33_flow_is_not_committed(db):
     assert all(row["team_id"] and row["team_name"] for row in detail["unassigned_teams"])
     db.rollback()
     assert db.query(LabAssignment).count() == 0
+
+
+def test_extra_endpoint_commits_then_notifies_and_connects_lab_allocation(db, monkeypatch):
+    seed_35(db)
+    events = []
+    def publish(name, payload, **kwargs):
+        assert db.get_bind().pool.checkedout() == 0
+        events.append((name, payload, kwargs))
+        return True
+    monkeypatch.setattr(rounds.manager, "publish_event", publish)
+    app = FastAPI()
+    app.include_router(rounds.router)
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_active_admin] = lambda: None
+    with TestClient(app) as client:
+        first = client.post("/admin/extra-grid/auto-assign")
+        second = client.post("/admin/extra-grid/auto-assign")
+    assert first.status_code == second.status_code == 200
+    assert len(first.json()["assignments"]) == 2
+    assert second.json()["idempotent"] is True
+    assert [row[0] for row in events] == ["round_updated", "lab_allocation_updated"]
+    assert events[1][1]["team_count"] == 35
+    assert "lab_admin" in events[1][2]["roles"]
+    assert db.query(LabAssignment).count() == 35
+
+
+def test_extra_grid_uses_external_pool_when_r1_capacity_is_full(db):
+    teams, problems = seed_35(db)
+    problems[-1].round = 2
+    extra = ProblemStatement(ps_number="EXT-1", title="Extra problem", round=0)
+    db.add(extra); db.commit()
+    result = automatically_assign_extra_problems(db)
+    assert [row["problem_id"] for row in result["assignments"]] == [extra.id, extra.id]
+    assert result["failures"] == []
+    assert all(team.round1_problem_id is None for team in teams[-2:])
+    assert automatically_assign_extra_problems(db)["assignments"] == []
+    assert allocate_labs(db)[1] == 35

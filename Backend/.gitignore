@@ -20,6 +20,4 @@ __pycache__/
 test_credentials.txt
 websocket_test.html
 
-# Local test suite
-tests/
-!tests/
+# Regression tests are versioned; their caches remain ignored above.

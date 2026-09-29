@@ -203,7 +203,8 @@ def allocate_labs(
     ready, message = _readiness(db, teams, labs)
     logger.info("Lab allocation started counts=%s labs=%d", counts, len(labs))
     if not ready:
-        raise LabAllocationError("not_ready", message, **counts)
+        raise LabAllocationError("not_ready", message, **counts, allocated_count=0, unallocated_count=len(teams),
+                                 unassigned_teams=[{"team_id": team.id, "team_name": team.team_name, "final_problem_id": team.ps_id} for team in teams])
 
     assignments = db.query(LabAssignment).order_by(LabAssignment.id.asc()).with_for_update().all()
     if len(graph_teams) == len(teams) and _assignments_are_current(teams, labs, assignments):

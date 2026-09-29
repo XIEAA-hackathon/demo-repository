@@ -11,6 +11,13 @@ const formatTime = (seconds) => {
   return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
 };
 
+const applyLiveBid = (current, delta) => {
+  if (!current || (delta.round === "ROUND1" && current.mode !== "ROUND1_LIVE") || (delta.round === "WILDCARD" && current.mode !== "WILDCARD_LIVE")) return current;
+  if (delta.round === "ROUND1" && String(current.problem?.id) !== delta.problemId) return current;
+  if (current.rows.some(row => String(row.team_id) === delta.teamId && row.value > delta.amount)) return current;
+  return { ...current, rows: applyDisplayBidDelta(current.rows, delta) };
+};
+
 function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
   const [display, setDisplay] = useState(null);
   const [apiStatus, setApiStatus] = useState("checking");
@@ -23,7 +30,8 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
     let inFlight = false;
     let refreshQueued = false;
     let socketConnected = false;
-    let bidRevision = 0;
+    let pendingBids = [];
+    let lastEventVersion = 0;
     const schedule = (delay) => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(load, delay);
@@ -34,7 +42,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
         return;
       }
       inFlight = true;
-      const startedRevision = bidRevision;
+      pendingBids = [];
       try {
         const response = await fetch(`${API_URL}/public/leaderboard`, {
           cache: "no-store",
@@ -50,8 +58,8 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
         if (active) {
           failures = 0;
           hasDisplay = true;
-          if (startedRevision === bidRevision) setDisplay(payload);
-          else refreshQueued = true;
+          // Replay deltas received during this read; no extra request per bid.
+          setDisplay(pendingBids.reduce(applyLiveBid, payload));
           setApiStatus("healthy");
         }
       } catch {
@@ -74,18 +82,22 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
       getToken: () => token,
       onStatus: (status) => {
         socketConnected = status === "connected" || status === "reconnected";
-        if (status === "reconnected") schedule(0);
+        if (status === "reconnected") { lastEventVersion = 0; schedule(0); }
       },
       onMessage: (message) => {
+        const version = message.version || 0;
+        if (version > 0 && lastEventVersion > 0 && version < lastEventVersion) return;
+        if (version > lastEventVersion + 1 && lastEventVersion > 0) schedule(0);
+        if (version > 0) lastEventVersion = version;
         if (message.type === "bid_updated" || message.type === "wildcard_bid_updated") {
           const delta = parseBidDelta(message.payload || {});
           if (!delta) return;
-          bidRevision += 1;
-          setDisplay((current) => {
-            if (!current || (delta.round === "ROUND1" && current.mode !== "ROUND1_LIVE") || (delta.round === "WILDCARD" && current.mode !== "WILDCARD_LIVE")) return current;
-            if (delta.round === "ROUND1" && String(current.problem?.id) !== delta.problemId) return current;
-            return { ...current, rows: applyDisplayBidDelta(current.rows, delta) };
-          });
+          if (inFlight) pendingBids.push(delta);
+          setDisplay(current => applyLiveBid(current, delta));
+          return;
+        }
+        if (message.type === "timer_sync") {
+          if (message.payload?.timing) setDisplay(current => current ? { ...current, timing: { ...message.payload.timing, received_at: Date.now() } } : current);
           return;
         }
         if (message.type === "session_heartbeat" || message.type === "participant_presence_changed" || message.type === "lab_assignment_changed") return;

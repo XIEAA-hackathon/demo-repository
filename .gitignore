@@ -37,8 +37,6 @@ deploy/*.zip
 
 # Tests / local development
 /tests/
-/Backend/tests/
-!/Backend/tests/
 frontend-website/src/**/*.test.*
 frontend-website/src/**/*.spec.*
 !frontend-website/src/realtimeRegressions.test.tsx

@@ -523,7 +523,12 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
   const loadRound = useCallback(() => {
     if (loadRoundInFlight.current) return loadRoundInFlight.current;
     const request = getRoundControl(round)
-      .then((result) => { setData(result); setError(""); return true; })
+      .then((result) => {
+        setData(current => result.status === "BIDDING" && current?.status === "BIDDING"
+          && current.current_problem?.id === result.current_problem?.id && current.highest_bid > (result.highest_bid || 0)
+          ? { ...result, highest_bid: current.highest_bid, highest_team: current.highest_team } : result);
+        setError(""); return true;
+      })
       .catch((cause) => { setError(cause.message || "Round controls could not be loaded."); return false; });
     loadRoundInFlight.current = request;
     void request.finally(() => { if (loadRoundInFlight.current === request) loadRoundInFlight.current = null; });

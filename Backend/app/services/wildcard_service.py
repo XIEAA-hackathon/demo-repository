@@ -395,6 +395,8 @@ def _assign_locked_selection(
 
     if team.round1_problem_id is None and team.ps_id:
         previous = db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first()
+        # Extra/Grid uses ps_id only; do not promote its temporary assignment
+        # into R1 history or let it become the Wildcard timeout default.
         if previous and previous.round == 1 and team.round1_assignment_type in {"BID_WINNER", "MANUAL_ASSIGNMENT"}:
             team.round1_problem_id = previous.id
     team.wildcard_problem_id = problem.id

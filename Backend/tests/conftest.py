@@ -10,12 +10,14 @@ from sqlalchemy.orm import sessionmaker
 os.environ["DATABASE_URL"] = "postgresql+psycopg://test:test@localhost/bidtobuild_test"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.database import Base
-from app.models import models  # noqa: F401
+from app.models import models
 
 
 @pytest.fixture
 def session_factory(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", connect_args={"check_same_thread": False})
+    # Match PostgreSQL's non-reused sequence IDs when exercising regeneration.
+    models.LabAssignment.__table__.dialect_options["sqlite"]["autoincrement"] = True
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False)
     yield factory
