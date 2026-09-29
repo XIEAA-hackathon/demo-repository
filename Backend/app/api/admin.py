@@ -537,6 +537,47 @@ async def force_logout_participant(
     }
 
 
+@router.post("/admin/teams/{team_id}/force-logout")
+async def force_logout_team(
+    team_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found.")
+    accounts = db.query(User).filter(
+        User.role.in_(("leader", "member")),
+        or_(User.team_id == team_id, User.id == team.leader_id),
+    ).all()
+    user_ids = {account.id for account in accounts}
+    team_name = team.team_name
+    admin_id = current_user.id
+    active_sessions_revoked = sum(bool(account.session_id) for account in accounts)
+    for account in accounts:
+        clear_user_session(account)
+    db.commit()
+    logger.info(
+        "admin.team_force_logout admin_user_id=%s team_id=%s participant_user_ids=%s "
+        "participant_accounts_revoked=%s active_sessions_revoked=%s",
+        admin_id, team_id, sorted(user_ids), len(user_ids), active_sessions_revoked,
+    )
+    db.close()
+
+    sockets_closed = await manager.disconnect_users(user_ids, reason="Signed out by event admin")
+    session_factory = getattr(request.app.state, "session_factory", SessionLocal)
+    await broadcast_presence_snapshot(session_factory)
+    return {
+        "status": "team_force_logged_out",
+        "team_id": team_id,
+        "team_name": team_name,
+        "participant_accounts_revoked": len(user_ids),
+        "active_sessions_revoked": active_sessions_revoked,
+        "presence_connections_closed": sockets_closed,
+    }
+
+
 # ---------------------------------------------------------------- Registration Import
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024

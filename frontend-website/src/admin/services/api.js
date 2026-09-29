@@ -53,6 +53,7 @@ export async function logout() {
 export const getTeams = () => request("/teams");
 export const approveTeam = (id) => request(`/team/${id}/approve`, { method: "PUT" });
 export const deleteTeam = (id) => request(`/team/${id}`, { method: "DELETE" });
+export const forceLogoutTeam = (id) => request(`/admin/teams/${id}/force-logout`, { method: "POST" });
 export const getProblemStatements = () => request("/problem-statements");
 export const getBidHistory = () => request("/bid-history");
 export const getLeaderboard = () => request("/leaderboard");

@@ -8,7 +8,7 @@ import LabAllocationPanel from "../labs/LabAllocationPanel";
 import { applyLabChange } from "../labs/labBoard";
 import { parseBidDelta } from "../participant/services/bidRealtime";
 import {
-  addTime, approveTeam, clearToken, deleteTeam, downloadRegistrationAssignments, downloadRegistrationCredentials, downloadRegistrationDemo, downloadRegistrationSample,
+  addTime, approveTeam, clearToken, deleteTeam, forceLogoutTeam, downloadRegistrationAssignments, downloadRegistrationCredentials, downloadRegistrationDemo, downloadRegistrationSample,
   getAdminConfig, getAdminState, getBidHistory,
   getProblemStatements, getTeamCredentials, getTeams, hasToken, logout, pauseTimer,
   importRegistrations, removeTime, resetParticipantPassword, resumeTimer,
@@ -433,7 +433,11 @@ export function AdminApplication({ onLogout }) {
           {page === "judging" && <JudgingAdminPage onGlobalSync={load} />}
           {page === "admin-users" && <ManagedUsersPage kind="admin" />}
           {page === "leaderboard-users" && <ManagedUsersPage kind="leaderboard" />}
-          {page === "teams" && <Teams teams={teams} onAction={action} />}
+          {page === "teams" && <Teams teams={teams} onAction={action} onForceLogout={async (teamId) => {
+            await forceLogoutTeam(teamId);
+            realtimeRevision.current.teams += 1;
+            await refreshTeams();
+          }} />}
           {page === "imports" && <RegistrationImport onAction={action} />}
           {page === "recovery" && <RecoveryPage onGlobalSync={syncAfterMutation} onNavigate={setPage} />}
         </div>
@@ -1107,9 +1111,52 @@ function TimerButtons({ state, remaining, run }) {
   return <div className="round-timer-actions"><button className="secondary-button" disabled={!hasTimer || state?.timing?.paused} onClick={() => run(pauseTimer, "Timer paused.")}>Pause</button><button className="secondary-button" disabled={!hasTimer || !state?.timing?.paused} onClick={() => run(resumeTimer, "Timer resumed.")}>Resume</button><button className="secondary-button" disabled={!hasTimer} onClick={() => run(() => addTime(30), "Added 30 seconds.")}>+30 sec</button><button className="secondary-button" disabled={!hasTimer || remaining <= 0} onClick={() => run(() => removeTime(30), "Removed up to 30 seconds.")}>−30 sec</button></div>;
 }
 
-function Teams({ teams, onAction }) {
+function Teams({ teams, onAction, onForceLogout }) {
+  const [confirming, setConfirming] = useState(null);
+  const [workingLogoutTeamIds, setWorkingLogoutTeamIds] = useState(new Set());
+  const logoutInFlight = useRef(new Set());
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const confirmation = useRef(null);
+  useEffect(() => {
+    if (!confirming) return undefined;
+    let trigger = document.activeElement;
+    while (trigger?.shadowRoot?.activeElement) trigger = trigger.shadowRoot.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    confirmation.current?.querySelector("button")?.focus();
+    const keydown = event => {
+      if (event.key === "Escape") setConfirming(null);
+      if (event.key !== "Tab") return;
+      const controls = confirmation.current?.querySelectorAll("button");
+      const first = controls?.[0], last = controls?.[controls.length - 1];
+      const active = confirmation.current?.getRootNode().activeElement;
+      if (event.shiftKey && active === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && active === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", keydown); trigger?.focus(); };
+  }, [confirming]);
+  const forceLogout = async team => {
+    if (logoutInFlight.current.has(team.id)) return;
+    logoutInFlight.current.add(team.id);
+    setWorkingLogoutTeamIds(current => new Set(current).add(team.id));
+    setConfirming(null); setError(""); setNotice("");
+    try { await onForceLogout(team.id); setNotice(`${team.team_name} signed out. Participants can log in again with the same credentials.`); }
+    catch (cause) { setError(cause.message || "The team could not be signed out."); }
+    finally {
+      logoutInFlight.current.delete(team.id);
+      setWorkingLogoutTeamIds(current => { const next = new Set(current); next.delete(team.id); return next; });
+    }
+  };
   const loggedIn = teams.filter((team) => team.logged_in).length;
-  return <section className="page-section"><div className="teams-login-summary" aria-live="polite"><span>LOGGED IN TEAMS</span><strong>{loggedIn} <small>/ {teams.length}</small></strong><em>Currently logged in</em></div><div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>COINS</th><th>MEMBERS</th><th>STATUS</th><th>LOGGED IN</th><th>ACTIONS</th></tr></thead><tbody>{teams.map((team) => <tr key={team.id}><td><strong>{team.team_name}</strong></td><td className="coins">{team.coins}</td><td>{team.members?.length ?? 0}</td><td><span className={`table-status ${team.is_approved ? "active" : "pending"}`}>{team.is_approved ? "APPROVED" : "PENDING"}</span></td><td><span className={`table-status ${team.logged_in ? "active" : "inactive"}`}>{team.logged_in ? "YES" : "NO"}</span></td><td className="table-actions">{!team.is_approved && <button onClick={() => onAction(() => approveTeam(team.id), "Team approved.")}>Approve</button>}<button className="danger-link" onClick={() => window.confirm(`Delete ${team.team_name}?`) && onAction(() => deleteTeam(team.id), "Team deleted.")}>Delete</button></td></tr>)}</tbody></table></div></section>;
+  return <section className="page-section admin-teams"><div className="teams-login-summary" aria-live="polite"><span>LOGGED IN TEAMS</span><strong>{loggedIn} <small>/ {teams.length}</small></strong><em>Currently logged in</em></div>
+    {error && <p className="global-error" role="alert">{error}</p>}{notice && <p className="admin-notice" role="status">{notice}</p>}
+    <div className="table-wrapper"><table><thead><tr><th>TEAM</th><th>COINS</th><th>MEMBERS</th><th>SESSION CONTROL</th><th>LOGGED IN</th><th>ACTIONS</th></tr></thead><tbody>{teams.map((team) => <tr key={team.id}><td><strong>{team.team_name}</strong></td><td className="coins">{team.coins}</td><td>{team.members?.length ?? 0}</td>
+      <td>{workingLogoutTeamIds.has(team.id) || team.logged_in ? <button type="button" className="secondary-button" disabled={workingLogoutTeamIds.has(team.id)} onClick={() => setConfirming(team)}>{workingLogoutTeamIds.has(team.id) ? "Logging out…" : "Log out team"}</button> : <span className="team-session-offline">No active session</span>}</td>
+      <td><span className={`table-status ${team.logged_in ? "active" : "inactive"}`}>{team.logged_in ? "YES" : "NO"}</span></td><td className="table-actions">{!team.is_approved && <button onClick={() => onAction(() => approveTeam(team.id), "Team approved.")}>Approve</button>}<button className="danger-link" onClick={() => window.confirm(`Delete ${team.team_name}?`) && onAction(() => deleteTeam(team.id), "Team deleted.")}>Delete</button></td></tr>)}</tbody></table></div>
+    {confirming && <div className="judging-confirmation-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setConfirming(null); }}><section ref={confirmation} className="judging-confirmation" role="dialog" aria-modal="true" aria-labelledby="team-logout-title"><h3 id="team-logout-title">Log out {confirming.team_name}?</h3><p>This will immediately sign out all active participant accounts for this team.</p><p>They can log in again normally using the same credentials.</p><div><button type="button" className="secondary-button" onClick={() => setConfirming(null)}>Cancel</button><button type="button" className="primary-button" disabled={workingLogoutTeamIds.has(confirming.id)} onClick={() => void forceLogout(confirming)}>Log out team</button></div></section></div>}
+  </section>;
 }
 
 function ParticipantCredentials({ teams }) {

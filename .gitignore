@@ -78,4 +78,5 @@ pnpm-debug.log*
 !frontend-website/src/participant/ParticipantContext.test.tsx
 !frontend-website/src/participant/leaderboardLifecycle.test.tsx
 !frontend-website/src/admin/adminLifecycle.test.tsx
+!frontend-website/src/admin/teamSessionControl.test.tsx
 *.exe

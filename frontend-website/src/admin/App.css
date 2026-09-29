@@ -1387,6 +1387,9 @@ button, input, select { font: inherit; }
 .teams-login-summary > strong { color: #f5edf8; font-size: 25px; letter-spacing: -.03em; }
 .teams-login-summary > strong small { color: #ad9ab6; font-size: 15px; }
 .teams-login-summary > em { color: #72d69e; font-size: 9px; font-style: normal; }
+.admin-teams .team-session-offline { color: #ad9ab6; font-size: 11px; }
+.admin-teams td .secondary-button { width: auto; min-height: 36px; padding: 8px 12px; white-space: nowrap; }
+@media (max-width: 760px) { .admin-teams td .secondary-button { min-height: 44px; } }
 
 .table-wrapper {
   overflow-x: auto;
