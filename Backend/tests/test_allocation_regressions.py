@@ -132,15 +132,16 @@ def test_incremental_conflict_exposes_explicit_regeneration_without_reshuffling(
 
 
 def test_extra_grid_35_of_35_and_idempotent_with_r1_frozen(db):
-    teams, _ = seed_35(db)
+    teams, problems = seed_35(db)
     before = [(t.id, t.round1_problem_id, t.round1_assignment_type, t.round1_assignment_cost, t.coins) for t in teams]
-    result = automatically_assign_extra_problems(db)
+    result = automatically_assign_extra_problems(db, problems[-1].id)
     assert len(result["assignments"]) == 2 and result["failures"] == []
     assignments = [t.ps_id for t in teams]
-    assert automatically_assign_extra_problems(db)["idempotent"] is True
+    with pytest.raises(ExtraAssignmentError, match="no remaining capacity"):
+        automatically_assign_extra_problems(db, problems[-1].id)
     assert [t.ps_id for t in teams] == assignments
     assert [(t.id, t.round1_problem_id, t.round1_assignment_type, t.round1_assignment_cost) for t in teams] == [row[:4] for row in before]
-    assert [t.coins for t in teams] == [5000] * 33 + [4975, 4975]
+    assert [t.coins for t in teams] == [5000] * 33 + [4900, 4900]
     control = db.query(RoundControl).filter_by(round_type="ROUND1").one()
     assert (control.status, control.ended, control.round1_winning_bid_sum, control.round1_winning_bid_count) == ("CLOSED", True, 1234, 30)
     assert db.query(WalletTransaction).filter_by(transaction_type="EXTRA_GRID_AUTO_ASSIGN").count() == 2
@@ -156,20 +157,19 @@ def test_extra_grid_cannot_run_during_r1_or_exceed_capacity(db):
     control.ended = False
     db.commit()
     with pytest.raises(ExtraAssignmentError):
-        automatically_assign_extra_problems(db)
+        automatically_assign_extra_problems(db, problems[-1].id)
     assert teams[-1].ps_id is None
     control.ended = True
     problems[-1].round = 2  # Remove the last remaining R1 capacity.
     db.commit()
-    result = automatically_assign_extra_problems(db)
-    assert result["assignments"] == []
-    assert len(result["failures"]) == 2
+    with pytest.raises(ExtraAssignmentError, match="not eligible"):
+        automatically_assign_extra_problems(db, problems[-1].id)
     assert teams[-1].coins == 5000
 
 
 def test_mixed_35_graph_uses_wildcard_final_choice_and_overrides_extra(db):
     teams, problems = seed_35(db)
-    automatically_assign_extra_problems(db)
+    automatically_assign_extra_problems(db, problems[-1].id)
     bonus = [ProblemStatement(ps_number=f"WC-{i}", title=f"Wildcard {i}", round=2, status="visible") for i in range(2)]
     db.add_all(bonus)
     db.add(EventConfig())
@@ -188,8 +188,8 @@ def test_mixed_35_graph_uses_wildcard_final_choice_and_overrides_extra(db):
     assert extra_team.ps_id == bonus[0].id != previous
     assert extra_team.round1_problem_id is None
     assert extra_team.final_problem_choice == "WILDCARD"
-    assert extra_team.coins == 4975
-    assert db.query(WalletTransaction).filter_by(team_id=extra_team.id, transaction_type="EXTRA_GRID_AUTO_ASSIGN").one().amount == -25
+    assert extra_team.coins == 4900
+    assert db.query(WalletTransaction).filter_by(team_id=extra_team.id, transaction_type="EXTRA_GRID_AUTO_ASSIGN").one().amount == -100
     # A normal R1 winner then chooses Wildcard over its earlier problem.
     team = teams[0]
     team.wildcard_problem_id = bonus[1].id
@@ -208,8 +208,8 @@ def test_mixed_35_graph_uses_wildcard_final_choice_and_overrides_extra(db):
 
 
 def test_infeasible_flow_preserves_existing_assignments(db):
-    seed_35(db)
-    automatically_assign_extra_problems(db)
+    _, problems = seed_35(db)
+    automatically_assign_extra_problems(db, problems[-1].id)
     allocate_labs(db)
     before = [(row.id, row.team_id, row.current_lab_id) for row in db.query(LabAssignment).all()]
     db.query(Lab).update({Lab.capacity: 1})
@@ -321,8 +321,8 @@ def test_dynamic_eligible_count_independent_of_presence(db, count):
 
 
 def test_35_resolved_teams_impossible_33_flow_is_not_committed(db):
-    seed_35(db)
-    automatically_assign_extra_problems(db)
+    _, problems = seed_35(db)
+    automatically_assign_extra_problems(db, problems[-1].id)
     # Total capacity is exactly 33, although all 35 final problems are resolved.
     for index, lab in enumerate(db.query(Lab).order_by(Lab.id).all()):
         lab.capacity = 6 if index < 2 else 7
@@ -339,7 +339,8 @@ def test_35_resolved_teams_impossible_33_flow_is_not_committed(db):
 
 
 def test_extra_endpoint_commits_then_notifies_and_connects_lab_allocation(db, monkeypatch):
-    seed_35(db)
+    _, problems = seed_35(db)
+    problem_id = problems[-1].id
     events = []
     def publish(name, payload, **kwargs):
         assert db.get_bind().pool.checkedout() == 0
@@ -351,11 +352,11 @@ def test_extra_endpoint_commits_then_notifies_and_connects_lab_allocation(db, mo
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_current_active_admin] = lambda: None
     with TestClient(app) as client:
-        first = client.post("/admin/extra-grid/auto-assign")
-        second = client.post("/admin/extra-grid/auto-assign")
-    assert first.status_code == second.status_code == 200
+        first = client.post("/admin/extra-grid/auto-assign", json={"problem_id": problem_id, "deduction": 100})
+        second = client.post("/admin/extra-grid/auto-assign", json={"problem_id": problem_id, "deduction": 100})
+    assert first.status_code == 200 and second.status_code == 409
     assert len(first.json()["assignments"]) == 2
-    assert second.json()["idempotent"] is True
+    assert "no remaining capacity" in second.json()["detail"]
     assert [row[0] for row in events] == ["round_updated", "lab_allocation_updated"]
     assert events[1][1]["team_count"] == 35
     assert "lab_admin" in events[1][2]["roles"]
@@ -367,9 +368,9 @@ def test_extra_grid_uses_external_pool_when_r1_capacity_is_full(db):
     problems[-1].round = 2
     extra = ProblemStatement(ps_number="EXT-1", title="Extra problem", round=0)
     db.add(extra); db.commit()
-    result = automatically_assign_extra_problems(db)
+    result = automatically_assign_extra_problems(db, extra.id)
     assert [row["problem_id"] for row in result["assignments"]] == [extra.id, extra.id]
     assert result["failures"] == []
     assert all(team.round1_problem_id is None for team in teams[-2:])
-    assert automatically_assign_extra_problems(db)["assignments"] == []
+    assert automatically_assign_extra_problems(db, extra.id)["assignments"] == []
     assert allocate_labs(db)[1] == 35

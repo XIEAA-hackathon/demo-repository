@@ -89,7 +89,7 @@ export const resetParticipantPassword = (userId) => request(`/admin/participant-
 export const getRoundControl = (round) => request(`/admin/rounds/${round}`);
 export const getRoundOneAssignments = () => request("/admin/rounds/round-1/assignments");
 export const getExtraGrid = () => request("/admin/extra-grid");
-export const autoAssignExtraGrid = (deduction) => request("/admin/extra-grid/auto-assign", { method: "POST", body: JSON.stringify({ deduction }) });
+export const autoAssignExtraGrid = (problemId, deduction) => request("/admin/extra-grid/auto-assign", { method: "POST", body: JSON.stringify({ problem_id: problemId, deduction }) });
 export const changeRoundOneAssignment = (teamId, targetProblemId, newBalance) => request(`/admin/rounds/round-1/assignments/${teamId}`, {
   method: "PUT",
   body: JSON.stringify({

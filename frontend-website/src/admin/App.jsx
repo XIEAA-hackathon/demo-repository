@@ -521,6 +521,8 @@ function LabAllocationAdminPage({ revision, realtimeEvent }) {
 export function RoundControlPage({ round, state, config, remaining, onConfig, realtimeEvent }) {
   const isWildcard = round === "wildcard";
   const [tab, setTab] = useState("auction");
+  const [autoProblemId, setAutoProblemId] = useState(null);
+  useEffect(() => { if (realtimeEvent?.payload?.action === "event_reset") setAutoProblemId(null); }, [realtimeEvent]);
   useEffect(() => {
     if (realtimeEvent?.type !== "bid_updated") return;
     const delta = parseBidDelta(realtimeEvent.payload || {});
@@ -706,12 +708,12 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
     </section>
     </>}
     {!isWildcard && tab === "remaining" && <>
-    <ExtraGrid realtimeEvent={realtimeEvent} onAssigned={() => { invalidate(); void loadRound(); }} />
+    <ExtraGrid realtimeEvent={realtimeEvent} selectedProblemId={autoProblemId} onSelectProblem={setAutoProblemId} onAssigned={() => { invalidate(); void loadRound(); }} />
     <section className="round-remaining-problems">
       <header className="round-remaining-header"><div><h3>Remaining / Unassigned Problems</h3><p>Inspect assignment capacity. Manual assignment and re-bid follow the existing Round 1 rules.</p></div><dl><div><dt>Unassigned teams</dt><dd>{remainingProblems?.unassigned_team_count ?? 0}</dd></div><div><dt>Manual deduction suggestion</dt><dd>{remainingProblems?.suggested_deduction ?? 0} coins</dd></div><div><dt>Winning bid aggregate</dt><dd>{remainingProblems?.round1_winning_bid_sum ?? 0} / {remainingProblems?.round1_winning_bid_count ?? 0}<small>sum / all actual winners</small></dd></div></dl></header>
       <div className="round-remaining-table" role="table" aria-label="Round 1 problem assignment controls">
         <div className="round-remaining-table__head" role="row"><span role="columnheader">Problem</span><span role="columnheader">Assigned</span><span role="columnheader">Auction capacity</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>
-        {(remainingProblems?.problems || []).map((problem) => <article className="round-remaining-row" role="row" key={problem.id}>
+        {(remainingProblems?.problems || []).map((problem) => <article className="round-remaining-row" role="row" key={problem.id} tabIndex={data.ended ? 0 : undefined} aria-selected={problem.id === autoProblemId} onClick={event => { if (data.ended && !working && !event.target.closest("button")) setAutoProblemId(problem.id); }} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ") && data.ended && !working) { event.preventDefault(); setAutoProblemId(problem.id); } }}>
           <div className="round-remaining-problem" role="cell"><strong>#{problem.problem_number} — {problem.title}</strong>{problem.assigned_teams.length ? <small title={problem.assigned_teams.map((team) => team.team_name).join(", ")}>{problem.assigned_teams.map((team) => team.team_name).join(", ")}</small> : <small>No teams assigned</small>}</div>
           <strong className="round-remaining-count" role="cell">{problem.assigned_team_count} teams</strong>
           <span role="cell">{Math.min(problem.assigned_team_count, problem.auction_capacity ?? 5)} / {problem.auction_capacity ?? 5}</span>

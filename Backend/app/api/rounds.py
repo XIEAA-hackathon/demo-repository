@@ -53,14 +53,15 @@ def get_extra_grid(db: Session = Depends(get_db), current_user=Depends(get_curre
 
 
 class ExtraGridAssignmentRequest(BaseModel):
+    problem_id: int = Field(gt=0, strict=True)
     deduction: int = Field(ge=0, strict=True)
 
 
 @router.post("/admin/extra-grid/auto-assign")
-async def auto_assign_extra_grid(payload: ExtraGridAssignmentRequest | None = None,
+async def auto_assign_extra_grid(payload: ExtraGridAssignmentRequest,
                                 db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
     try:
-        result = automatically_assign_extra_problems(db, deduction=payload.deduction if payload else None)
+        result = automatically_assign_extra_problems(db, problem_id=payload.problem_id, deduction=payload.deduction)
     except ExtraAssignmentError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (IntegrityError, OperationalError) as exc:
