@@ -11,6 +11,7 @@ from app.api.websockets import manager
 from app.core.database import get_db
 from app.models.models import Lab, LabAssignment, Team, User
 from app.services.lab_allocation import LabAllocationError, allocate_labs, lab_board, move_team, try_allocate_labs
+from app.services.participant_presence import participant_presence_payload
 
 
 router = APIRouter()
@@ -176,7 +177,7 @@ def get_lab_allocation(
     current_user: User = Depends(get_current_active_admin_or_lab_admin),
 ):
     del current_user
-    return lab_board(db, logged_in_team_ids=manager.participant_team_ids())
+    return lab_board(db, logged_in_team_ids=set(participant_presence_payload(db)["logged_in_team_ids"]))
 
 
 @router.post("/admin/lab-allocation/allocate")
@@ -189,7 +190,7 @@ async def generate_lab_allocation(
     except LabAllocationError as exc:
         db.rollback()
         _raise_allocation_error(exc)
-    board = lab_board(db, logged_in_team_ids=manager.participant_team_ids())
+    board = lab_board(db, logged_in_team_ids=set(participant_presence_payload(db)["logged_in_team_ids"]))
     board["allocation_diagnostics"] = db.info.pop("lab_allocation_diagnostics", {
         "eligible_team_count": team_count, "expected_count": team_count,
         "graph_team_count": team_count, "max_flow": team_count,

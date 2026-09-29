@@ -7,11 +7,15 @@ export function applyLabChange(board, change) {
   if (!team || !board.labs.some(lab => lab.id === change.lab.id)) return board;
   const moved = { ...team, ...change, id: team.id, current_lab_id: change.lab.id };
   const unassignedIds = board.unassigned_team_ids.filter(id => id !== team.id);
+  const pendingCount = board.teams.filter(row => row.final_problem && unassignedIds.includes(row.id)).length;
   return { ...board, unassigned_team_ids: unassignedIds,
     teams: board.teams.map(row => row.id === team.id ? moved : row),
     unassigned_teams: (board.unassigned_teams || []).filter(row => row.id !== team.id),
     assigned_count: board.teams.length - unassignedIds.length,
-    unassigned_count: unassignedIds.length,
+    allocated_count: board.teams.length - unassignedIds.length,
+    unassigned_count: pendingCount,
+    unallocated_count: pendingCount,
+    unallocated_eligible_count: pendingCount,
     labs: board.labs.map(lab => {
       const teams = lab.teams.filter(row => row.id !== team.id);
       if (lab.id === change.lab.id) teams.push(moved);

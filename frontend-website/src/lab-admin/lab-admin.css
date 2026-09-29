@@ -13,5 +13,19 @@
 }
 
 @media (max-width: 760px) {
+  .lab-admin-shell { flex-direction: column; }
+  .lab-admin-shell .sidebar { width: 100%; min-height: 0; position: static; padding: 12px; }
+  .lab-admin-sidebar .sidebar-nav { flex-direction: row; gap: 8px; }
+  .lab-admin-sidebar .nav-item .nav-label { display: inline; }
+  .lab-admin-sidebar .sidebar-bottom { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+  .lab-admin-shell .topbar { display: flex; flex-wrap: wrap; gap: 12px; padding: 16px; }
   .lab-admin-shell .logout-button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; }
+  .lab-admin-shell .lab-workspace { grid-template-columns: minmax(0, 1fr); }
+  .lab-admin-shell .lab-workspace, .lab-admin-shell .lab-filters label { min-width: 0; }
+  .lab-admin-shell .lab-move-picker h3 { overflow-wrap: anywhere; }
+  .lab-admin-shell .lab-workspace input, .lab-admin-shell .lab-workspace select { min-width: 0; max-width: 100%; }
+  .lab-admin-shell .team-allotment-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .lab-admin-shell .lab-team-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .lab-admin-shell .lab-team-row > button { grid-column: 2 / -1; min-height: 44px; }
+  .lab-admin-shell .lab-move-picker label { flex-basis: 100%; }
 }

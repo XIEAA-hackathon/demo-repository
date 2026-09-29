@@ -63,8 +63,9 @@ def _participant_teams(db: Session, *, lock: bool = False) -> list[Team]:
 
 
 def _eligible_teams(db: Session, *, lock: bool = False) -> list[Team]:
-    """Every approved participant, including teams awaiting problem resolution."""
-    return _participant_teams(db, lock=lock)
+    """Approved participants whose canonical final problem exists."""
+    valid_ids = {row[0] for row in db.query(ProblemStatement.id).all()}
+    return [team for team in _participant_teams(db, lock=lock) if team.ps_id in valid_ids]
 
 
 def _active_labs(db: Session, *, lock: bool = False) -> list[Lab]:
@@ -88,7 +89,7 @@ def _readiness(
     return True, "Final problem assignments are ready for lab allocation."
 
 
-def _max_flow_assignment(teams: list[Team], labs: list[Lab]) -> tuple[dict[int, int], int]:
+def _max_flow_assignment(teams: list[Team], labs: list[Lab], fixed: list[LabAssignment] = ()) -> tuple[dict[int, int], int]:
     """Deterministic max flow: source -> team -> (effective PS, lab) -> lab -> sink."""
     source = ("source",)
     sink = ("sink",)
@@ -101,14 +102,17 @@ def _max_flow_assignment(teams: list[Team], labs: list[Lab]) -> tuple[dict[int, 
         order.setdefault(left, []).append(right)
         order.setdefault(right, []).append(left)
 
+    occupied_pairs = {(row.current_lab_id, row.effective_ps_id) for row in fixed}
     for lab in labs:
-        add_edge(("lab", lab.id), sink, lab.capacity)
+        add_edge(("lab", lab.id), sink, max(0, lab.capacity - sum(row.current_lab_id == lab.id for row in fixed)))
 
     for index, team in enumerate(teams):
         team_node = ("team", team.id)
         add_edge(source, team_node, 1)
         rotated_labs = labs[index % len(labs):] + labs[:index % len(labs)]
         for lab in rotated_labs:
+            if (lab.id, get_final_problem_id(team)) in occupied_pairs:
+                continue
             pair_node = ("pair", get_final_problem_id(team), lab.id)
             add_edge(team_node, pair_node, 1)
             if ("lab", lab.id) not in residual.get(pair_node, {}):
@@ -187,17 +191,19 @@ def allocate_labs(
     actor: User | None = None,
     replace_manual: bool = False,
 ) -> tuple[bool, int]:
-    """Allocate every approved participant team once, under one database transaction."""
+    """Allocate approved teams with valid final problems in one transaction."""
     state = _state_row(db, lock=True)
     labs = _active_labs(db, lock=True)
-    teams = _eligible_teams(db, lock=True)
+    participants = _participant_teams(db, lock=True)
     valid_problem_ids = {row[0] for row in db.query(ProblemStatement.id).all()}
-    graph_teams = [team for team in teams if get_final_problem_id(team) in valid_problem_ids]
+    teams = graph_teams = [team for team in participants if get_final_problem_id(team) in valid_problem_ids]
     counts = {
         "total_team_count": db.query(Team).count(),
         "eligible_team_count": len(teams), "expected_count": len(teams),
+        "participant_team_count": len(participants), "allocation_eligible_count": len(teams),
         "resolved_final_problem_count": len(graph_teams),
-        "unresolved_final_problem_count": len(teams) - len(graph_teams),
+        "unresolved_final_problem_count": len(participants) - len(teams),
+        "awaiting_problem_count": len(participants) - len(teams),
         "graph_team_count": len(graph_teams),
     }
     ready, message = _readiness(db, teams, labs)
@@ -207,16 +213,31 @@ def allocate_labs(
                                  unassigned_teams=[{"team_id": team.id, "team_name": team.team_name, "final_problem_id": team.ps_id} for team in teams])
 
     assignments = db.query(LabAssignment).order_by(LabAssignment.id.asc()).with_for_update().all()
-    if len(graph_teams) == len(teams) and _assignments_are_current(teams, labs, assignments):
-        db.info["lab_allocation_diagnostics"] = {**counts, "max_flow": len(teams), "allocated_count": len(assignments), "unallocated_count": 0, "unassigned_teams": []}
+    if _assignments_are_current(teams, labs, assignments):
+        db.info["lab_allocation_diagnostics"] = {**counts, "max_flow": len(teams), "allocated_count": len(assignments), "unallocated_count": 0, "unallocated_eligible_count": 0, "unassigned_teams": []}
         return False, len(assignments)
-    if not replace_manual and any(row.assignment_source == "MANUAL_OVERRIDE" for row in assignments):
-        raise LabAllocationError(
-            "manual_history_present",
-            "Automatic allocation will not replace manual moves. An Event Admin can explicitly generate a fresh allocation.",
-        )
-
-    generated, flow = _max_flow_assignment(graph_teams, labs)
+    fixed = []
+    if assignments and not replace_manual:
+        team_by_id = {team.id: team for team in teams}
+        lab_by_id = {lab.id: lab for lab in labs}
+        for row in assignments:
+            team = team_by_id.get(row.team_id)
+            if team and row.effective_ps_id == team.ps_id and row.current_lab_id in lab_by_id:
+                fixed.append(row)
+        # Invalid capacity/pair constraints require explicit regeneration too.
+        fixed_teams = [team_by_id[row.team_id] for row in fixed]
+        if fixed and not _assignments_are_current(fixed_teams, labs, fixed):
+            raise LabAllocationError("regeneration_required", "Existing placements violate current lab constraints. Generate a fresh allocation explicitly.", **counts)
+    fixed_ids = {row.team_id for row in fixed}
+    pending = [team for team in teams if team.id not in fixed_ids]
+    if not replace_manual and any(row.assignment_source == "MANUAL_OVERRIDE" and row.team_id not in fixed_ids for row in assignments):
+        raise LabAllocationError("regeneration_required", "A manually placed team's final problem or lab changed. Generate a fresh allocation explicitly.",
+                                 **counts, allocated_count=len(fixed), unallocated_eligible_count=len(pending),
+                                 regeneration_possible=_max_flow_assignment(teams, labs)[1] == len(teams),
+                                 unassigned_teams=[{"team_id": team.id, "team_name": team.team_name} for team in pending])
+    generated, pending_flow = _max_flow_assignment(pending, labs, fixed)
+    generated.update({row.team_id: row.current_lab_id for row in fixed})
+    flow = pending_flow + len(fixed)
     logger.info("Lab allocation eligible=%d graph_teams=%d max_flow=%d allocated=%d", len(teams), len(graph_teams), flow, len(generated))
     if flow != len(teams) or len(generated) != flow:
         unassigned = [team for team in teams if team.id not in generated]
@@ -230,18 +251,25 @@ def allocate_labs(
             len(teams), flow, diagnostics,
         )
         raise LabAllocationError(
-            "constraints_unsatisfied",
+            "regeneration_required" if fixed else "constraints_unsatisfied",
             f"Lab allocation incomplete. {flow} / {len(teams)} teams can be placed. {len(unassigned)} team(s) are unassigned.",
             **counts,
             allocated_count=len(generated),
             unallocated_count=len(unassigned),
             max_flow=flow,
+            regeneration_possible=_max_flow_assignment(teams, labs)[1] == len(teams) if fixed else False,
+            unallocated_eligible_count=len(unassigned),
             unassigned_teams=diagnostics,
         )
 
     state.status = "ALLOCATING"
-    db.query(LabAssignment).delete(synchronize_session=False)
+    for row in assignments:
+        if row.team_id not in fixed_ids:
+            db.delete(row)
+    db.flush()
     for team in teams:
+        if team.id in fixed_ids:
+            continue
         lab_id = generated[team.id]
         db.add(LabAssignment(
             team_id=team.id,
@@ -259,7 +287,7 @@ def allocate_labs(
     persisted = _verify_persisted_allocation(db, teams, labs)
     db.info["lab_allocation_diagnostics"] = {
         **counts, "max_flow": flow,
-        "allocated_count": persisted, "unallocated_count": 0, "unassigned_teams": [],
+        "allocated_count": persisted, "unallocated_count": 0, "unallocated_eligible_count": 0, "unassigned_teams": [],
     }
     logger.info("Lab allocation persisted assignments=%d", persisted)
     db.commit()
@@ -420,7 +448,7 @@ def lab_board(db: Session, *, logged_in_team_ids: set[int] | None = None) -> dic
             assigned_pairs.add(pair)
     event_is_final = _event_is_final(db)
     ready, readiness_message = _readiness(db, teams, labs, event_is_final=event_is_final)
-    current = _assignments_are_current(participant_teams, labs, assignments)
+    current = _assignments_are_current(teams, labs, assignments)
     state = db.query(LabAllocationState).filter(LabAllocationState.id == 1).one_or_none()
     status = (state.status if state and state.status == "FINALIZED" else "ALLOCATED") if current else ("READY" if ready else "NOT_READY")
     message = (
@@ -452,6 +480,7 @@ def lab_board(db: Session, *, logged_in_team_ids: set[int] | None = None) -> dic
             "wildcard": wildcard,
             "changed_from": original.ps_number if wildcard and original and original.id != team.ps_id else None,
             "logged_in": team.id in logged_in_team_ids,
+            "allocation_status": "allocated" if team.id in assignment_by_team else "lab_pending" if effective else "awaiting_problem",
             "round1": (
                 {
                     "id": original.id,
@@ -512,9 +541,10 @@ def lab_board(db: Session, *, logged_in_team_ids: set[int] | None = None) -> dic
         })
 
     valid_assigned_ids = set(assignment_by_team)
-    eligible_unassigned = [team for team in participant_teams if team.id not in valid_assigned_ids]
+    eligible_unassigned = [team for team in teams if team.id not in valid_assigned_ids]
+    awaiting_problem = [team for team in participant_teams if team.id not in team_by_id]
     generated, max_flow = _max_flow_assignment(teams, labs) if ready and not current else ({}, len(teams) if current else 0)
-    expected = len(participant_teams)
+    expected = len(teams)
     if current:
         message = f"Final lab allocation is available. {len(teams)} / {len(teams)} eligible teams assigned."
     elif ready and max_flow < expected:
@@ -536,13 +566,18 @@ def lab_board(db: Session, *, logged_in_team_ids: set[int] | None = None) -> dic
             for team in eligible_unassigned
         ],
         "eligible_team_count": expected,
+        "participant_team_count": len(participant_teams),
+        "allocation_eligible_count": expected,
+        "awaiting_problem_count": len(awaiting_problem),
+        "awaiting_problem_teams": [team_payload(team) for team in awaiting_problem],
         "total_team_count": db.query(Team).count(),
         "resolved_final_problem_count": len(teams),
-        "unresolved_final_problem_count": expected - len(teams),
+        "unresolved_final_problem_count": len(awaiting_problem),
         "graph_team_count": len(teams),
         "assigned_count": len(valid_assigned_ids),
         "allocated_count": len(valid_assigned_ids),
         "unallocated_count": len(eligible_unassigned),
+        "unallocated_eligible_count": len(eligible_unassigned),
         "unassigned_count": len(eligible_unassigned),
         "max_flow_value": max_flow,
         "team_count": len(participant_teams),

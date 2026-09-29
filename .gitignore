@@ -75,4 +75,5 @@ pnpm-debug.log*
 .vscode/
 *.suo
 *.swp
+!frontend-website/src/participant/ParticipantContext.test.tsx
 *.exe

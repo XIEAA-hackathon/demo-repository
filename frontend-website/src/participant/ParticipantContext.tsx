@@ -286,7 +286,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         const eventAt = latestEventAt
         latestEventAt = 0
 
-        if (lastSuccessfulRefreshStartedAt.current < eventAt) {
+        if (lastSuccessfulRefreshStartedAt.current <= eventAt) {
           await runRefresh(false)
         }
       }, jitterMilliseconds(250, 900))
@@ -775,7 +775,8 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
         if (status === 'reconnected') {
           setHasAuthoritativeSocketSnapshot(false)
           lastEventVersion.current = 0
-          queueRefresh()
+          realtimeRevision.current += 1
+          void runRefresh(false)
           window.dispatchEvent(new Event('participant:leaderboard-resync'))
         }
       },

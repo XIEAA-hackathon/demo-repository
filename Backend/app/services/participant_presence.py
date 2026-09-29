@@ -31,6 +31,7 @@ def participant_presence_payload(
             User.role.in_(("leader", "member")),
             User.credentials_active.is_(True),
             User.session_id.is_not(None),
+            User.session_id != "",
         )
         .all()
     )
@@ -61,10 +62,12 @@ def participant_presence_payload(
     online_ids = sorted(online_team_ids & registered_team_ids)
     active_ids = sorted(active_session_team_ids & registered_team_ids)
     stale_ids = sorted(stale_session_team_ids & registered_team_ids)
+    # Session activity controls login replacement, not whether the user logged out.
+    logged_in_ids = sorted({team_id for team_id, _ in session_rows if team_id in registered_team_ids})
     return {
         # Backwards-compatible aliases used by the current Admin UI.
-        "logged_in_team_ids": online_ids,
-        "participant_logged_in_count": len(online_ids),
+        "logged_in_team_ids": logged_in_ids,
+        "participant_logged_in_count": len(logged_in_ids),
         "online_team_ids": online_ids,
         "participant_online_count": len(online_ids),
         "active_session_team_ids": active_ids,

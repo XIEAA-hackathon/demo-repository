@@ -41,6 +41,21 @@ const emit = async (type: string, payload = {}) => {
   await act(async () => vi.advanceTimersByTimeAsync(150))
 }
 
+it('reconciles immediately on visibility resume and keeps awaiting teams distinct', async () => {
+  const next = board('Resume PS');
+  next.teams.push({ id: 2, team_code: 'T-2', team_name: 'Awaiting Team', final_problem: null, effective_problem: null } as any);
+  mocks.load.mockResolvedValueOnce(board()).mockResolvedValue(next);
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />));
+  Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+  await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+  expect(mocks.load).toHaveBeenCalledTimes(1);
+  Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+  await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+  expect(mocks.load).toHaveBeenCalledTimes(2);
+  expect(host.textContent).toContain('Awaiting problem');
+  expect(mocks.socket).toHaveBeenCalledTimes(1);
+});
+
 it('reloads authoritative PS and team details even when a single event has only IDs', async () => {
   mocks.load.mockResolvedValueOnce(board()).mockResolvedValue(board('Latest PS'))
   await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />))

@@ -1,4 +1,5 @@
 import asyncio
+from time import perf_counter
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -35,21 +36,23 @@ def seed_35(db):
     return teams, problems
 
 
-def test_missing_two_are_diagnosed_and_no_partial_commit(db):
+def test_33_resolved_allocate_and_two_awaiting_remain_visible(db):
     teams, _ = seed_35(db)
-    with pytest.raises(LabAllocationError) as error:
-        allocate_labs(db)
-    detail = error.value.detail()
-    assert detail["expected_count"] == detail["eligible_team_count"] == 35
-    assert detail["graph_team_count"] == detail["max_flow"] == detail["allocated_count"] == 33
-    assert [(row["team_id"], row["team_name"]) for row in detail["unassigned_teams"]] == [(team.id, team.team_name) for team in teams[-2:]]
-    db.rollback()
-    assert db.query(LabAssignment).count() == 0
-    assert lab_board(db)["eligible_team_count"] == 35
+    assert allocate_labs(db) == (True, 33)
+    board = lab_board(db)
+    assert board["participant_team_count"] == len(board["teams"]) == 35
+    assert board["allocation_eligible_count"] == board["allocated_count"] == 33
+    assert board["awaiting_problem_count"] == 2 and board["unallocated_eligible_count"] == 0
+    assert [row["id"] for row in board["awaiting_problem_teams"]] == [team.id for team in teams[-2:]]
+    assert board["status"] == "ALLOCATED"
+    assert allocate_labs(db) == (False, 33)
 
 
 def test_allocation_endpoint_returns_clear_409(db):
     seed_35(db)
+    for index, lab in enumerate(db.query(Lab).order_by(Lab.id).all()):
+        lab.capacity = 6 if index < 4 else 7
+    db.commit()
     app = FastAPI()
     app.include_router(labs.router)
     app.dependency_overrides[get_db] = lambda: db
@@ -57,9 +60,58 @@ def test_allocation_endpoint_returns_clear_409(db):
     with TestClient(app) as client:
         response = client.post("/admin/lab-allocation/allocate")
     assert response.status_code == 409
-    assert response.json()["detail"]["expected_count"] == 35
-    assert response.json()["detail"]["allocated_count"] == 33
+    assert response.json()["detail"]["expected_count"] == 33
+    assert response.json()["detail"]["allocated_count"] == 31
     assert len(response.json()["detail"]["unassigned_teams"]) == 2
+
+
+def test_incremental_resolution_preserves_33_and_manual_history(db):
+    teams, problems = seed_35(db)
+    allocate_labs(db)
+    first = db.query(LabAssignment).order_by(LabAssignment.id).first()
+    first.assignment_source = "MANUAL_OVERRIDE"
+    before = [(r.id, r.team_id, r.current_lab_id, r.version, r.assignment_source) for r in db.query(LabAssignment).all()]
+    teams[-2].ps_id = problems[-1].id
+    db.commit()
+    assert lab_board(db)["unallocated_eligible_count"] == 1
+    assert allocate_labs(db) == (True, 34)
+    assert [(r.id, r.team_id, r.current_lab_id, r.version, r.assignment_source) for r in db.query(LabAssignment).filter(LabAssignment.team_id.in_([t.id for t in teams[:33]])).all()] == before
+    assert allocate_labs(db) == (False, 34)
+    assert lab_board(db)["awaiting_problem_count"] == 1
+
+
+def test_persistent_login_survives_disconnect_and_stale_activity_until_logout(db):
+    from app.services.participant_presence import participant_presence_payload
+    from app.services.participant_session import clear_user_session
+    teams, _ = seed_35(db)
+    user = User(name="Leader", email="session@test.example", password_hash="unused", role="leader", team_id=teams[0].id,
+                credentials_active=True, session_id="active", session_last_seen_at=datetime.now(timezone.utc) - timedelta(days=10))
+    db.add(user); db.commit()
+    presence = participant_presence_payload(db, connected_team_ids=[])
+    assert presence["logged_in_team_ids"] == [teams[0].id]
+    assert presence["online_team_ids"] == []
+    assert lab_board(db, logged_in_team_ids=set(presence["logged_in_team_ids"]))["teams"][0]["logged_in"] is True
+    clear_user_session(user); db.commit()
+    assert participant_presence_payload(db)["logged_in_team_ids"] == []
+
+
+def test_incremental_conflict_exposes_explicit_regeneration_without_reshuffling(db):
+    a = ProblemStatement(ps_number="A", title="A", round=1)
+    b = ProblemStatement(ps_number="B", title="B", round=1)
+    left, right = Lab(name="Left", capacity=2), Lab(name="Right", capacity=1)
+    db.add_all([a, b, left, right, RoundControl(round_type="WILDCARD", ended=True)]); db.flush()
+    teams = [Team(team_name="Existing A", ps_id=a.id), Team(team_name="Existing B", ps_id=b.id), Team(team_name="New A", ps_id=a.id)]
+    db.add_all(teams); db.flush()
+    db.add_all([LabAssignment(team_id=teams[0].id, original_lab_id=left.id, current_lab_id=left.id, effective_ps_id=a.id, assignment_source="MANUAL_OVERRIDE"),
+                LabAssignment(team_id=teams[1].id, original_lab_id=right.id, current_lab_id=right.id, effective_ps_id=b.id)])
+    db.commit()
+    with pytest.raises(LabAllocationError) as error:
+        allocate_labs(db)
+    assert error.value.code == "regeneration_required"
+    assert error.value.context["regeneration_possible"] is True
+    db.rollback()
+    assert db.query(LabAssignment).count() == 2
+    assert allocate_labs(db, replace_manual=True) == (True, 3)
 
 
 def test_extra_grid_35_of_35_and_idempotent_with_r1_frozen(db):
@@ -182,7 +234,14 @@ def test_wildcard_http_finishes_with_slow_fanout_and_closed_db(db, session_facto
     db.commit()
     email = user.email
     queries = []
-    event.listen(session_factory.kw["bind"], "before_cursor_execute", lambda conn, cursor, statement, parameters, context, executemany: queries.append(statement))
+    sql_durations = []
+    def before_sql(conn, cursor, statement, parameters, context, executemany):
+        queries.append(statement)
+        context._bid_test_started_at = perf_counter()
+    def after_sql(conn, cursor, statement, parameters, context, executemany):
+        sql_durations.append((perf_counter() - context._bid_test_started_at) * 1000)
+    event.listen(session_factory.kw["bind"], "before_cursor_execute", before_sql)
+    event.listen(session_factory.kw["bind"], "after_cursor_execute", after_sql)
     async def scenario():
         manager = ConnectionManager()
         gate = asyncio.Event()
@@ -204,7 +263,9 @@ def test_wildcard_http_finishes_with_slow_fanout_and_closed_db(db, session_facto
         # ASGI transport exercises the HTTP endpoint without launching a server.
         import httpx
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            started = perf_counter()
             response = await asyncio.wait_for(client.post("/wildcard/bid", json={"increment": 1}), timeout=1)
+            print(f"Isolated SQLite bid HTTP={(perf_counter() - started) * 1000:.2f}ms SQL={sum(sql_durations):.2f}ms queries={len(queries)} {response.headers.get('Server-Timing')}")
         assert response.status_code == 200 and response.json()["amount"] == 101
         assert not gate.is_set()
         gate.set()

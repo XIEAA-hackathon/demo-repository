@@ -43,9 +43,10 @@ export function LabAdminBoard({ onLogout, session = null }) {
   const load = useCallback(() => {
     if (loadInFlight.current) return loadInFlight.current;
     const startedRevision = revision.current;
+    const presenceAtStart = latestPresence.current;
     const request = getLabAllocation()
       .then(nextBoard => {
-        if (revision.current === startedRevision) setBoard(latestPresence.current ? applyParticipantPresence(nextBoard, latestPresence.current) : nextBoard);
+        if (revision.current === startedRevision) setBoard(latestPresence.current && latestPresence.current !== presenceAtStart ? applyParticipantPresence(nextBoard, latestPresence.current) : nextBoard);
         setError("");
       })
       .catch((cause) => { setError(cause.message || "Lab allocation could not be loaded."); })
@@ -58,6 +59,19 @@ export function LabAdminBoard({ onLogout, session = null }) {
     return request;
   }, []);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const resume = () => {
+      if (document.hidden) return;
+      revision.current += 1;
+      if (assignmentRefreshTimer.current !== null) {
+        window.clearTimeout(assignmentRefreshTimer.current);
+        assignmentRefreshTimer.current = null;
+      }
+      void load();
+    };
+    document.addEventListener("visibilitychange", resume);
+    return () => document.removeEventListener("visibilitychange", resume);
+  }, [load]);
   const wildcardReadySeen = useRef(false);
   useEffect(() => { if (board?.can_move) wildcardReadySeen.current = true; }, [board?.can_move]);
   useEffect(() => {

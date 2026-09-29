@@ -99,7 +99,8 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
       team.wildcard_history?.problem_number, team.wildcard_history?.problem_title,
       team.final_problem?.problem_number, team.final_problem?.problem_title,
       team.effective_problem?.number, team.effective_problem?.title, team.lab_name].join(" ").toLowerCase();
-    return searchable.includes(query.toLowerCase()) && (filter === "all" || (filter === "allocated") === allocated);
+    return searchable.includes(query.toLowerCase()) && (filter === "all" || (filter === "allocated" && allocated)
+      || (filter === "pending" && !allocated && Boolean(team.final_problem)) || (filter === "awaiting" && !team.final_problem));
   });
   return <section className="lab-workspace" aria-busy={working}>
     <header className="lab-workspace__header"><div><h2>{view === "teams" ? "Team Details" : "Labs"}</h2><p>{shown.message}</p></div>
@@ -111,14 +112,14 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
     <p className="lab-save-status" role="status">{working ? "Saving assignment…" : notice}</p>
     {view === "teams"
       ? <dl className="lab-allocation-summary"><div><dt>Logged In Teams</dt><dd>{shown.participant_logged_in_count ?? teams.filter(team => team.logged_in).length} / {shown.team_count ?? teams.length}</dd></div><div><dt>Problem Assigned</dt><dd>{problemAssigned} / {shown.team_count ?? teams.length}</dd></div></dl>
-      : <dl className="lab-allocation-summary"><div><dt>Eligible teams</dt><dd>{shown.eligible_team_count ?? shown.team_count ?? 0}</dd></div><div><dt>Assigned</dt><dd>{shown.assigned_count ?? assigned.length}</dd></div><div><dt>Unassigned</dt><dd>{shown.unassigned_count ?? unassigned.length}</dd></div></dl>}
+      : <dl className="lab-allocation-summary"><div><dt>Eligible teams</dt><dd>{shown.allocation_eligible_count ?? shown.eligible_team_count ?? 0}</dd></div><div><dt>Assigned</dt><dd>{shown.assigned_count ?? assigned.length}</dd></div><div><dt>Lab pending</dt><dd>{shown.unallocated_eligible_count ?? unassigned.filter(team => team.final_problem).length}</dd></div><div><dt>Awaiting problem</dt><dd>{shown.awaiting_problem_count ?? teams.filter(team => !team.final_problem).length}</dd></div></dl>}
     {view !== "labs" && <section className="team-allotment-panel" aria-label="Teams">
       <div className="lab-filters"><label>Search teams<input type="search" value={query} onChange={event => setQuery(event.target.value)} /></label>
-        <label>Allocation status<select value={filter} onChange={event => setFilter(event.target.value)}><option value="all">All teams</option><option value="allocated">Allocated</option><option value="pending">Unallocated</option></select></label></div>
+        <label>Allocation status<select value={filter} onChange={event => setFilter(event.target.value)}><option value="all">All teams</option><option value="allocated">Allocated</option><option value="pending">Lab pending</option><option value="awaiting">Awaiting problem</option></select></label></div>
       <div className="team-allotment-list"><div className="team-allotment-list__head"><span>Team</span><span>Logged In</span><span>Assigned Lab</span><span>Action</span></div>
         {filtered.map(team => <div className="team-allotment-row" key={team.id}><span className="team-identity"><b>{team.team_code}</b><strong>{team.team_name}</strong></span>
           <span className={`team-presence ${team.logged_in ? "team-presence--online" : ""}`}>{team.logged_in ? "YES" : "NO"}</span>
-          <span>{team.lab_name || "Not assigned"}</span>
+          <span>{team.lab_name || (team.final_problem ? "Lab pending" : "Awaiting problem")}</span>
           <span><button type="button" className="secondary-button" onClick={() => setSelectedTeamId(team.id)}>View Details</button></span></div>)}
         {!filtered.length && <p className="lab-empty-row">No teams match these filters.</p>}</div>
     </section>}
@@ -136,7 +137,7 @@ export default function LabAllocationPanel({ board, loading = false, error = "",
       })}</div>
       {!shown.labs.length && <p>No labs configured. Ask the Event Admin to add labs.</p>}
       <section className="lab-unassigned" aria-label="Unassigned Teams"><h3>Unassigned Teams · {unassigned.length}</h3>
-        {unassigned.length > 0 && <p role="status">These teams still need a lab assignment.</p>}{unassigned.map(teamEntry)}
+        {unassigned.length > 0 && <p role="status">{unassigned.filter(team => team.final_problem).length} lab pending · {unassigned.filter(team => !team.final_problem).length} awaiting problem</p>}{unassigned.map(teamEntry)}
       </section>
     </>}
     {selectedTeam && createPortal(<div className="team-details-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSelectedTeamId(null); }}>

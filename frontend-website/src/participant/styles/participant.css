@@ -90,11 +90,12 @@ h2 { margin-bottom: .7rem; font-size: 1.1rem; }
 .dashboard-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .9rem; }
 .dash-team { display: grid; gap: .4rem; }
 .dash-team h2 { margin: 0; font-size: 1.35rem; letter-spacing: -.02em; }
+.page-heading h1 { overflow-wrap: anywhere; }
 .dash-team p { margin: 0; color: var(--muted); font-size: .8rem; line-height: 1.5; }
 .kpi { min-height: 120px; display: flex; flex-direction: column; justify-content: space-between; }
 .kpi__label { color: var(--muted); font-size: .68rem; letter-spacing: .14em; text-transform: uppercase; }
 .kpi__value { display: flex; align-items: center; gap: .55rem; }
-.kpi__value strong { color: var(--gold-bright); font: 600 clamp(1.05rem, 2.5vw, 1.5rem) 'JetBrains Mono', monospace; letter-spacing: .02em; }
+.kpi__value strong { min-width: 0; overflow-wrap: anywhere; color: var(--gold-bright); font: 600 clamp(1.05rem, 2.5vw, 1.5rem) 'JetBrains Mono', monospace; letter-spacing: .02em; }
 .kpi__emoji { font-size: 1.35rem; line-height: 1; }
 .kpi__hint { color: var(--muted); font-size: .72rem; }
 .dash-problem, .dash-next { display: grid; gap: .5rem; align-content: start; }

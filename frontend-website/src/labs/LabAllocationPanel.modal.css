@@ -49,6 +49,9 @@
 }
 
 @media (max-width: 760px) {
+  .assignment-stats { flex-wrap: wrap; }
+  .assignment-stats > div { min-width: 0; flex-basis: 130px; }
+  .team-details-modal h2, .team-details-lab strong { overflow-wrap: anywhere; }
   .team-details-modal-backdrop { padding: 12px; }
   .team-details-modal { width: calc(100vw - 24px); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); }
   .team-details-modal > header { padding: 15px 16px; }
