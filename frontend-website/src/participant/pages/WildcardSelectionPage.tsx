@@ -6,8 +6,13 @@ import Modal from '../components/Modal'
 import Countdown from '../components/Countdown'
 import WaitingState from '../components/WaitingState'
 import { Button, Card, PageHeading } from '../components/ui'
+import FinalizedLeaderboard from '../components/FinalizedLeaderboard'
 
 export default function WildcardSelectionPage() {
+  return <><FinalizedLeaderboard round="WILDCARD" /><WildcardSelectionContent /></>
+}
+
+function WildcardSelectionContent() {
   const { dashboard, service, refresh } = useParticipant()
   const [problems, setProblems] = useState<WildcardProblem[]>([])
   const [selected, setSelected] = useState('')

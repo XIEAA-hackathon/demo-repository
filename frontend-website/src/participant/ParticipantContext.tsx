@@ -39,7 +39,7 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
   const [refreshPending, setRefreshPending] = useState(false)
   const [hasAuthoritativeSocketSnapshot, setHasAuthoritativeSocketSnapshot] = useState(false)
 
-  // Only bidding screens consume realtimeEvent. Keeping every websocket message
+  // Bid and finalized leaderboard screens consume realtimeEvent. Keeping every websocket message
   // here caused the entire participant tree (dashboard/layout/navigation) to
   // rerender for timer syncs, presence updates and unrelated broadcasts.
   const [realtimeEvent, setRealtimeEvent] = useState<EventMessage | null>(null)
@@ -304,9 +304,12 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
           window.dispatchEvent(new Event('participant:leaderboard-resync'))
         }
 
-        // Bidding components are the only current consumers of realtimeEvent.
+        // Leaderboards consume bid deltas and the narrow finalization events.
         // Do not invalidate the entire ParticipantContext for every timer,
         // presence, lab or organizer message.
+        if ((message.type === 'round_updated' && message.payload.round === 'ROUND1'
+             && ['winners_assigned', 'problem_no_bids', 'problem_selected'].includes(String(message.payload.action)))
+            || (message.type === 'wildcard_updated' && message.payload.action === 'bidding_finalized')) setRealtimeEvent(message)
         if (message.type === 'bid_updated' || message.type === 'wildcard_bid_updated') {
           setRealtimeEvent(message)
 

@@ -101,6 +101,8 @@ export interface LeaderboardEntry {
   teamName: string
   amount: number
   placedAt: string | null
+  finalized?: boolean
+  qualified?: boolean | null
 }
 
 export interface AcceptedBid {

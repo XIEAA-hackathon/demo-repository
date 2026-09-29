@@ -27,14 +27,20 @@ export default function BiddingPanel({
   const leaderboardInFlight = useRef<Promise<void> | null>(null)
   const loadLeaderboard = useCallback(() => {
     if (leaderboardInFlight.current) return leaderboardInFlight.current
-    const request = service.getLeaderboard(round).then(setEntries)
+    const requestedProblem = String(problem.id)
+    const request = service.getLeaderboard(round, requestedProblem).then(rows => {
+      if (currentProblem.current === requestedProblem) setEntries(rows.slice(0, 10))
+    })
     leaderboardInFlight.current = request
     const release = () => {
       if (leaderboardInFlight.current === request) leaderboardInFlight.current = null
     }
     void request.then(release, release)
     return request
-  }, [round, service])
+  }, [problem.id, round, service])
+  const currentProblem = useRef(String(problem.id))
+  currentProblem.current = String(problem.id)
+  useEffect(() => { setEntries([]); leaderboardInFlight.current = null }, [problem.id])
 
   useEffect(() => {
     let stopped = false
@@ -66,9 +72,10 @@ export default function BiddingPanel({
     if (!realtimeEvent || !['bid_updated', 'wildcard_bid_updated'].includes(realtimeEvent.type)) return
     const delta = parseBidDelta(realtimeEvent.payload)
     if (!delta || delta.round !== round) return
+    if (dashboard?.eventState !== (round === 'ROUND1' ? 'ROUND1_BIDDING' : 'WILDCARD_BIDDING')) return
     if (delta.problemId !== null && delta.problemId !== String(problem.id)) return
     setEntries((current) => applyBidDelta(current, delta))
-  }, [problem.id, realtimeEvent, round])
+  }, [dashboard?.eventState, problem.id, realtimeEvent, round])
 
   if (!dashboard) return null
   const isLeader = dashboard.team.leaderId === dashboard.currentUserId

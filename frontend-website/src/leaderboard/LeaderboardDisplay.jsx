@@ -32,6 +32,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
     let socketConnected = false;
     let pendingBids = [];
     let lastEventVersion = 0;
+    let lifecycleRevision = 0;
     const schedule = (delay) => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(load, delay);
@@ -42,6 +43,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
         return;
       }
       inFlight = true;
+      const startedRevision = lifecycleRevision;
       pendingBids = [];
       try {
         const response = await fetch(`${API_URL}/public/leaderboard`, {
@@ -55,10 +57,11 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
         if (!response.ok) throw new Error("Leaderboard unavailable");
         const payload = await response.json();
         if (payload.timing) payload.timing = { ...payload.timing, received_at: Date.now() };
-        if (active) {
+        if (active && startedRevision === lifecycleRevision) {
           failures = 0;
           hasDisplay = true;
           // Replay deltas received during this read; no extra request per bid.
+          if (payload.mode !== "RESULTS_PUBLISHED") payload.rows = (payload.rows || []).slice(0, 10);
           setDisplay(pendingBids.reduce(applyLiveBid, payload));
           setApiStatus("healthy");
         }
@@ -89,6 +92,40 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
         if (version > 0 && lastEventVersion > 0 && version < lastEventVersion) return;
         if (version > lastEventVersion + 1 && lastEventVersion > 0) schedule(0);
         if (version > 0) lastEventVersion = version;
+        if (message.type === "round_updated" && message.payload?.round === "ROUND1"
+            && ["winners_assigned", "problem_no_bids"].includes(message.payload?.action)) {
+          lifecycleRevision += 1;
+          const { winners, problem } = message.payload;
+          if (Array.isArray(winners) && problem) {
+            setDisplay(current => ({ ...current, mode: "ROUND1_RESULT", event_state: "ROUND1_RESULT",
+              status_label: "Round 1 — Final Result", problem,
+              rows: winners.map((winner, index) => ({ rank: index + 1, team_id: winner.team_id,
+                team_name: winner.team_name, value: winner.amount, qualified: true, finalized: true })) }));
+          } else schedule(0);
+          return;
+        }
+        if (message.type === "wildcard_updated" && message.payload?.action === "bidding_finalized") {
+          lifecycleRevision += 1;
+          setDisplay(current => ({ ...current, mode: "WILDCARD_FINAL", rows: [], status_label: "Loading finalized ranking" }));
+          schedule(0); // Qualified-only event: one GET supplies the complete final Top 10.
+          return;
+        }
+        if (message.type === "round_updated" && message.payload?.round === "ROUND1" && message.payload?.action === "problem_selected") {
+          lifecycleRevision += 1;
+          setDisplay(current => ({ ...current, mode: "WAITING", rows: [], problem: { id: message.payload.problem_id } }));
+          schedule(200);
+          return;
+        }
+        if (message.type === "event_state_changed") {
+          lifecycleRevision += 1;
+          const state = message.payload?.event_state;
+          const problemId = message.payload?.rounds?.ROUND1?.current_problem_id;
+          if (state === "ROUND1_BIDDING") setDisplay(current => ({ ...current, mode: "ROUND1_LIVE", event_state: state,
+            problem: String(current?.problem?.id) === String(problemId) ? current.problem : { id: problemId },
+            rows: current?.mode === "ROUND1_LIVE" && String(current.problem?.id) === String(problemId) ? current.rows : [] }));
+          schedule(200);
+          return;
+        }
         if (message.type === "bid_updated" || message.type === "wildcard_bid_updated") {
           const delta = parseBidDelta(message.payload || {});
           if (!delta) return;
@@ -119,15 +156,17 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
   const apiLive = apiStatus === "healthy";
 
   const mode = display?.mode;
-  const isRoundOne = mode === "ROUND1_LIVE";
-  const isWildcard = mode === "WILDCARD_LIVE";
+  const isRoundOne = mode === "ROUND1_LIVE" || mode === "ROUND1_RESULT";
+  const isWildcard = mode === "WILDCARD_LIVE" || mode === "WILDCARD_FINAL";
+  const isRoundOneResult = mode === "ROUND1_RESULT";
+  const isWildcardFinal = mode === "WILDCARD_FINAL";
   const isFinal = mode === "RESULTS_PUBLISHED";
-  const title = isRoundOne ? "ROUND 1 — LIVE" : isWildcard ? "WILDCARD — LIVE" : isFinal ? "FINAL RESULTS" : "EVENT LEADERBOARD";
+  const title = isRoundOneResult ? "ROUND 1 — FINAL RESULT" : isWildcardFinal ? "WILDCARD — FINAL RANKING" : isRoundOne ? "ROUND 1 — LIVE" : isWildcard ? "WILDCARD — LIVE" : isFinal ? "FINAL RESULTS" : "EVENT LEADERBOARD";
   const rows = isFinal && display?.results ? [
     { rank: 1, team_name: display.results.first_place.team_name },
     { rank: 2, team_name: display.results.second_place.team_name },
     { rank: 3, team_name: display.results.third_place.team_name },
-  ] : (display?.rows || []);
+  ] : (display?.rows || []).slice(0, 10);
 
   return (
     <main className="leaderboard-page">
@@ -185,9 +224,9 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
               <div className="team-name">
                 {row.team_name}
 
-                {!isFinal && row.rank <= 5 && (
+                {!isFinal && !isRoundOneResult && !isWildcardFinal && row.rank <= (isWildcard ? display?.slot_count || 0 : 5) && (
                   <span className="top-five-badge">
-                    {isWildcard && row.rank <= (display?.slot_count || 0) ? "IN SLOT" : "TOP 5"}
+                    {isWildcard ? "IN SLOT" : "TOP 5"}
                   </span>
                 )}
               </div>
@@ -198,7 +237,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
               </div>
 
               <div className="bid-time">
-                {isFinal ? "WINNER" : apiLive ? "CURRENT" : "LAST SYNC"}
+                {isFinal || isRoundOneResult ? "WINNER" : isWildcardFinal ? row.qualified ? "QUALIFIED" : "NOT QUALIFIED" : apiLive ? "CURRENT" : "LAST SYNC"}
               </div>
 
             </div>
@@ -215,7 +254,7 @@ function LeaderboardDisplay({ token, onUnauthorized, onLogout }) {
       </section>
 
 
-      {(isRoundOne || isWildcard) && timing?.ends_at && <div className="leaderboard-countdown">
+      {(mode === "ROUND1_LIVE" || mode === "WILDCARD_LIVE") && timing?.ends_at && <div className="leaderboard-countdown">
         {display?.timing?.paused ? "PAUSED" : "AUCTION TIME"}&nbsp;&nbsp; {formatTime(remaining)}
       </div>}
 

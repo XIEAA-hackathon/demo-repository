@@ -76,4 +76,5 @@ pnpm-debug.log*
 *.suo
 *.swp
 !frontend-website/src/participant/ParticipantContext.test.tsx
+!frontend-website/src/participant/leaderboardLifecycle.test.tsx
 *.exe

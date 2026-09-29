@@ -3,11 +3,12 @@ import ResultCard from '../components/ResultCard'
 import WaitingState from '../components/WaitingState'
 import { Card, PageHeading, Stat } from '../components/ui'
 import RoundOneComplete from '../components/RoundOneComplete'
+import FinalizedLeaderboard from '../components/FinalizedLeaderboard'
 
 export default function RoundResultPage() {
   const { dashboard } = useParticipant()
   if (!dashboard) return null
-  if (dashboard.round1Assigned) return <RoundOneComplete dashboard={dashboard} />
+  if (dashboard.round1Assigned) return <><FinalizedLeaderboard round="ROUND1" /><RoundOneComplete dashboard={dashboard} /></>
   const settlement = dashboard.roundOneSettlement
   const bid = settlement?.bidAmount ?? 0
   const secured = settlement?.won ?? false
@@ -15,6 +16,7 @@ export default function RoundResultPage() {
   return (
     <div className="stack round-result">
       <PageHeading eyebrow="Round 1 completed" title={secured ? 'Problem secured' : 'Bidding complete'} />
+      <FinalizedLeaderboard round="ROUND1" />
       {secured ? (
         <div className="result-wrap">
           <ResultCard teamName={dashboard.team.name} problem={dashboard.currentProblem} winningBid={bid} balance={dashboard.wallet.balance} />

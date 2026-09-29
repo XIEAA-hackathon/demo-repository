@@ -21,7 +21,7 @@ export default function WildcardBiddingPage() {
   const leaderboardInFlight = useRef<Promise<void> | null>(null)
   const loadLeaderboard = useCallback(() => {
     if (leaderboardInFlight.current) return leaderboardInFlight.current
-    const request = service.getLeaderboard('WILDCARD').then(setEntries)
+    const request = service.getLeaderboard('WILDCARD').then(rows => setEntries(rows.slice(0, 10)))
     leaderboardInFlight.current = request
     const release = () => {
       if (leaderboardInFlight.current === request) leaderboardInFlight.current = null
@@ -59,8 +59,9 @@ export default function WildcardBiddingPage() {
     if (!realtimeEvent || realtimeEvent.type !== 'wildcard_bid_updated') return
     const delta = parseBidDelta(realtimeEvent.payload)
     if (!delta || delta.round !== 'WILDCARD') return
+    if (dashboard?.eventState !== 'WILDCARD_BIDDING' || entries.some(entry => entry.finalized)) return
     setEntries((current) => applyBidDelta(current, delta))
-  }, [realtimeEvent])
+  }, [dashboard?.eventState, realtimeEvent])
 
   if (!dashboard) return null
   const applied = Boolean(dashboard.wildcardApplication) && dashboard.wildcard?.status === 'applied'

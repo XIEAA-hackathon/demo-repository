@@ -43,6 +43,7 @@ def test_33_resolved_allocate_and_two_awaiting_remain_visible(db):
     assert board["participant_team_count"] == len(board["teams"]) == 35
     assert board["allocation_eligible_count"] == board["allocated_count"] == 33
     assert board["awaiting_problem_count"] == 2 and board["unallocated_eligible_count"] == 0
+    assert db.query(LabAssignment).filter(LabAssignment.team_id.in_([team.id for team in teams[-2:]])).count() == 0
     assert [row["id"] for row in board["awaiting_problem_teams"]] == [team.id for team in teams[-2:]]
     assert board["status"] == "ALLOCATED"
     assert allocate_labs(db) == (False, 33)
@@ -93,6 +94,22 @@ def test_persistent_login_survives_disconnect_and_stale_activity_until_logout(db
     assert lab_board(db, logged_in_team_ids=set(presence["logged_in_team_ids"]))["teams"][0]["logged_in"] is True
     clear_user_session(user); db.commit()
     assert participant_presence_payload(db)["logged_in_team_ids"] == []
+
+
+def test_login_projection_is_bulk_and_supports_legacy_leader_link(db):
+    from app.services.participant_presence import participant_presence_payload
+    teams, _ = seed_35(db)
+    users = [User(name=f"Leader {i}", email=f"bulk-{i}@test.example", password_hash="unused", role="leader",
+                  team_id=team.id if i else None, session_id=f"session-{i}", credentials_active=True) for i, team in enumerate(teams)]
+    db.add_all(users); db.flush(); teams[0].leader_id = users[0].id; db.commit()
+    expected_ids = [team.id for team in teams]
+    statements = []
+    def record(conn, cursor, statement, parameters, context, executemany): statements.append(statement)
+    event.listen(db.get_bind(), "before_cursor_execute", record)
+    presence = participant_presence_payload(db, connected_team_ids=[])
+    event.remove(db.get_bind(), "before_cursor_execute", record)
+    assert presence["logged_in_team_ids"] == expected_ids
+    assert len(statements) == 2  # One session/team join plus approved participant IDs.
 
 
 def test_incremental_conflict_exposes_explicit_regeneration_without_reshuffling(db):

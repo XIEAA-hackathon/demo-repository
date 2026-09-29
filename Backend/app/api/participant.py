@@ -28,10 +28,10 @@ from app.api.websockets import manager
 from app.services.wildcard_service import (
     available_wildcard_problems,
     current_selection,
-    ranked_wildcard_bids,
     selection_remaining_seconds,
 )
 from app.services.bid_cooldown import bid_cooldown_remaining
+from app.services.leaderboard_projection import round1_result_problem, round1_rows, wildcard_rows
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
@@ -380,39 +380,23 @@ def get_participant_problems(
     ]
 
 @router.get("/participant/leaderboard", response_model=list[LeaderboardEntry])
-def get_leaderboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
+def get_leaderboard(round_type: str | None = None, problem_id: int | None = None,
+                    db: Session = Depends(get_db), current_user: User = Depends(get_current_active_participant)):
     config = get_or_create_game_config(db)
-    if config.current_round == 2:
-        return [
-            LeaderboardEntry(
-                rank=index,
-                team_id=team.id,
-                team_name=team.team_name,
-                coins=team.coins,
-                ps_title=None,
-                bid_amount=bid.amount,
-                bid_timestamp=bid.timestamp,
-            )
-            for index, (bid, team, _application) in enumerate(ranked_wildcard_bids(db), start=1)
-        ]
-
-    control = get_or_create_round_control(db, "ROUND1")
-    query = db.query(Bid, Team).join(Team, Team.id == Bid.team_id).filter(Bid.round == 1)
-    if control.current_problem_id:
-        query = query.filter(Bid.ps_id == control.current_problem_id)
-    rows = query.order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).all()
-    return [
-        LeaderboardEntry(
-            rank=index,
-            team_id=team.id,
-            team_name=team.team_name,
-            coins=team.coins,
-            ps_title=None,
-            bid_amount=bid.amount,
-            bid_timestamp=bid.timestamp,
-        )
-        for index, (bid, team) in enumerate(rows, start=1)
-    ]
+    if round_type not in {None, "ROUND1", "WILDCARD"}:
+        raise HTTPException(status_code=400, detail="Unknown leaderboard round.")
+    if round_type == "WILDCARD" or (round_type is None and config.current_round == 2):
+        rows = wildcard_rows(db, get_or_create_round_control(db, "WILDCARD"))
+    else:
+        control = get_or_create_round_control(db, "ROUND1")
+        result_problem = round1_result_problem(db, control)
+        selected_id = control.current_problem_id or (result_problem.id if result_problem else None)
+        if problem_id is not None and problem_id != selected_id:
+            return []  # A stale screen must not consume another problem's bids.
+        rows = round1_rows(db, selected_id, finalized=result_problem is not None)
+    return [LeaderboardEntry(rank=row["rank"], team_id=row["team_id"], team_name=row["team_name"],
+                             coins=row["coins"], bid_amount=row["value"], bid_timestamp=row["timestamp"],
+                             finalized=row["finalized"], qualified=row["qualified"]) for row in rows]
 
 # ---------------------------------------------------------------- Submissions
 

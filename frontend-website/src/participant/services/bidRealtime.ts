@@ -35,7 +35,7 @@ export function applyBidDelta(entries: LeaderboardEntry[], delta: BidDelta): Lea
       if (leftTime !== rightTime) return leftTime - rightTime
       return teamOrder(left.teamId, right.teamId)
     })
-    .map((entry, index) => ({ ...entry, rank: index + 1 }))
+    .map((entry, index) => ({ ...entry, rank: index + 1 })).slice(0, 10)
 }
 
 export function parseBidDelta(payload: Record<string, unknown>): BidDelta | null {

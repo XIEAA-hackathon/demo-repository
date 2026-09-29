@@ -39,8 +39,9 @@ from app.services.round1_assignment import (
     remaining_problems_payload,
     update_round1_winning_bid_aggregate,
 )
-from app.services.wildcard_service import ranking_payload, wildcard_payload
+from app.services.wildcard_service import wildcard_payload
 from app.services.extra_assignment import ExtraAssignmentError, automatically_assign_extra_problems, extra_assignment_payload
+from app.services.leaderboard_projection import round1_result_problem, round1_rows, wildcard_rows, WILDCARD_FINAL_STATUSES
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
@@ -846,34 +847,20 @@ def _leaderboard_payload(
             "round": "WILDCARD",
             "label": "Wildcard Slot Auction",
             "slot_count": control.slot_count,
-            "finalized": control.status in {"PROBLEM_SELECTION", "COMPLETE"},
+            "finalized": control.status in WILDCARD_FINAL_STATUSES,
             "active": control.status == "BIDDING_OPEN",
             "base_price": event_config.wildcard_starting_bid,
-            "rows": ranking_payload(db, control),
+            "rows": wildcard_rows(db, control),
         }
-    query = db.query(Bid).filter(Bid.round == 1)
-    if control.current_problem_id:
-        query = query.filter(Bid.ps_id == control.current_problem_id)
-    bids = (
-        query.add_entity(Team)
-        .join(Team, Team.id == Bid.team_id)
-        .order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc())
-        .all()
-    )
-    highest_by_team = {}
-    for bid, team in bids:
-        if bid.team_id not in highest_by_team or bid.amount > highest_by_team[bid.team_id].amount:
-            highest_by_team[bid.team_id] = (bid, team)
-    rows = [
-        {"team_id": team.id, "team_name": team.team_name, "value": bid.amount, "problem_id": bid.ps_id, "timestamp": bid.timestamp}
-        for bid, team in highest_by_team.values()
-    ]
-    rows.sort(key=lambda row: (-row["value"], row["team_id"]))
+    result_problem = round1_result_problem(db, control)
+    problem_id = control.current_problem_id or (result_problem.id if result_problem else None)
+    finalized = result_problem is not None
     return {
         "round": meta["type"],
         "label": meta["label"],
         "active": control.status == "BIDDING",
-        "finalized": control.ended or control.status == "CLOSED",
+        "finalized": finalized,
+        "problem_id": problem_id,
         "base_price": event_config.round1_minimum_bid,
-        "rows": [{**row, "rank": index} for index, row in enumerate(rows, start=1)],
+        "rows": round1_rows(db, problem_id, finalized=finalized),
     }

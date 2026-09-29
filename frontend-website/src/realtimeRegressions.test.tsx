@@ -15,7 +15,7 @@ vi.mock('./lab-admin/services/api', () => ({
 
 function board(title = 'Original PS', count = 1) {
   const teams = Array.from({ length: count }, (_, index) => ({
-    id: index + 1, team_code: `T-${index + 1}`, team_name: `Team ${index + 1}`,
+    id: index + 1, team_code: `T-${index + 1}`, team_name: `Team ${index + 1}`, logged_in: false,
     final_problem: { id: index + 100, problem_number: `WC-${index + 1}`, problem_title: title },
     effective_problem: { id: index + 100, number: `WC-${index + 1}`, title },
     wildcard_history: { selected: true, problem_number: `WC-${index + 1}`, problem_title: title },
@@ -54,6 +54,18 @@ it('reconciles immediately on visibility resume and keeps awaiting teams distinc
   expect(mocks.load).toHaveBeenCalledTimes(2);
   expect(host.textContent).toContain('Awaiting problem');
   expect(mocks.socket).toHaveBeenCalledTimes(1);
+});
+
+it('keeps Logged In across socket loss and applies logout through the existing presence event', async () => {
+  const loggedIn = board();
+  loggedIn.teams[0].logged_in = true;
+  mocks.load.mockResolvedValue(loggedIn);
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />));
+  await act(async () => mocks.options.onStatus('disconnected'));
+  expect(host.querySelector('.team-presence')?.textContent).toBe('YES');
+  await emit('participant_presence_changed', { logged_in_team_ids: [], participant_logged_in_count: 0 } as any);
+  expect(host.querySelector('.team-presence')?.textContent).toBe('NO');
+  expect(mocks.load).toHaveBeenCalledTimes(1);
 });
 
 it('reloads authoritative PS and team details even when a single event has only IDs', async () => {

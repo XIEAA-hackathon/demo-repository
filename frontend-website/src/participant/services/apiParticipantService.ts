@@ -195,14 +195,19 @@ class ApiParticipantService implements ParticipantService {
     })
     return mapBidAcceptance(result, 'ROUND1', problemId)
   }
-  async getLeaderboard() {
-    const rows = await apiRequest<Array<{ rank: number; team_id: number; team_name: string; bid_amount: number | null; bid_timestamp: string | null }>>('/participant/leaderboard')
+  async getLeaderboard(round?: Bid['round'], problemId?: string) {
+    const query = new URLSearchParams()
+    if (round) query.set('round_type', round)
+    if (problemId) query.set('problem_id', problemId)
+    const rows = await apiRequest<Array<{ rank: number; team_id: number; team_name: string; bid_amount: number | null; bid_timestamp: string | null; finalized: boolean; qualified: boolean | null }>>(`/participant/leaderboard?${query}`)
     return rows.map<LeaderboardEntry>((row) => ({
       rank: row.rank,
       teamId: String(row.team_id),
       teamName: row.team_name,
       amount: row.bid_amount ?? 0,
       placedAt: row.bid_timestamp,
+      finalized: row.finalized,
+      qualified: row.qualified,
     }))
   }
   async applyForWildcard() {

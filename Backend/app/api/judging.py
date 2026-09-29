@@ -169,14 +169,14 @@ def public_event_display(
             "timing": timing,
         }
 
-    if game.state == "ROUND1_BIDDING":
+    if game.state in {"ROUND1_BIDDING", "ROUND1_RESULT"}:
         control = controls.get("ROUND1") or RoundControl(round_type="ROUND1")
         board = _leaderboard_payload(db, ROUND_META["round-1"], event_config, control)
-        problem = db.query(ProblemStatement).filter(ProblemStatement.id == control.current_problem_id).first()
+        problem = db.query(ProblemStatement).filter(ProblemStatement.id == board["problem_id"]).first()
         return {
-            "mode": "ROUND1_LIVE",
+            "mode": "ROUND1_RESULT" if board["finalized"] else "ROUND1_LIVE",
             "event_state": game.state,
-            "status_label": "Round 1 — Live Bidding",
+            "status_label": "Round 1 — Final Result" if board["finalized"] else "Round 1 — Live Bidding",
             "problem": ({
                 "id": problem.id,
                 "problem_number": problem.ps_number.split("-", 1)[-1],
@@ -191,20 +191,21 @@ def public_event_display(
             "timing": timing,
         }
 
-    if game.state == "WILDCARD_BIDDING":
+    if game.state in {"WILDCARD_BIDDING", "WILDCARD_SELECTION", "WILDCARD_FINAL_CHOICE", "CODING"}:
         control = controls.get("WILDCARD") or RoundControl(round_type="WILDCARD", status="NOT_STARTED")
         board = _leaderboard_payload(db, ROUND_META["wildcard"], event_config, control)
-        return {
-            "mode": "WILDCARD_LIVE",
-            "event_state": game.state,
-            "status_label": "Wildcard — Live Bidding",
-            "problem": None,
-            "rows": board["rows"],
-            "slot_count": board["slot_count"],
-            "base_price": event_config.wildcard_starting_bid,
-            "results": None,
-            "timing": timing,
-        }
+        if board["finalized"] or game.state == "WILDCARD_BIDDING":
+            return {
+                "mode": "WILDCARD_FINAL" if board["finalized"] else "WILDCARD_LIVE",
+                "event_state": game.state,
+                "status_label": "Wildcard — Final Ranking" if board["finalized"] else "Wildcard — Live Bidding",
+                "problem": None,
+                "rows": board["rows"],
+                "slot_count": board["slot_count"],
+                "base_price": event_config.wildcard_starting_bid,
+                "results": None,
+                "timing": timing,
+            }
 
     labels = {
         "WAITING": "Waiting for next round",

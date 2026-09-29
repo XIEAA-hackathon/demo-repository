@@ -18,6 +18,9 @@ def session_factory(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", connect_args={"check_same_thread": False})
     # Match PostgreSQL's non-reused sequence IDs when exercising regeneration.
     models.LabAssignment.__table__.dialect_options["sqlite"]["autoincrement"] = True
+    for index in models.User.__table__.indexes:
+        if index.name == "uq_users_single_lab_admin":
+            index.dialect_options["sqlite"]["where"] = models.User.role == "lab_admin"
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False)
     yield factory

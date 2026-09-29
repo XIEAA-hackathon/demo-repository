@@ -345,6 +345,8 @@ class LeaderboardEntry(BaseModel):
     ps_title: Optional[str] = None
     bid_amount: Optional[int] = None
     bid_timestamp: Optional[datetime] = None
+    finalized: bool = False
+    qualified: Optional[bool] = None
 
 # --- Admin Config / State Schemas ---
 class EventStateUpdate(BaseModel):
