@@ -52,10 +52,15 @@ def get_extra_grid(db: Session = Depends(get_db), current_user=Depends(get_curre
     return extra_assignment_payload(db)
 
 
+class ExtraGridAssignmentRequest(BaseModel):
+    deduction: int = Field(ge=0, strict=True)
+
+
 @router.post("/admin/extra-grid/auto-assign")
-async def auto_assign_extra_grid(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
+async def auto_assign_extra_grid(payload: ExtraGridAssignmentRequest | None = None,
+                                db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
     try:
-        result = automatically_assign_extra_problems(db)
+        result = automatically_assign_extra_problems(db, deduction=payload.deduction if payload else None)
     except ExtraAssignmentError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (IntegrityError, OperationalError) as exc:
@@ -66,7 +71,8 @@ async def auto_assign_extra_grid(db: Session = Depends(get_db), current_user=Dep
     changes = db.info.pop("lab_assignment_changes", [])
     db.close()
     if result["assignments"]:
-        manager.publish_event("round_updated", {"round": "EXTRA", "action": "extra_grid_assigned", "team_ids": [row["team_id"] for row in result["assignments"]]})
+        manager.publish_event("round_updated", {"round": "EXTRA", "action": "extra_grid_assigned",
+                              "team_ids": [row["team_id"] for row in result["assignments"]], "assignments": result["assignments"]})
     if allocated_count is not None:
         manager.publish_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocated_count, "assignments": changes}, roles={"admin", "lab_admin"})
     return result

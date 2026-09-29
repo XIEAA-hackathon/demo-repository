@@ -176,6 +176,19 @@ it('updates R1 PS status immediately through the existing event and retains both
   expect(mocks.socket).toHaveBeenCalledTimes(1)
   expect(mocks.load).toHaveBeenCalledTimes(3)
 })
+it('shows Extra/Grid PS allocation live without inventing R1 history', async () => {
+  const empty: any = { ...board(), labs: [], teams: [{ id: 1, team_code: 'T-1', team_name: 'Extra team', final_problem: null, round1: null, problem_assignment_status: 'not_allocated' }] }
+  const assigned = { ...empty, teams: [{ ...empty.teams[0], final_problem: { id: 7, problem_number: 'R1-7', problem_title: 'Extra PS' }, problem_assignment_status: 'allocated' }] }
+  mocks.load.mockResolvedValueOnce(empty).mockResolvedValue(assigned)
+  await act(async () => root.render(<LabAdminBoard onLogout={vi.fn()} />))
+  await emit('round_updated', { action: 'extra_grid_assigned', team_ids: [1] })
+  expect(host.querySelector('.team-allotment-row')?.textContent).toContain('PS Allocated')
+  expect(host.querySelector('.team-allotment-row')?.textContent).toContain('Lab pending')
+  await act(async () => (host.querySelector('.team-allotment-row button') as HTMLButtonElement).click())
+  expect(document.querySelector('.team-details-final-problem')?.textContent).toContain('R1-7')
+  expect(document.querySelector('.assignment-history-card')?.textContent).toContain('Not assigned')
+  expect(mocks.socket).toHaveBeenCalledTimes(1)
+})
 
 it.each(['ROUND1', 'WILDCARD'])('uses the Wildcard delta ordering for %s display rows', round => {
   const payload = { round, bid_id: 5, team_id: 2, team_name: 'Team 2', amount: 150, increment: 1, timestamp: '2026-09-29T10:00:01Z' }

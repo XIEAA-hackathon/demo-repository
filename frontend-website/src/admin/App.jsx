@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRoundControlSnapshot } from "./useRoundControlSnapshot";
+import ExtraGrid from "./components/ExtraGrid";
 import Login from "./pages/Login";
 import ChangeProblemPage from "./pages/ChangeProblem";
 import LabConfiguration from "./components/LabConfiguration";
@@ -333,11 +334,13 @@ export function AdminApplication({ onLogout }) {
           message.type === "round_updated"
           && ["winners_assigned", "problem_manually_assigned"].includes(message.payload?.action)
         ) {
+          setAssignmentEvent(message);
           applyCoinsOrRefresh(message.payload?.winners || message.payload?.assignments);
           return;
         }
         if (message.type === "round_updated" && message.payload?.action === "extra_grid_assigned") {
           setAssignmentEvent(message);
+          applyCoinsOrRefresh(message.payload?.assignments);
           return;
         }
         if (message.type === "auction_finalized") {
@@ -517,6 +520,7 @@ function LabAllocationAdminPage({ revision, realtimeEvent }) {
 
 export function RoundControlPage({ round, state, config, remaining, onConfig, realtimeEvent }) {
   const isWildcard = round === "wildcard";
+  const [tab, setTab] = useState("auction");
   useEffect(() => {
     if (realtimeEvent?.type !== "bid_updated") return;
     const delta = parseBidDelta(realtimeEvent.payload || {});
@@ -535,6 +539,7 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
   const [assignmentStage, setAssignmentStage] = useState("select");
   const [endConfirming, setEndConfirming] = useState(false);
   const { data, setData, load: loadRound, invalidate, commit } = useRoundControlSnapshot(round, setError);
+  useEffect(() => { if (typeof data?.ended === "boolean") setTab(data.ended ? "remaining" : "auction"); }, [data?.ended]);
   useEffect(() => {
     invalidate();
     if (state?.event_state === "WAITING") setData(null);
@@ -645,6 +650,12 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
 
     {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
     {notice && <div className="admin-notice">{notice}</div>}
+    {!isWildcard && <>
+      {data.ended && <p className="admin-notice">Round 1 ended</p>}
+      <div className="wildcard-tabs round1-tabs" role="tablist" aria-label="Round 1 workspace">
+        {[["auction", "1", "Auction"], ["remaining", "2", "Remaining / Unassigned"]].map(([id, number, label]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}><span>{number}</span>{label}</button>)}
+      </div>
+    </>}
 
     {isWildcard && <section className="round-applications">
       <div><span className="eyebrow">APPLICATIONS</span><h3>{data.applications.applied} / {data.applications.eligible} applied</h3><p>{data.applications.declined} declined · {data.applications.pending} pending</p></div>
@@ -655,6 +666,7 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
       </div>
     </section>}
 
+    {(isWildcard || tab === "auction") && <>
     <div className="round-console__live">
       <article className="round-current-problem">
         <span className="eyebrow">CURRENT PROBLEM</span>
@@ -692,8 +704,11 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
       </div>}
       {!isWildcard && <button className="danger-link round-end" disabled={data.ended || working} onClick={() => setEndConfirming(true)}>{data.ended ? "Round 1 ended" : "END ROUND 1"}</button>}
     </section>
-    {!isWildcard && <section className="round-remaining-problems">
-      <header className="round-remaining-header"><div><h3>Remaining / Unassigned Problems</h3><p>Inspect assignment capacity, then choose whether to run another auction or assign specific eligible teams.</p></div><dl><div><dt>Unassigned teams</dt><dd>{remainingProblems?.unassigned_team_count ?? 0}</dd></div><div><dt>Suggested deduction</dt><dd>{remainingProblems?.suggested_deduction ?? 0} coins</dd></div><div><dt>Winning bid aggregate</dt><dd>{remainingProblems?.round1_winning_bid_sum ?? 0} / {remainingProblems?.round1_winning_bid_count ?? 0}<small>sum / actual winners</small></dd></div></dl></header>
+    </>}
+    {!isWildcard && tab === "remaining" && <>
+    <ExtraGrid realtimeEvent={realtimeEvent} onAssigned={() => { invalidate(); void loadRound(); }} />
+    <section className="round-remaining-problems">
+      <header className="round-remaining-header"><div><h3>Remaining / Unassigned Problems</h3><p>Inspect assignment capacity. Manual assignment and re-bid follow the existing Round 1 rules.</p></div><dl><div><dt>Unassigned teams</dt><dd>{remainingProblems?.unassigned_team_count ?? 0}</dd></div><div><dt>Manual deduction suggestion</dt><dd>{remainingProblems?.suggested_deduction ?? 0} coins</dd></div><div><dt>Winning bid aggregate</dt><dd>{remainingProblems?.round1_winning_bid_sum ?? 0} / {remainingProblems?.round1_winning_bid_count ?? 0}<small>sum / all actual winners</small></dd></div></dl></header>
       <div className="round-remaining-table" role="table" aria-label="Round 1 problem assignment controls">
         <div className="round-remaining-table__head" role="row"><span role="columnheader">Problem</span><span role="columnheader">Assigned</span><span role="columnheader">Auction capacity</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>
         {(remainingProblems?.problems || []).map((problem) => <article className="round-remaining-row" role="row" key={problem.id}>
@@ -701,11 +716,11 @@ export function RoundControlPage({ round, state, config, remaining, onConfig, re
           <strong className="round-remaining-count" role="cell">{problem.assigned_team_count} teams</strong>
           <span role="cell">{Math.min(problem.assigned_team_count, problem.auction_capacity ?? 5)} / {problem.auction_capacity ?? 5}</span>
           <span role="cell" className={`round-assignment-status round-assignment-status--${problem.assignment_status.toLowerCase()}`}>{problem.auction_full ? "Auction Full" : problem.assignment_status === "PARTIAL" ? "Partially Assigned" : problem.assignment_status.charAt(0) + problem.assignment_status.slice(1).toLowerCase()}</span>
-          <div className="round-remaining-actions" role="cell"><button className="secondary-button" disabled={!problem.can_rebid || working} onClick={() => run(() => rebidRoundOneProblem(problem.id), `Problem #${problem.problem_number} selected for re-bid. Start its preview when ready.`)}>Re-bid</button><button className="primary-button" disabled={!problem.can_assign || working} onClick={() => openAssignment(problem)}>Assign</button></div>
+          <div className="round-remaining-actions" role="cell"><button className="secondary-button" disabled={data.ended || !problem.can_rebid || working} onClick={() => run(() => rebidRoundOneProblem(problem.id), `Problem #${problem.problem_number} selected for re-bid. Start its preview when ready.`)}>Re-bid</button><button className="primary-button" disabled={data.ended || !problem.can_assign || working} onClick={() => openAssignment(problem)}>Assign</button></div>
         </article>)}
         {!remainingProblems?.problems.length && <div className="round-empty"><strong>No Round 1 problems</strong><p>Import the problem bank to begin.</p></div>}
       </div>
-    </section>}
+    </section></>}
     {!isWildcard && <div className="round-export-action"><button className="secondary-button" disabled={working || !roundEnded} title={roundEnded ? undefined : "Available after Round 1 ends"} onClick={() => void downloadAssignments()}>DOWNLOAD ROUND 1 ASSIGNMENTS</button></div>}
     {assignmentProblem && <div className="judging-confirmation-backdrop"><section className="judging-confirmation round-assignment-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-assignment-title">
       <header><h3 id="manual-assignment-title">Assign Problem #{assignmentProblem.problem_number}</h3><p>{assignmentProblem.title}</p></header>

@@ -2,14 +2,16 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { AdminApplication, RoundControlPage, WildcardControlPage } from './App'
+import ExtraGrid from './components/ExtraGrid'
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), end: vi.fn(), open: vi.fn(), state: vi.fn(), socket: null as any }))
+const mocks = vi.hoisted(() => ({ get: vi.fn(), end: vi.fn(), open: vi.fn(), state: vi.fn(), extra: vi.fn(), assign: vi.fn(), socket: null as any }))
 vi.mock('./services/auctionSocket', () => ({ connectAuctionSocket: (options: any) => { mocks.socket = options; return vi.fn() } }))
 vi.mock('./components/LabConfiguration', () => ({ default: () => null }))
 vi.mock('./services/api', async importOriginal => ({ ...await importOriginal<any>(),
   getRoundControl: mocks.get, endRoundOne: mocks.end, openWildcardApplications: mocks.open,
   getAdminState: mocks.state, getTeams: async () => [], getProblemStatements: async () => [], getBidHistory: async () => [],
   getAdminConfig: async () => null, getAdminHealth: async () => ({ database: 'healthy' }), getLabAllocation: async () => null,
+  getExtraGrid: mocks.extra, autoAssignExtraGrid: mocks.assign,
 }))
 const snapshot = (wildcard = false, status = wildcard ? 'NOT_STARTED' : 'READY', ended = false) => ({
   round_type: wildcard ? 'WILDCARD' : 'ROUND1', status, ended, current_problem: null, problems: [], highest_bid: 0,
@@ -23,7 +25,8 @@ let host: HTMLDivElement
 let root: ReturnType<typeof createRoot>
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); vi.useFakeTimers()
-  mocks.get.mockReset(); mocks.end.mockReset(); mocks.open.mockReset(); mocks.state.mockReset()
+  mocks.get.mockReset(); mocks.end.mockReset(); mocks.open.mockReset(); mocks.state.mockReset(); mocks.assign.mockReset(); mocks.extra.mockReset()
+  mocks.extra.mockResolvedValue({ problems: [], teams: [], unassigned_teams: [], suggested_auto_deduction: 25, automatic_winning_bids: [], can_auto_assign: true })
   Object.defineProperty(document, 'hidden', { configurable: true, value: false })
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
 })
@@ -127,4 +130,95 @@ it('serializes repeated Wildcard recovery reads and keeps one existing poll time
   expect(mocks.get).toHaveBeenCalledTimes(3)
   await act(async () => vi.advanceTimersByTimeAsync(45000))
   expect(mocks.get).toHaveBeenCalledTimes(4)
+})
+
+const grid = () => ({ problems: [{ id: 20, problem_number: 'EXT-1', title: 'Extra', source_label: 'External', capacity: 5, assigned_team_count: 0, capacity_remaining: 5 }],
+  teams: [{ team_id: 1, team_name: 'Remaining Team', extra_assignment: false }], unassigned_teams: [{ team_id: 1, team_name: 'Remaining Team' }],
+  suggested_auto_deduction: 300, automatic_winning_bids: [200, 250, 300, 350, 400], can_auto_assign: true })
+const inputPrice = async (value: string) => {
+  const input = host.querySelector('#extra-assignment-deduction') as HTMLInputElement
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })) })
+}
+
+it('keeps Remaining operations out of Auction and preserves manual assignment and re-bid in their tab', async () => {
+  const data: any = snapshot()
+  data.remaining_problems.problems = [{ id: 1, problem_number: 1, title: 'Manual PS', assigned_team_count: 0, assigned_teams: [],
+    auction_capacity: 5, assignment_status: 'UNASSIGNED', can_assign: true, can_rebid: true }]
+  data.remaining_problems.suggested_deduction = 25
+  mocks.get.mockResolvedValue(data); mocks.extra.mockResolvedValue(grid())
+  await act(async () => renderR1())
+  expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain('Auction')
+  expect(host.querySelector('.round-remaining-problems')).toBeNull()
+  expect(host.textContent).not.toContain('AUTO ASSIGN')
+  await act(async () => (host.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement).click())
+  expect(host.querySelector('.round-console__live')).toBeNull()
+  expect(host.textContent).toContain('AUTO ASSIGN REMAINING TEAMS')
+  expect([...host.querySelectorAll('button')].find(row => row.textContent === 'Re-bid')?.disabled).toBe(false)
+  await click('Assign')
+  expect(host.querySelector('#manual-assignment-deduction')).toBeTruthy()
+  expect((host.querySelector('#manual-assignment-deduction') as HTMLInputElement).value).toBe('25')
+})
+
+it('switches tabs only after the end response and lets the organizer return to Auction', async () => {
+  let end!: (value: any) => void
+  mocks.get.mockResolvedValueOnce(snapshot()).mockResolvedValue(snapshot(false, 'CLOSED', true))
+  mocks.end.mockImplementation(() => new Promise(done => { end = done }))
+  await act(async () => renderR1()); await endR1()
+  expect(host.querySelector('[aria-selected="true"]')?.textContent).toContain('Auction')
+  await act(async () => end(snapshot(false, 'CLOSED', true)))
+  expect(host.querySelector('[aria-selected="true"]')?.textContent).toContain('Remaining / Unassigned')
+  await act(async () => (host.querySelectorAll('[role="tab"]')[0] as HTMLButtonElement).click())
+  expect(host.querySelector('.round-console__live')).toBeTruthy()
+  expect(host.textContent).not.toContain('AUTO ASSIGN')
+})
+it('disables frozen R1 actions even if old remaining details still advertise them', async () => {
+  const data: any = snapshot(false, 'CLOSED', true)
+  data.remaining_problems.problems = [{ id: 1, problem_number: 1, title: 'Remaining PS', assigned_team_count: 0,
+    assigned_teams: [], assignment_status: 'UNASSIGNED', can_assign: true, can_rebid: true }]
+  mocks.get.mockResolvedValue(data)
+  await act(async () => renderR1())
+  for (const label of ['Re-bid', 'Assign']) expect([...host.querySelectorAll('button')].find(row => row.textContent === label)?.disabled).toBe(true)
+})
+
+it('submits the edited automatic price and displays per-team failures', async () => {
+  mocks.extra.mockResolvedValue(grid())
+  mocks.assign.mockResolvedValue({ ...grid(), assignments: [], deduction: 350,
+    failures: [{ team_id: 1, team_name: 'Remaining Team', reason: 'Insufficient coins', required: 350, available: 100 }] })
+  await act(async () => root.render(<ExtraGrid realtimeEvent={null} />))
+  expect((host.querySelector('#extra-assignment-deduction') as HTMLInputElement).value).toBe('300')
+  await inputPrice('350'); await click('AUTO ASSIGN REMAINING TEAMS')
+  expect(mocks.assign).toHaveBeenCalledWith(350)
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('required 350, available 100')
+})
+
+it.each(['', '-1', '1.5'])('disables automatic assignment for invalid deduction %s', async price => {
+  mocks.extra.mockResolvedValue(grid())
+  await act(async () => root.render(<ExtraGrid realtimeEvent={null} />))
+  await inputPrice(price)
+  expect([...host.querySelectorAll('button')].find(row => row.textContent === 'AUTO ASSIGN REMAINING TEAMS')?.disabled).toBe(true)
+  expect(mocks.assign).not.toHaveBeenCalled()
+})
+
+it('rejects an old Extra/Grid snapshot after the automatic assignment response', async () => {
+  let old!: (value: any) => void
+  const assigned = { ...grid(), unassigned_teams: [], assignments: [{ team_id: 1 }], deduction: 300, failures: [],
+    teams: [{ team_id: 1, team_name: 'Remaining Team', extra_assignment: true, current_problem: { problem_number: 'EXT-1' } }] }
+  mocks.extra.mockResolvedValueOnce(grid()).mockImplementationOnce(() => new Promise(done => { old = done })).mockResolvedValue(assigned)
+  mocks.assign.mockResolvedValue(assigned)
+  await act(async () => root.render(<ExtraGrid realtimeEvent={null} />))
+  await act(async () => root.render(<ExtraGrid realtimeEvent={{ type: 'event_state_changed' }} />))
+  await click('AUTO ASSIGN REMAINING TEAMS')
+  expect(host.textContent).toContain('1 teams assigned at 300 coins')
+  await act(async () => old(grid()))
+  expect(host.textContent).toContain('Unassigned teams: 0')
+  expect(mocks.extra).toHaveBeenCalledTimes(3)
+})
+it('refreshes the winning-price suggestion through the existing event without overwriting an edited price', async () => {
+  mocks.extra.mockResolvedValueOnce(grid()).mockResolvedValue({ ...grid(), suggested_auto_deduction: 400, automatic_winning_bids: [400] })
+  await act(async () => root.render(<ExtraGrid realtimeEvent={null} />))
+  await inputPrice('350')
+  await act(async () => root.render(<ExtraGrid realtimeEvent={{ type: 'round_updated', payload: { action: 'winners_assigned' } }} />))
+  expect(host.textContent).toContain('Suggested: 400 coins')
+  expect((host.querySelector('#extra-assignment-deduction') as HTMLInputElement).value).toBe('350')
+  expect(mocks.extra).toHaveBeenCalledTimes(2)
 })

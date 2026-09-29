@@ -10,7 +10,7 @@ vi.mock('./services/eventSocket', () => ({ connectEventSocket: mocks.connect }))
 const snapshot = (title = 'Old problem', lab = 'Old lab') => ({ team: { id: '1', name: 'Team' },
   eventState: 'CODING', finalProblem: { id: '1', title }, lab: { id: 1, name: lab }, labAllocationReady: true,
   wildcard: { status: 'selected' }, gameConfig: {}, timing: {}, wallet: { balance: 5000 } })
-function Probe() { const { dashboard } = useParticipant(); return <div>{dashboard?.finalProblem?.title} · {dashboard?.lab?.name}</div> }
+function Probe() { const { dashboard } = useParticipant(); return <div>{dashboard?.finalProblem?.title} · {dashboard?.lab?.name} · {dashboard?.wallet.balance} coins</div> }
 let host: HTMLDivElement
 let root: ReturnType<typeof createRoot>
 beforeEach(() => {
@@ -51,4 +51,19 @@ it('handles bid and timer traffic without fetching the full dashboard', async ()
     await vi.advanceTimersByTimeAsync(1000)
   })
   expect(mocks.load).toHaveBeenCalledTimes(1); expect(mocks.connect).toHaveBeenCalledTimes(1)
+})
+it('applies committed Extra/Grid coins and reconciles only the affected participant', async () => {
+  const assigned = { ...snapshot('Extra problem'), wallet: { balance: 4700 } }
+  mocks.load.mockResolvedValueOnce(snapshot()).mockResolvedValue(assigned)
+  await mount()
+  await act(async () => {
+    mocks.message({ type: 'round_updated', version: 1, payload: { action: 'extra_grid_assigned', team_ids: [2], assignments: [{ team_id: 2, coins: 4700 }] } })
+    await vi.advanceTimersByTimeAsync(1000)
+  })
+  expect(mocks.load).toHaveBeenCalledTimes(1)
+  await act(async () => mocks.message({ type: 'round_updated', version: 2, payload: { action: 'extra_grid_assigned', team_ids: [1], assignments: [{ team_id: 1, coins: 4700 }] } }))
+  expect(host.textContent).toContain('4700 coins')
+  await act(async () => vi.advanceTimersByTimeAsync(1000))
+  expect(host.textContent).toContain('Extra problem')
+  expect(mocks.load).toHaveBeenCalledTimes(2); expect(mocks.connect).toHaveBeenCalledTimes(1)
 })

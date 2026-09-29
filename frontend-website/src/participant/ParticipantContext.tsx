@@ -707,6 +707,26 @@ export function ParticipantProvider({ children }: { children: ReactNode }) {
 
         if (message.type === 'participant_presence_changed') return
 
+        if (message.type === 'round_updated' && message.payload.action === 'extra_grid_assigned') {
+          const assignments = Array.isArray(message.payload.assignments) ? message.payload.assignments : []
+          const own = assignments.find(row => String((row as Record<string, unknown>).team_id) === dashboardRef.current?.team.id) as Record<string, unknown> | undefined
+          const ids = Array.isArray(message.payload.team_ids) ? message.payload.team_ids : []
+          if (own || ids.some(id => String(id) === dashboardRef.current?.team.id)) {
+            realtimeRevision.current += 1
+            if (typeof own?.coins === 'number') {
+              const coins = own.coins
+              setDashboard(current => {
+                if (!current) return current
+                const next = { ...current, wallet: { ...current.wallet, balance: coins } }
+                dashboardRef.current = next
+                return next
+              })
+            }
+            queueRefresh()
+          }
+          return
+        }
+
         if (message.type === 'round_updated' && message.payload.action === 'winners_assigned') {
           realtimeRevision.current += 1
 

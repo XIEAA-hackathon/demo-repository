@@ -1,12 +1,30 @@
-"""Post-R1 Extra/Grid allocation. Auction results and wallets are immutable here."""
+"""Post-R1 Extra/Grid allocation; auction results/history remain immutable."""
 from sqlalchemy.orm import Session
 
-from app.models.models import ProblemStatement, RoundControl, Team
+from app.models.models import EventConfig, ProblemStatement, RoundControl, Team, WalletTransaction
 from app.services.round1_assignment import ROUND1_PROBLEM_CAPACITY, round1_assignment_management_payload
 
 
 class ExtraAssignmentError(ValueError):
     pass
+
+
+EXTRA_GRID_TRANSACTION = "EXTRA_GRID_AUTO_ASSIGN"
+
+
+def automatic_assignment_price(db: Session) -> dict:
+    # The committed winner ledger survives later problem changes and excludes
+    # losing bids, manual assignments, Wildcard and Extra/Grid charges.
+    winners = db.query(WalletTransaction.amount).filter(
+        WalletTransaction.transaction_type == "ROUND1_WIN"
+    ).order_by(WalletTransaction.id.desc()).limit(5).all()
+    amounts = [-row.amount for row in reversed(winners)]
+    count = len(amounts)
+    config = db.query(EventConfig.round1_minimum_bid).first() if not count else None
+    deduction = ((sum(amounts) + count // 2) // count if count else
+                 config.round1_minimum_bid if config else EventConfig.__table__.c.round1_minimum_bid.default.arg)
+    return {"suggested_auto_deduction": max(0, deduction), "automatic_winning_bids": amounts,
+            "automatic_price_source": "Latest five actual Round 1 winners" if count else "Round 1 minimum bid"}
 
 
 def extra_assignment_payload(db: Session) -> dict:
@@ -31,16 +49,21 @@ def extra_assignment_payload(db: Session) -> dict:
     payload["unassigned_teams"] = [row for row in payload["teams"] if row["assignment_status"] == "NOT_ASSIGNED"]
     control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").one_or_none()
     payload["can_auto_assign"] = bool(control and control.ended)
+    payload.update(automatic_assignment_price(db))
     return payload
 
 
-def automatically_assign_extra_problems(db: Session) -> dict:
+def automatically_assign_extra_problems(db: Session, deduction: int | None = None) -> dict:
     """Fill available capacity in ID order; retain every existing assignment."""
     try:
         # Match auction lock order, but never mutate RoundControl or R1 fields.
-        control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").with_for_update().one_or_none()
+        control = db.query(RoundControl).filter(RoundControl.round_type == "ROUND1").with_for_update().populate_existing().one_or_none()
         if not control or not control.ended:
             raise ExtraAssignmentError("End Round 1 before automatic Extra/Grid assignment.")
+        if deduction is None:
+            deduction = automatic_assignment_price(db)["suggested_auto_deduction"]
+        if isinstance(deduction, bool) or not isinstance(deduction, int) or deduction < 0:
+            raise ExtraAssignmentError("Automatic deduction must be a whole number of zero or greater.")
         problems = db.query(ProblemStatement).filter(ProblemStatement.round.in_([1, 0])).order_by(ProblemStatement.round.desc(), ProblemStatement.id.asc()).with_for_update().all()
         teams = db.query(Team).order_by(Team.id.asc()).with_for_update().populate_existing().all()
         usage = {}
@@ -56,15 +79,24 @@ def automatically_assign_extra_problems(db: Session) -> dict:
             if team.round1_problem_id is not None or team.wildcard_problem_id is not None:
                 failures.append({"team_id": team.id, "team_name": team.team_name, "reason": "Final problem resolution is pending"})
                 continue
+            if team.coins < deduction:
+                failures.append({"team_id": team.id, "team_name": team.team_name, "reason": "Insufficient coins",
+                                 "required": deduction, "available": team.coins})
+                continue
             problem = next((row for row in problems if usage.get(row.id, 0) < ROUND1_PROBLEM_CAPACITY), None)
             if problem is None:
                 failures.append({"team_id": team.id, "team_name": team.team_name, "reason": "No remaining problem capacity"})
                 continue
             team.ps_id = problem.id
+            team.coins -= deduction
+            db.add(WalletTransaction(team_id=team.id, transaction_type=EXTRA_GRID_TRANSACTION, amount=-deduction,
+                                     description=f"Automatic Extra/Grid assignment for {problem.ps_number}"))
             usage[problem.id] = usage.get(problem.id, 0) + 1
-            assignments.append({"team_id": team.id, "team_name": team.team_name, "problem_id": problem.id})
+            assignments.append({"team_id": team.id, "team_name": team.team_name, "problem_id": problem.id,
+                                "deduction": deduction, "coins": team.coins})
         db.flush()
-        result = {**extra_assignment_payload(db), "assignments": assignments, "failures": failures, "idempotent": not assignments}
+        result = {**extra_assignment_payload(db), "assignments": assignments, "failures": failures,
+                  "deduction": deduction, "idempotent": not assignments}
         db.commit()
         return result
     except Exception:

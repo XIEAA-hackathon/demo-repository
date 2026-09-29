@@ -139,10 +139,11 @@ def test_extra_grid_35_of_35_and_idempotent_with_r1_frozen(db):
     assignments = [t.ps_id for t in teams]
     assert automatically_assign_extra_problems(db)["idempotent"] is True
     assert [t.ps_id for t in teams] == assignments
-    assert [(t.id, t.round1_problem_id, t.round1_assignment_type, t.round1_assignment_cost, t.coins) for t in teams] == before
+    assert [(t.id, t.round1_problem_id, t.round1_assignment_type, t.round1_assignment_cost) for t in teams] == [row[:4] for row in before]
+    assert [t.coins for t in teams] == [5000] * 33 + [4975, 4975]
     control = db.query(RoundControl).filter_by(round_type="ROUND1").one()
     assert (control.status, control.ended, control.round1_winning_bid_sum, control.round1_winning_bid_count) == ("CLOSED", True, 1234, 30)
-    assert db.query(WalletTransaction).count() == 0
+    assert db.query(WalletTransaction).filter_by(transaction_type="EXTRA_GRID_AUTO_ASSIGN").count() == 2
     assert allocate_labs(db) == (True, 35)
     assert db.info["lab_allocation_diagnostics"]["graph_team_count"] == 35
     assert db.query(LabAssignment).count() == 35
@@ -187,6 +188,8 @@ def test_mixed_35_graph_uses_wildcard_final_choice_and_overrides_extra(db):
     assert extra_team.ps_id == bonus[0].id != previous
     assert extra_team.round1_problem_id is None
     assert extra_team.final_problem_choice == "WILDCARD"
+    assert extra_team.coins == 4975
+    assert db.query(WalletTransaction).filter_by(team_id=extra_team.id, transaction_type="EXTRA_GRID_AUTO_ASSIGN").one().amount == -25
     # A normal R1 winner then chooses Wildcard over its earlier problem.
     team = teams[0]
     team.wildcard_problem_id = bonus[1].id
