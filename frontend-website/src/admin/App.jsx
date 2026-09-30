@@ -18,7 +18,7 @@ import {
   selectRoundProblem, startRoundPreview, startRoundBidding, closeRoundBidding, assignRoundWinners,
   assignRoundOneProblem, rebidRoundOneProblem, endRoundOne, openWildcardApplications, closeWildcardApplications,
   confirmWildcardSlots, startWildcardSlotBidding, closeWildcardSlotBidding, finalizeWildcard, endWildcardSelectionTurn, endWildcardFinalChoice, endWildcard,
-  getAdminSubmissions, openSubmissions, closeSubmissions, downloadFinalEventResults, ApiError,
+  getAdminSubmissions, openSubmissions, closeSubmissions, downloadCodingRoundCsv, downloadFinalEventResults, ApiError,
   getJudging, saveJudgingWinners, publishJudgingResults,
   getAdminHealth, runPreflight, getRecoveryState, resumeRecoveryTimer, reloadRecoveryState,
   resyncClients, retryCurrentTransition, developmentReset, resetEventData,
@@ -905,6 +905,7 @@ export function CodingRoundAdminPage({ socketStatus = "disconnected", realtimeEv
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [working, setWorking] = useState(false);
+  const [exportingCodingCsv, setExportingCodingCsv] = useState(false);
   const [documentHidden, setDocumentHidden] = useState(() => document.hidden);
   const loadInFlight = useRef(null);
   const realtimeRevision = useRef(0);
@@ -999,11 +1000,30 @@ export function CodingRoundAdminPage({ socketStatus = "disconnected", realtimeEv
     } catch (cause) { setError(cause.message || "Failed to export final results."); }
     finally { setWorking(false); }
   };
+  const downloadCodingCsv = async () => {
+    setExportingCodingCsv(true); setError(""); setNotice("");
+    let url;
+    try {
+      const blob = await downloadCodingRoundCsv();
+      url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "Bid_to_Build_Coding_Round.csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setNotice("Coding Round CSV downloaded.");
+    } catch (cause) { setError(cause.message || "Failed to export the Coding Round CSV."); }
+    finally {
+      if (url) URL.revokeObjectURL(url);
+      setExportingCodingCsv(false);
+    }
+  };
   const rows = (data?.rows || []).filter((row) => row.team_name.toLowerCase().includes(query.trim().toLowerCase()));
   const wildcardComplete = state?.rounds?.WILDCARD?.status === "COMPLETE" && state?.rounds?.WILDCARD?.ended === true;
   if (!data) return <div className="loading-screen"><div className="loader" />Loading submissions…</div>;
   return <section className="submission-admin coding-round-admin">
-    <header className="submission-admin__header"><div><span className="eyebrow">EVENT / CODING ROUND</span><h2>Coding Round</h2><p>Keep Coding open until you close it, and track each team’s final GitHub repository.</p></div><div className="submission-admin__actions"><button className="secondary-button" disabled={working || !data.export_available} title={data.export_available ? "Download final event results" : "Available after the Coding Round is closed"} onClick={() => void downloadFinalExport()}>{working ? "WORKING…" : "EXPORT EXCEL / CSV"}</button><button className={data.open ? "danger-button" : "primary-button"} disabled={working || (!data.open && !wildcardComplete)} title={!data.open && !wildcardComplete ? "Complete the Wildcard round before opening Coding." : undefined} onClick={() => data.open ? run(closeSubmissions, "Coding Round closed. Judging wait started.") : void openCodingRound()}>{data.open ? "Close Coding Round" : "Open Coding Round"}</button></div></header>
+    <header className="submission-admin__header"><div><span className="eyebrow">EVENT / CODING ROUND</span><h2>Coding Round</h2><p>Keep Coding open until you close it, and track each team’s final GitHub repository.</p></div><div className="submission-admin__actions"><button className="secondary-button" disabled={exportingCodingCsv} onClick={() => void downloadCodingCsv()}>{exportingCodingCsv ? "EXPORTING…" : "EXPORT CODING CSV"}</button><button className="secondary-button" disabled={working || !data.export_available} title={data.export_available ? "Download final event results" : "Available after the Coding Round is closed"} onClick={() => void downloadFinalExport()}>{working ? "WORKING…" : "FINAL RESULTS EXPORT"}</button><button className={data.open ? "danger-button" : "primary-button"} disabled={working || (!data.open && !wildcardComplete)} title={!data.open && !wildcardComplete ? "Complete the Wildcard round before opening Coding." : undefined} onClick={() => data.open ? run(closeSubmissions, "Coding Round closed. Judging wait started.") : void openCodingRound()}>{data.open ? "Close Coding Round" : "Open Coding Round"}</button></div></header>
     {error && <div className="global-error" role="alert">{error}</div>}{notice && <div className="admin-notice">{notice}</div>}
     {!data.export_available && <div className="admin-notice">Final export is available after the Coding Round is closed.</div>}
     <div className="submission-stats"><Stat label="WINDOW" value={data.open ? "OPEN" : "CLOSED"} /><Stat label="TOTAL TEAMS" value={data.total} /><Stat label="SUBMITTED" value={data.submitted} /><Stat label="PENDING" value={data.pending} /></div>

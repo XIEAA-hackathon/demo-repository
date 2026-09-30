@@ -288,14 +288,16 @@ log "Restarting $SERVICE_NAME"
 sudo -n /usr/bin/systemctl restart "$SERVICE_NAME"
 for _ in {1..30}; do
   if /usr/bin/systemctl is-active --quiet "$SERVICE_NAME" \
-    && [[ $(curl --silent --show-error http://127.0.0.1:8000/health || true) == '{"status":"ok"}' ]]; then
+    && [[ $(curl --silent --show-error http://127.0.0.1:8000/health || true) == '{"status":"ok"}' ]] \
+    && curl --fail --silent --show-error http://127.0.0.1:8000/health/ready >/dev/null; then
     break
   fi
   sleep 1
 done
 if ! /usr/bin/systemctl is-active --quiet "$SERVICE_NAME" \
-  || [[ $(curl --silent --show-error http://127.0.0.1:8000/health || true) != '{"status":"ok"}' ]]; then
-  echo "$SERVICE_NAME failed its local health check." >&2
+  || [[ $(curl --silent --show-error http://127.0.0.1:8000/health || true) != '{"status":"ok"}' ]] \
+  || ! curl --fail --silent --show-error http://127.0.0.1:8000/health/ready >/dev/null; then
+  echo "$SERVICE_NAME failed its local health/readiness check." >&2
   exit 1
 fi
 log "Backend service is active and healthy"
@@ -321,6 +323,7 @@ log "Nginx configuration validated and reloaded"
 
 stage="HEALTH CHECK"
 test "$(curl --fail --silent --show-error http://127.0.0.1:8000/health)" = '{"status":"ok"}'
+curl --fail --silent --show-error http://127.0.0.1:8000/health/ready >/dev/null
 test "$(curl --noproxy '*' --resolve 'bidtobuild.dev:443:127.0.0.1' --fail --silent --show-error https://bidtobuild.dev/api/health)" = '{"status":"ok"}'
 for path in / /admin/ /participant/ /lab-admin/ /lab-admin/login /leaderboard/problem; do
   curl --noproxy '*' --resolve 'bidtobuild.dev:443:127.0.0.1' --fail --silent --show-error "https://bidtobuild.dev$path" | grep -qi '<div id="root"></div>'

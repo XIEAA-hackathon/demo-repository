@@ -326,10 +326,11 @@ def test_r1_finalization_and_auto_share_locked_capacity(db, session_factory, mon
                 assert "no remaining capacity" in str(error)
                 return None
     def finalize():
+        if barrier: barrier.wait(timeout=5)
+        if endpoint == "auction":
+            return auction._finalize_round_one_transaction(session_factory, ps_id=target_id)
         with session_factory() as session:
-            if barrier: barrier.wait(timeout=5)
-            return asyncio.run(rounds.assign_winners("round-1", session, None) if endpoint == "rounds"
-                               else auction.finalize_round_one(target_id, session, None))
+            return asyncio.run(rounds.assign_winners("round-1", session, None))
     if order == "concurrent":
         with ThreadPoolExecutor(max_workers=2) as pool:
             auto_future, r1_future = pool.submit(auto), pool.submit(finalize)

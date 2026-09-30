@@ -127,6 +127,7 @@ export const endWildcardFinalChoice = () => request("/admin/rounds/wildcard/fina
 export const getAdminSubmissions = () => request("/admin/submissions");
 export const openSubmissions = () => request("/admin/submissions/open", { method: "POST" });
 export const closeSubmissions = () => request("/admin/submissions/close", { method: "POST" });
+export const downloadCodingRoundCsv = () => request("/admin/submissions/export/coding.csv", { responseType: "blob" });
 export const downloadFinalEventResults = () => request("/admin/submissions/export/final", { responseType: "blob" });
 export const getJudging = () => request("/admin/judging");
 export const saveJudgingWinners = (payload) => request("/admin/judging/winners", { method: "PUT", body: JSON.stringify(payload) });

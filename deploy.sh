@@ -8,7 +8,7 @@ set -euo pipefail
 BRANCH="main1"
 REMOTE="origin"
 
-SSH_KEY="C:\Users\PARTHIK\OneDrive\Documents\bidtobuild.pem"
+SSH_KEY="C:\Users\ADMIN\Documents\bidtobuild.pem"
 SERVER="ubuntu@100.24.242.28"
 
 REMOTE_REPO="/home/ubuntu/demo-repository"

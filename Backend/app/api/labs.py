@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
+from starlette.concurrency import run_in_threadpool
 
 from app.api.auth import get_current_active_admin, get_current_active_admin_or_lab_admin, get_current_active_lab_admin
 from app.api.websockets import manager
@@ -82,6 +83,71 @@ def _raise_allocation_error(exc: LabAllocationError) -> None:
     raise HTTPException(status_code=code, detail=exc.detail()) from exc
 
 
+def _generate_lab_allocation_transaction(session_factory, *, actor_id: int | None) -> dict:
+    with session_factory() as db:
+        try:
+            actor = db.query(User).filter(User.id == actor_id).one() if actor_id is not None else None
+            changed, team_count = allocate_labs(db, actor=actor, regenerate_auto=True)
+            board = lab_board(db, logged_in_team_ids=set(participant_presence_payload(db)["logged_in_team_ids"]))
+            board["allocation_diagnostics"] = db.info.pop("lab_allocation_diagnostics", {
+                "eligible_team_count": team_count, "expected_count": team_count,
+                "graph_team_count": team_count, "max_flow": team_count,
+                "allocated_count": team_count, "unassigned_teams": [],
+            })
+            return {
+                "board": board,
+                "changed": changed,
+                "team_count": team_count,
+                "assignments": db.info.pop("lab_assignment_changes", []),
+            }
+        except Exception:
+            db.rollback()
+            raise
+
+
+def _move_lab_assignment_transaction(
+    session_factory,
+    *,
+    assignment_id: int,
+    target_lab_id: int,
+    expected_version: int,
+    allow_constraint_override: bool,
+    actor_id: int,
+    team_id: int | None,
+    conflict_assignment: bool,
+) -> dict:
+    with session_factory() as db:
+        try:
+            actor = db.query(User).filter(User.id == actor_id).one()
+            assignment = move_team(
+                db,
+                assignment_id=assignment_id,
+                target_lab_id=target_lab_id,
+                expected_version=expected_version,
+                allow_constraint_override=allow_constraint_override,
+                actor=actor,
+                team_id=team_id,
+                conflict_assignment=conflict_assignment,
+            )
+            result = {
+                "assignment_id": assignment.id,
+                "team_id": assignment.team_id,
+                "current_lab_id": assignment.current_lab_id,
+                "original_lab_id": assignment.original_lab_id,
+                "assignment_source": assignment.assignment_source,
+                "constraint_override": assignment.constraint_override,
+                "version": assignment.version,
+                "moved_at": assignment.moved_at,
+            }
+            changes = db.info.pop("lab_assignment_changes", [])
+            if changes:
+                result.update(changes[0])
+            return {"result": result, "changed": bool(changes)}
+        except Exception:
+            db.rollback()
+            raise
+
+
 @router.get("/admin/labs")
 def list_labs(
     db: Session = Depends(get_db),
@@ -110,10 +176,11 @@ async def create_lab(
     db.refresh(lab)
     result = _lab_payload(lab)
     allocation_team_count = try_allocate_labs(db)
+    allocation_changes = db.info.pop("lab_assignment_changes", [])
     db.close()
     await manager.broadcast_event("lab_configuration_updated", {"action": "created", "lab_id": result["id"]}, roles={"admin", "lab_admin"})
     if allocation_team_count is not None:
-        await manager.broadcast_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])}, roles={"admin", "lab_admin"})
+        await manager.broadcast_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocation_team_count, "assignments": allocation_changes}, roles={"admin", "lab_admin"})
     return result
 
 
@@ -147,10 +214,11 @@ async def update_lab(
     db.refresh(lab)
     result = _lab_payload(lab)
     allocation_team_count = try_allocate_labs(db)
+    allocation_changes = db.info.pop("lab_assignment_changes", [])
     db.close()
     await manager.broadcast_event("lab_configuration_updated", {"action": "updated", "lab_id": lab_id}, roles={"admin", "lab_admin"})
     if allocation_team_count is not None:
-        await manager.broadcast_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])}, roles={"admin", "lab_admin"})
+        await manager.broadcast_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": allocation_team_count, "assignments": allocation_changes}, roles={"admin", "lab_admin"})
     return result
 
 
@@ -187,82 +255,72 @@ def get_lab_allocation(
 
 @router.post("/admin/lab-allocation/allocate")
 async def generate_lab_allocation(
-    db: Session = Depends(get_db),
+    request: Request,
     current_user: User = Depends(get_current_active_admin),
+    db: Session = Depends(get_db),
 ):
-    try:
-        changed, team_count = allocate_labs(db, actor=current_user, regenerate_auto=True)
-    except LabAllocationError as exc:
-        db.rollback()
-        _raise_allocation_error(exc)
-    board = lab_board(db, logged_in_team_ids=set(participant_presence_payload(db)["logged_in_team_ids"]))
-    board["allocation_diagnostics"] = db.info.pop("lab_allocation_diagnostics", {
-        "eligible_team_count": team_count, "expected_count": team_count,
-        "graph_team_count": team_count, "max_flow": team_count,
-        "allocated_count": team_count, "unassigned_teams": [],
-    })
+    actor_id = current_user.id if current_user is not None else None
+    session_factory = getattr(request.app.state, "session_factory", None) or sessionmaker(bind=db.get_bind())
     db.close()
-    if changed:
+    try:
+        result = await run_in_threadpool(
+            _generate_lab_allocation_transaction,
+            session_factory,
+            actor_id=actor_id,
+        )
+    except LabAllocationError as exc:
+        _raise_allocation_error(exc)
+    if result["changed"]:
         await manager.broadcast_event(
             "lab_allocation_updated",
-            {"action": "auto_allocated", "team_count": team_count, "assignments": db.info.pop("lab_assignment_changes", [])},
+            {"action": "auto_allocated", "team_count": result["team_count"], "assignments": result["assignments"]},
             roles={"admin", "lab_admin"},
         )
-    return board
+    return result["board"]
 
 
 async def _move_lab_assignment(
     assignment_id: int,
     payload: LabMoveRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_admin_or_lab_admin),
+    request: Request,
+    current_user: User,
+    auth_db: Session,
     team_id: int | None = None,
     conflict_assignment: bool = False,
 ):
+    actor_id = current_user.id
+    session_factory = getattr(request.app.state, "session_factory", None) or sessionmaker(bind=auth_db.get_bind())
+    auth_db.close()
     try:
-        assignment = move_team(
-            db,
+        outcome = await run_in_threadpool(
+            _move_lab_assignment_transaction,
+            session_factory,
             assignment_id=assignment_id,
             target_lab_id=payload.target_lab_id,
             expected_version=payload.expected_version,
             allow_constraint_override=payload.allow_constraint_override,
-            actor=current_user,
+            actor_id=actor_id,
             team_id=team_id,
             conflict_assignment=conflict_assignment,
         )
     except LabAllocationError as exc:
-        db.rollback()
         _raise_allocation_error(exc)
-    result = {
-        "assignment_id": assignment.id,
-        "team_id": assignment.team_id,
-        "current_lab_id": assignment.current_lab_id,
-        "original_lab_id": assignment.original_lab_id,
-        "assignment_source": assignment.assignment_source,
-        "constraint_override": assignment.constraint_override,
-        "version": assignment.version,
-        "moved_at": assignment.moved_at,
-    }
-    changes = db.info.pop("lab_assignment_changes", [])
-    if changes:
-        result.update(changes[0])
-    db.close()
-    if changes:
-        await manager.broadcast_event("lab_assignment_changed", result, roles={"admin", "lab_admin", "leader", "member"})
-    return result
+    if outcome["changed"]:
+        await manager.broadcast_event("lab_assignment_changed", outcome["result"], roles={"admin", "lab_admin", "leader", "member"})
+    return outcome["result"]
 
 
 @router.put("/lab-allocation/assignments/{assignment_id}/move")
-async def move_lab_assignment(assignment_id: int, payload: LabMoveRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin_or_lab_admin)):
-    return await _move_lab_assignment(assignment_id, payload, db, current_user)
+async def move_lab_assignment(assignment_id: int, payload: LabMoveRequest, request: Request, current_user: User = Depends(get_current_active_admin_or_lab_admin), db: Session = Depends(get_db)):
+    return await _move_lab_assignment(assignment_id, payload, request, current_user, db)
 
 
 @router.put("/lab-admin/teams/{team_id}/lab")
-async def move_or_assign_team_lab(team_id: int, payload: TeamLabMoveRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin_or_lab_admin)):
-    return await _move_lab_assignment(0, LabMoveRequest(target_lab_id=payload.lab_id, expected_version=payload.expected_version), db, current_user, team_id=team_id)
+async def move_or_assign_team_lab(team_id: int, payload: TeamLabMoveRequest, request: Request, current_user: User = Depends(get_current_active_admin_or_lab_admin), db: Session = Depends(get_db)):
+    return await _move_lab_assignment(0, LabMoveRequest(target_lab_id=payload.lab_id, expected_version=payload.expected_version), request, current_user, db, team_id=team_id)
 
 
 @router.put("/lab-admin/teams/{team_id}/conflict-assignment")
-async def assign_conflict_team_lab(team_id: int, payload: ConflictLabAssignmentRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin_or_lab_admin)):
+async def assign_conflict_team_lab(team_id: int, payload: ConflictLabAssignmentRequest, request: Request, current_user: User = Depends(get_current_active_admin_or_lab_admin), db: Session = Depends(get_db)):
     return await _move_lab_assignment(0, LabMoveRequest(target_lab_id=payload.lab_id, expected_version=0,
-        allow_constraint_override=payload.allow_constraint_override), db, current_user, team_id=team_id, conflict_assignment=True)
+        allow_constraint_override=payload.allow_constraint_override), request, current_user, db, team_id=team_id, conflict_assignment=True)

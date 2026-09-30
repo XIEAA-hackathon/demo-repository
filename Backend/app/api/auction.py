@@ -7,7 +7,7 @@ from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import func, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.concurrency import run_in_threadpool
 from typing import List
@@ -319,109 +319,117 @@ def get_bid_history(db: Session = Depends(get_db), current_user = Depends(get_cu
     bids = db.query(Bid).all()
     return bids
 
+def _finalize_round_one_transaction(session_factory, *, ps_id: int) -> dict:
+    with session_factory() as db:
+        try:
+            with ROUND1_FINALIZATION_LOCK:
+                config = get_or_create_game_config(db)
+                get_or_create_event_config(db)
+                control = get_or_create_round_control(db, "ROUND1")
+
+                # Keep the established lock order: round control, problem, then teams.
+                control = db.query(RoundControl).filter(RoundControl.id == control.id).with_for_update().populate_existing().one()
+                ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).with_for_update().populate_existing().first()
+                if not ps:
+                    raise HTTPException(status_code=404, detail="Problem Statement not found")
+                if ps.status in {"allocated", "completed", "no_bids"}:
+                    existing_winners = db.query(Team).filter(Team.round1_problem_id == ps.id).all()
+                    return {
+                        "broadcast": False,
+                        "response": {
+                            "message": "Problem Statement already finalized.",
+                            "ps": ps.ps_number,
+                            "winners": [team.team_name for team in existing_winners],
+                        },
+                    }
+
+                ranked_bids = db.query(Bid).filter(
+                    Bid.ps_id == ps.id,
+                    Bid.round == config.current_round,
+                ).order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).all()
+                winner_count = max(0, ROUND1_PROBLEM_CAPACITY - occupied_problem_count(db, ps.id))
+                winners = []
+                for bid in ranked_bids:
+                    if len(winners) >= winner_count:
+                        break
+                    winner_team = db.query(Team).filter(Team.id == bid.team_id).with_for_update().populate_existing().first()
+                    if not winner_team or winner_team.round1_problem_id is not None or winner_team.ps_id is not None:
+                        continue
+                    if winner_team.coins < bid.amount:
+                        continue
+                    winner_team.coins -= bid.amount
+                    db.add(WalletTransaction(
+                        team_id=winner_team.id,
+                        transaction_type="ROUND1_WIN",
+                        amount=-bid.amount,
+                        description=f"Round 1 auction win for {ps.ps_number}",
+                    ))
+                    winner_team.ps_id = ps.id
+                    winner_team.round1_problem_id = ps.id
+                    winner_team.round1_assignment_type = "BID_WINNER"
+                    winner_team.round1_assignment_cost = bid.amount
+                    winners.append({
+                        "team_id": winner_team.id,
+                        "team": winner_team.team_name,
+                        "amount": bid.amount,
+                        "coins": winner_team.coins,
+                    })
+
+                if winners:
+                    update_round1_winning_bid_aggregate(control, ps, [winner["amount"] for winner in winners])
+                    ps.status = "allocated"
+                else:
+                    ps.status = "no_bids"
+                if control.current_problem_id == ps.id:
+                    control.current_problem_id = None
+                unassigned_count = db.query(Team).filter(
+                    Team.is_approved.is_(True),
+                    Team.is_system_team.is_(False),
+                    Team.round1_problem_id.is_(None),
+                ).count()
+                control.status = "COMPLETE" if unassigned_count == 0 else "READY"
+                control.ended = unassigned_count == 0
+                ps_number = ps.ps_number
+                db.commit()
+
+            transition_event_state(db, "ROUND1_RESULT")
+            snapshot = event_snapshot(db)
+            message = (
+                "Round 1 finalized. Actual winners charged once."
+                if winners
+                else "No bids received. Problem moved to remaining allocation pool."
+            )
+            return {
+                "broadcast": True,
+                "ps_number": ps_number,
+                "winners": winners,
+                "snapshot": snapshot,
+                "response": {"message": message, "winners": winners},
+            }
+        except Exception:
+            db.rollback()
+            raise
+
+
 @router.post("/admin/auction/{ps_id}/finalize")
 async def finalize_round_one(
     ps_id: int,
-    db: Session = Depends(get_db),
+    request: Request,
     current_user = Depends(get_current_active_admin),
+    db: Session = Depends(get_db),
 ):
-    """Top N winners (N = EventConfig.round1_winner_count) for ONE problem statement.
-
-    Winning teams are charged exactly once. Transactional + idempotent.
-    """
-    with ROUND1_FINALIZATION_LOCK:
-        config = get_or_create_game_config(db)
-        get_or_create_event_config(db)
-        control = get_or_create_round_control(db, "ROUND1")
-
-        # The in-process lock protects one worker; these row locks also protect
-        # against a second Uvicorn worker/admin request finalizing concurrently.
-        control = db.query(RoundControl).filter(RoundControl.id == control.id).with_for_update().populate_existing().one()
-
-        ps = db.query(ProblemStatement).filter(ProblemStatement.id == ps_id).with_for_update().populate_existing().first()
-        if not ps:
-            raise HTTPException(status_code=404, detail="Problem Statement not found")
-        if ps.status in {"allocated", "completed", "no_bids"}:
-            # Idempotent: the assignment and aggregate were already committed.
-            existing_winners = db.query(Team).filter(Team.round1_problem_id == ps.id).all()
-            return {
-                "message": "Problem Statement already finalized.",
-                "ps": ps.ps_number,
-                "winners": [t.team_name for t in existing_winners],
-            }
-
-        ranked_bids = db.query(Bid).filter(
-            Bid.ps_id == ps.id,
-            Bid.round == config.current_round,
-        ).order_by(Bid.amount.desc(), Bid.timestamp.asc(), Bid.team_id.asc()).all()
-
-        existing_assignment_count = occupied_problem_count(db, ps.id)
-        winner_count = max(0, ROUND1_PROBLEM_CAPACITY - existing_assignment_count)
-        winners = []
-        for bid in ranked_bids:
-            if len(winners) >= winner_count:
-                break
-            winner_team = db.query(Team).filter(Team.id == bid.team_id).with_for_update().populate_existing().first()
-            if not winner_team or winner_team.round1_problem_id is not None or winner_team.ps_id is not None:
-                continue  # team already has a problem; skip
-            if winner_team.coins < bid.amount:
-                continue
-
-            # Charge exactly once via explicit ledger entry.
-            winner_team.coins -= bid.amount
-            db.add(WalletTransaction(
-                team_id=winner_team.id,
-                transaction_type="ROUND1_WIN",
-                amount=-bid.amount,
-                description=f"Round 1 auction win for {ps.ps_number}",
-            ))
-            winner_team.ps_id = ps.id
-            winner_team.round1_problem_id = ps.id
-            winner_team.round1_assignment_type = "BID_WINNER"
-            winner_team.round1_assignment_cost = bid.amount
-            winners.append({
-                "team_id": winner_team.id,
-                "team": winner_team.team_name,
-                "amount": bid.amount,
-                "coins": winner_team.coins,
-            })
-
-        if winners:
-            update_round1_winning_bid_aggregate(
-                control,
-                ps,
-                [winner["amount"] for winner in winners],
-            )
-            ps.status = "allocated"
-        else:
-            ps.status = "no_bids"
-        if control.current_problem_id == ps.id:
-            control.current_problem_id = None
-        unassigned_count = db.query(Team).filter(
-            Team.is_approved.is_(True),
-            Team.is_system_team.is_(False),
-            Team.round1_problem_id.is_(None),
-        ).count()
-        control.status = "COMPLETE" if unassigned_count == 0 else "READY"
-        control.ended = unassigned_count == 0
-        db.commit()
-
-    transition_event_state(db, "ROUND1_RESULT")
-    snapshot = event_snapshot(db)
-    ps_number = ps.ps_number
+    """Finalize one Round 1 problem without blocking the async event loop."""
+    del current_user
+    session_factory = getattr(request.app.state, "session_factory", None) or sessionmaker(bind=db.get_bind())
     db.close()
-
-    await manager.broadcast_event("auction_finalized", {
-        "ps_number": ps_number,
-        "winners": winners,
-    })
-    await manager.broadcast_event("event_state_changed", snapshot)
-    message = (
-        "Round 1 finalized. Actual winners charged once."
-        if winners
-        else "No bids received. Problem moved to remaining allocation pool."
-    )
-    return {"message": message, "winners": winners}
+    result = await run_in_threadpool(_finalize_round_one_transaction, session_factory, ps_id=ps_id)
+    if result["broadcast"]:
+        await manager.broadcast_event("auction_finalized", {
+            "ps_number": result["ps_number"],
+            "winners": result["winners"],
+        })
+        await manager.broadcast_event("event_state_changed", result["snapshot"])
+    return result["response"]
 
 @router.get("/leaderboard")
 def get_leaderboard(db: Session = Depends(get_db), current_user = Depends(get_current_user)):

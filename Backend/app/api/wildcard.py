@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
 from app.api.auth import BidAuthClaims, get_bid_auth_claims, get_current_active_admin, get_current_user
@@ -45,6 +45,7 @@ from app.services.wildcard_service import (
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
+WILDCARD_BID_LOCK_TIMEOUT_MS = 2500
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,8 @@ def _place_wildcard_bid_transaction(
             # One short critical section protects the shared current price.
             # Authentication, membership, and application checks have already
             # completed; no network I/O occurs while this lock is held.
+            if db.get_bind().dialect.name == "postgresql":
+                db.execute(text(f"SET LOCAL lock_timeout = '{WILDCARD_BID_LOCK_TIMEOUT_MS}ms'"))
             auction_lock_started_at = perf_counter()
             control = (
                 db.query(RoundControl)
@@ -199,8 +202,19 @@ def _place_wildcard_bid_transaction(
             db.rollback()
             logger.info("Wildcard bid constraint conflict user_id=%s", user_id)
             raise HTTPException(status_code=409, detail="The wildcard bid changed concurrently. Refresh and retry.") from exc
-        except OperationalError:
+        except OperationalError as exc:
             db.rollback()
+            sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+            if sqlstate == "55P03":
+                logger.warning(
+                    "Wildcard bid auction_lock_timeout user_id=%s timeout_ms=%s",
+                    user_id,
+                    WILDCARD_BID_LOCK_TIMEOUT_MS,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Wildcard auction is busy processing another bid. Please retry.",
+                ) from exc
             logger.exception("Wildcard bid database operation failed user_id=%s", user_id)
             raise
         except Exception:
@@ -443,107 +457,145 @@ async def close_wildcard_slot_bidding(db: Session = Depends(get_db), current_use
     return response
 
 
-@router.post("/admin/wildcard/finalize")
-async def finalize_wildcard_alias(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
-    control = (
-        db.query(RoundControl)
-        .filter(RoundControl.round_type == "WILDCARD")
-        .with_for_update()
-        .one_or_none()
-    )
-    if control is None:
-        raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
-    if control.status in {"PROBLEM_SELECTION", "FINAL_CHOICE", "COMPLETE"}:
-        winners = finalize_slot_bidding(db, control)
-        lab_allocation_team_count = try_allocate_labs(db) if control.status == "COMPLETE" else None
-        response = {"winners": winners, **wildcard_payload(db)}
-        db.close()
-        if lab_allocation_team_count is not None:
-            await manager.broadcast_event(
-                "lab_allocation_updated",
-                {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])},
-                roles={"admin", "lab_admin"},
+def _finalize_wildcard_transaction(session_factory) -> dict:
+    with session_factory() as db:
+        try:
+            control = (
+                db.query(RoundControl)
+                .filter(RoundControl.round_type == "WILDCARD")
+                .with_for_update()
+                .one_or_none()
             )
-        return response
-    if control.status != "BIDDING_CLOSED":
-        raise HTTPException(status_code=409, detail="Close Wildcard bidding before finalizing the ranking.")
-    game = get_or_create_game_config(db)
-    game.auction_timer_end = None
-    game.timer_paused = False
-    game.timer_paused_remaining_seconds = None
-    try:
-        winners = finalize_slot_bidding(db, control, commit=False)
-        if not control.ended:
-            transition_event_state(db, "WILDCARD_SELECTION", validate=False, commit=False)
-        db.commit()
-    except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    lab_allocation_team_count = try_allocate_labs(db) if control.ended else None
-    snapshot = event_snapshot(db)
-    response = {"winners": winners, **wildcard_payload(db)}
+            if control is None:
+                raise HTTPException(status_code=409, detail="Wildcard is not initialized.")
+            broadcast_finalized = False
+            snapshot = None
+            if control.status in {"PROBLEM_SELECTION", "FINAL_CHOICE", "COMPLETE"}:
+                winners = finalize_slot_bidding(db, control)
+                lab_allocation_team_count = try_allocate_labs(db) if control.status == "COMPLETE" else None
+            else:
+                if control.status != "BIDDING_CLOSED":
+                    raise HTTPException(status_code=409, detail="Close Wildcard bidding before finalizing the ranking.")
+                game = get_or_create_game_config(db)
+                game.auction_timer_end = None
+                game.timer_paused = False
+                game.timer_paused_remaining_seconds = None
+                try:
+                    winners = finalize_slot_bidding(db, control, commit=False)
+                    if not control.ended:
+                        transition_event_state(db, "WILDCARD_SELECTION", validate=False, commit=False)
+                    db.commit()
+                except ValueError as exc:
+                    db.rollback()
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+                lab_allocation_team_count = try_allocate_labs(db) if control.ended else None
+                snapshot = event_snapshot(db)
+                broadcast_finalized = True
+            return {
+                "response": {"winners": winners, **wildcard_payload(db)},
+                "winners": winners,
+                "snapshot": snapshot,
+                "broadcast_finalized": broadcast_finalized,
+                "lab_allocation_team_count": lab_allocation_team_count,
+                "assignments": db.info.pop("lab_assignment_changes", []),
+            }
+        except Exception:
+            db.rollback()
+            raise
+
+
+@router.post("/admin/wildcard/finalize")
+async def finalize_wildcard_alias(request: Request, current_user=Depends(get_current_active_admin), db: Session = Depends(get_db)):
+    del current_user
+    session_factory = getattr(request.app.state, "session_factory", None) or sessionmaker(bind=db.get_bind())
     db.close()
-    await manager.broadcast_event("wildcard_updated", {"action": "bidding_finalized", "winners": winners})
-    await manager.broadcast_event("event_state_changed", snapshot)
-    if lab_allocation_team_count is not None:
-        await manager.broadcast_event("lab_allocation_updated", {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])}, roles={"admin", "lab_admin"})
-    return response
+    result = await run_in_threadpool(_finalize_wildcard_transaction, session_factory)
+    if result["broadcast_finalized"]:
+        await manager.broadcast_event("wildcard_updated", {"action": "bidding_finalized", "winners": result["winners"]})
+        await manager.broadcast_event("event_state_changed", result["snapshot"])
+    if result["lab_allocation_team_count"] is not None:
+        await manager.broadcast_event(
+            "lab_allocation_updated",
+            {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": result["assignments"]},
+            roles={"admin", "lab_admin"},
+        )
+    return result["response"]
+
+
+def _end_wildcard_transaction(session_factory, *, actor_id: int) -> dict:
+    with session_factory() as db:
+        try:
+            actor = db.query(User).filter(User.id == actor_id).one()
+            control = get_or_create_round_control(db, "WILDCARD")
+            if control.ended:
+                return {"action": "none", "response": wildcard_payload(db)}
+            if control.status == "FINAL_CHOICE":
+                result = finish_final_choice(db, actor=actor, reason="admin_end")
+                return {
+                    "action": "final_choice_ended",
+                    "response": wildcard_payload(db),
+                    "snapshot": event_snapshot(db),
+                    "defaulted_team_ids": result["defaulted_team_ids"],
+                    "lab_allocation_team_count": result.get("lab_allocation_team_count"),
+                    "assignments": db.info.pop("lab_assignment_changes", []),
+                }
+
+            applications = db.query(Wildcard).filter(Wildcard.status.in_(("applied", "qualified", "selected", "eliminated"))).count()
+            winners = db.query(Wildcard).filter(Wildcard.status.in_(("qualified", "selected"))).count()
+            selections = db.query(Wildcard).filter(Wildcard.status == "selected", Wildcard.problem_id.is_not(None)).count()
+            control.ended = True
+            control.status = "COMPLETE"
+            control.applications_open = False
+            control.current_problem_id = None
+            control.current_selection_rank = None
+            control.selection_started_at = None
+            control.selection_ends_at = None
+            db.commit()
+            lab_allocation_team_count = try_allocate_labs(db)
+            return {
+                "action": "ended",
+                "response": wildcard_payload(db),
+                "snapshot": event_snapshot(db),
+                "application_count": applications,
+                "winner_count": winners,
+                "completed_selection_count": selections,
+                "lab_allocation_team_count": lab_allocation_team_count,
+                "assignments": db.info.pop("lab_assignment_changes", []),
+            }
+        except Exception:
+            db.rollback()
+            raise
 
 
 @router.post("/admin/rounds/wildcard/end")
-async def end_wildcard(db: Session = Depends(get_db), current_user=Depends(get_current_active_admin)):
-    control = get_or_create_round_control(db, "WILDCARD")
-    if control.ended:
-        logger.info("Duplicate Wildcard end ignored user_id=%s", current_user.id)
-        return wildcard_payload(db)
-    if control.status == "FINAL_CHOICE":
-        result = finish_final_choice(db, actor=current_user, reason="admin_end")
-        assignments = db.info.pop("lab_assignment_changes", [])
-        snapshot = event_snapshot(db)
-        response = wildcard_payload(db)
-        db.close()
+async def end_wildcard(request: Request, current_user=Depends(get_current_active_admin), db: Session = Depends(get_db)):
+    actor_id = current_user.id
+    session_factory = getattr(request.app.state, "session_factory", None) or sessionmaker(bind=db.get_bind())
+    db.close()
+    result = await run_in_threadpool(_end_wildcard_transaction, session_factory, actor_id=actor_id)
+    if result["action"] == "none":
+        logger.info("Duplicate Wildcard end ignored user_id=%s", actor_id)
+        return result["response"]
+    if result["action"] == "final_choice_ended":
         await manager.broadcast_event("wildcard_updated", {
             "action": "final_choice_ended",
             "defaulted_team_ids": result["defaulted_team_ids"],
         })
-        await manager.broadcast_event("event_state_changed", snapshot)
-        if result.get("lab_allocation_team_count") is not None:
-            await manager.broadcast_event(
-                "lab_allocation_updated",
-                {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": assignments},
-                roles={"admin", "lab_admin"},
-            )
-        return response
-
-    applications = db.query(Wildcard).filter(Wildcard.status.in_(("applied", "qualified", "selected", "eliminated"))).count()
-    winners = db.query(Wildcard).filter(Wildcard.status.in_(("qualified", "selected"))).count()
-    selections = db.query(Wildcard).filter(Wildcard.status == "selected", Wildcard.problem_id.is_not(None)).count()
-    control.ended = True
-    control.status = "COMPLETE"
-    control.applications_open = False
-    control.current_problem_id = None
-    control.current_selection_rank = None
-    control.selection_started_at = None
-    control.selection_ends_at = None
-    db.commit()
-    lab_allocation_team_count = try_allocate_labs(db)
-    snapshot = event_snapshot(db)
-    response = wildcard_payload(db)
-    db.close()
-    await manager.broadcast_event("wildcard_ended", {
-        "manual": True,
-        "application_count": applications,
-        "winner_count": winners,
-        "completed_selection_count": selections,
-    })
-    await manager.broadcast_event("event_state_changed", snapshot)
-    if lab_allocation_team_count is not None:
+    else:
+        await manager.broadcast_event("wildcard_ended", {
+            "manual": True,
+            "application_count": result["application_count"],
+            "winner_count": result["winner_count"],
+            "completed_selection_count": result["completed_selection_count"],
+        })
+    await manager.broadcast_event("event_state_changed", result["snapshot"])
+    if result["lab_allocation_team_count"] is not None:
         await manager.broadcast_event(
             "lab_allocation_updated",
-            {"action": "auto_allocated", "team_count": lab_allocation_team_count, "assignments": db.info.pop("lab_assignment_changes", [])},
+            {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": result["assignments"]},
             roles={"admin", "lab_admin"},
         )
-    return response
+    return result["response"]
 
 
 @router.post("/wildcard/select/{ps_id}")
@@ -574,6 +626,7 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
         "wildcard_status": control_status,
     }
     team_name = team.team_name
+    assignments = db.info.pop("lab_assignment_changes", [])
     db.close()
     await manager.broadcast_event("wildcard_updated", {
         "team_id": result["team_id"],
@@ -592,7 +645,7 @@ async def select_wildcard_problem(ps_id: int, db: Session = Depends(get_db), cur
     if result.get("lab_allocation_team_count") is not None:
         await manager.broadcast_event(
             "lab_allocation_updated",
-            {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": db.info.pop("lab_assignment_changes", [])},
+            {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": assignments},
             roles={"admin", "lab_admin"},
         )
     return response
@@ -641,32 +694,52 @@ async def choose_final_problem(
     return response
 
 
+def _end_wildcard_final_choice_transaction(session_factory, *, actor_id: int) -> dict:
+    with session_factory() as db:
+        try:
+            actor = db.query(User).filter(User.id == actor_id).one()
+            result = finish_final_choice(db, actor=actor, reason="admin_end")
+            return {
+                "result": result,
+                "assignments": db.info.pop("lab_assignment_changes", []),
+                "snapshot": event_snapshot(db),
+                "response": wildcard_payload(db),
+            }
+        except WildcardSelectionConflict as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception:
+            db.rollback()
+            raise
+
+
 @router.post("/admin/rounds/wildcard/final-choice/end")
 async def end_wildcard_final_choice(
-    db: Session = Depends(get_db),
+    request: Request,
     current_user=Depends(get_current_active_admin),
+    db: Session = Depends(get_db),
 ):
-    try:
-        result = finish_final_choice(db, actor=current_user, reason="admin_end")
-    except WildcardSelectionConflict as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    assignments = db.info.pop("lab_assignment_changes", [])
-    snapshot = event_snapshot(db)
-    response = wildcard_payload(db)
+    actor_id = current_user.id
+    session_factory = getattr(request.app.state, "session_factory", None) or sessionmaker(bind=db.get_bind())
     db.close()
+    outcome = await run_in_threadpool(
+        _end_wildcard_final_choice_transaction,
+        session_factory,
+        actor_id=actor_id,
+    )
+    result = outcome["result"]
     await manager.broadcast_event("wildcard_updated", {
         "action": "final_choice_ended",
         "defaulted_team_ids": result["defaulted_team_ids"],
     })
-    await manager.broadcast_event("event_state_changed", snapshot)
+    await manager.broadcast_event("event_state_changed", outcome["snapshot"])
     if result.get("lab_allocation_team_count") is not None:
         await manager.broadcast_event(
             "lab_allocation_updated",
-            {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": assignments},
+            {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": outcome["assignments"]},
             roles={"admin", "lab_admin"},
         )
-    return response
+    return outcome["response"]
 
 
 @router.post("/admin/rounds/wildcard/selection/end-turn")
@@ -693,6 +766,7 @@ async def end_wildcard_selection_turn(
     control = get_or_create_round_control(db, "WILDCARD")
     snapshot = event_snapshot(db) if control.status == "FINAL_CHOICE" else None
     response = {"assignment": result, **wildcard_payload(db)}
+    assignments = db.info.pop("lab_assignment_changes", [])
     db.close()
     await manager.broadcast_event("wildcard_updated", {
         "team_id": result["team_id"],
@@ -711,7 +785,7 @@ async def end_wildcard_selection_turn(
     if result.get("lab_allocation_team_count") is not None:
         await manager.broadcast_event(
             "lab_allocation_updated",
-            {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": db.info.pop("lab_assignment_changes", [])},
+            {"action": "auto_allocated", "team_count": result["lab_allocation_team_count"], "assignments": assignments},
             roles={"admin", "lab_admin"},
         )
     return response

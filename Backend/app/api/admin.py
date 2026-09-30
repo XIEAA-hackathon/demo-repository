@@ -5,7 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 from starlette.concurrency import run_in_threadpool
 from datetime import datetime, timezone
 from io import BytesIO
@@ -537,43 +537,61 @@ async def force_logout_participant(
     }
 
 
+def _force_logout_team_transaction(session_factory, *, team_id: int) -> dict:
+    with session_factory() as db:
+        try:
+            team = db.query(Team).filter(Team.id == team_id).first()
+            if not team:
+                raise HTTPException(status_code=404, detail="Team not found.")
+            accounts = db.query(User).filter(
+                User.role.in_(("leader", "member")),
+                or_(User.team_id == team_id, User.id == team.leader_id),
+            ).all()
+            user_ids = sorted(account.id for account in accounts)
+            active_sessions_revoked = sum(bool(account.session_id) for account in accounts)
+            for account in accounts:
+                clear_user_session(account)
+            db.commit()
+            return {
+                "team_name": team.team_name,
+                "user_ids": user_ids,
+                "active_sessions_revoked": active_sessions_revoked,
+            }
+        except Exception:
+            db.rollback()
+            raise
+
+
 @router.post("/admin/teams/{team_id}/force-logout")
 async def force_logout_team(
     team_id: int,
     request: Request,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin),
+    db: Session = Depends(get_db),
 ):
-    team = db.query(Team).filter(Team.id == team_id).first()
-    if not team:
-        raise HTTPException(status_code=404, detail="Team not found.")
-    accounts = db.query(User).filter(
-        User.role.in_(("leader", "member")),
-        or_(User.team_id == team_id, User.id == team.leader_id),
-    ).all()
-    user_ids = {account.id for account in accounts}
-    team_name = team.team_name
     admin_id = current_user.id
-    active_sessions_revoked = sum(bool(account.session_id) for account in accounts)
-    for account in accounts:
-        clear_user_session(account)
-    db.commit()
+    session_factory = getattr(request.app.state, "session_factory", None) or sessionmaker(bind=db.get_bind())
+    db.close()
+    result = await run_in_threadpool(
+        _force_logout_team_transaction,
+        session_factory,
+        team_id=team_id,
+    )
     logger.info(
         "admin.team_force_logout admin_user_id=%s team_id=%s participant_user_ids=%s "
         "participant_accounts_revoked=%s active_sessions_revoked=%s",
-        admin_id, team_id, sorted(user_ids), len(user_ids), active_sessions_revoked,
+        admin_id, team_id, result["user_ids"], len(result["user_ids"]), result["active_sessions_revoked"],
     )
-    db.close()
 
+    user_ids = set(result["user_ids"])
     sockets_closed = await manager.disconnect_users(user_ids, reason="Signed out by event admin")
-    session_factory = getattr(request.app.state, "session_factory", SessionLocal)
     await broadcast_presence_snapshot(session_factory)
     return {
         "status": "team_force_logged_out",
         "team_id": team_id,
-        "team_name": team_name,
+        "team_name": result["team_name"],
         "participant_accounts_revoked": len(user_ids),
-        "active_sessions_revoked": active_sessions_revoked,
+        "active_sessions_revoked": result["active_sessions_revoked"],
         "presence_connections_closed": sockets_closed,
     }
 

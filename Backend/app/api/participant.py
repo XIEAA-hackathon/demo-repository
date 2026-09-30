@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
 import logging
+from io import StringIO
 from time import perf_counter
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from urllib.parse import urlparse
 
 from sqlalchemy import case, func, true
@@ -35,6 +37,10 @@ from app.services.leaderboard_projection import round1_result_problem, round1_ro
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
+
+
+def _csv_safe_text(value: str) -> str:
+    return f"'{value}" if value.startswith(("=", "+", "-", "@")) else value
 
 
 def _dashboard_problem(problem: ProblemStatement | None) -> DashboardProblem | None:
@@ -568,7 +574,12 @@ def get_admin_submissions(db: Session = Depends(get_db), current_user: User = De
             "final_problem": final_problem_payload,
             "allocated_lab": (
                 {"id": team.lab_assignment.lab.id, "name": team.lab_assignment.lab.name}
-                if team.lab_assignment and team.lab_assignment.lab and team.lab_assignment.effective_ps_id == team.ps_id
+                if (
+                    team.lab_assignment
+                    and team.lab_assignment.lab
+                    and team.lab_assignment.lab.active
+                    and team.lab_assignment.effective_ps_id == team.ps_id
+                )
                 else None
             ),
         })
@@ -581,6 +592,51 @@ def get_admin_submissions(db: Session = Depends(get_db), current_user: User = De
         "pending": len(rows) - submitted,
         "rows": rows,
     }
+
+
+@router.get("/admin/submissions/export/coding.csv")
+def download_coding_round_csv(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    del current_user
+    teams = (
+        db.query(Team)
+        .options(joinedload(Team.submission), joinedload(Team.lab_assignment).joinedload(LabAssignment.lab))
+        .filter(Team.is_approved.is_(True), Team.is_system_team.is_(False))
+        .order_by(Team.id.asc())
+        .all()
+    )
+    problem_ids = {team.ps_id for team in teams if team.ps_id is not None}
+    problems_by_id = {
+        problem.id: problem
+        for problem in (
+            db.query(ProblemStatement).filter(ProblemStatement.id.in_(problem_ids)).all()
+            if problem_ids else []
+        )
+    }
+    output = StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["TEAM", "FINAL PROBLEM", "ALLOCATED LAB", "GITHUB URL"])
+    for team in teams:
+        problem = problems_by_id.get(team.ps_id)
+        assignment = team.lab_assignment
+        lab = (
+            assignment.lab
+            if assignment and assignment.effective_ps_id == team.ps_id and assignment.lab and assignment.lab.active
+            else None
+        )
+        writer.writerow([
+            _csv_safe_text(team.team_name),
+            _csv_safe_text(f"{problem.ps_number} - {problem.title}") if problem else "",
+            _csv_safe_text(lab.name) if lab else "",
+            team.submission.repository_url if team.submission else "",
+        ])
+    return Response(
+        content="\ufeff" + output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="Bid_to_Build_Coding_Round.csv"'},
+    )
 
 
 @router.post("/admin/submissions/open")
