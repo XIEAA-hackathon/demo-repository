@@ -28,7 +28,6 @@ from app.services.event_service import (
 )
 from app.core.event_constants import ROUND1_WINNER_COUNT
 from app.services.round1_assignment import (
-    EXTERNAL_PROBLEM_ROUND,
     ROUND1_BID_WINNER,
     ROUND1_FINALIZATION_LOCK,
     ROUND1_PROBLEM_CAPACITY,
@@ -490,103 +489,6 @@ def get_round_one_assignments(
     return round1_assignment_management_payload(db)
 
 
-@router.post("/admin/rounds/round-1/assignments/external-problems/import")
-async def import_external_assignment_problems(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_active_admin),
-):
-    """Import manual-assignment-only problems using the established Round 1 parser."""
-    rows = _read_problem_rows(file.filename or "", await file.read())
-    with ROUND1_FINALIZATION_LOCK:
-        existing = db.query(ProblemStatement).with_for_update().all()
-        existing_by_number: dict[int, list[ProblemStatement]] = {}
-        for problem in existing:
-            try:
-                existing_by_number.setdefault(int(_display_number(problem)), []).append(problem)
-            except (TypeError, ValueError):
-                continue
-
-        conflicts: list[str] = []
-        skipped_duplicates: list[dict] = []
-        pending: list[tuple[int, str, str]] = []
-        for number, title, description in rows:
-            matches = existing_by_number.get(number, [])
-            if not matches:
-                pending.append((number, title, description))
-                continue
-            auction_problem = next((problem for problem in matches if problem.round != EXTERNAL_PROBLEM_ROUND), None)
-            if auction_problem:
-                source = "Round 1" if auction_problem.round == 1 else "Wildcard"
-                conflicts.append(
-                    f"Problem #{number} already exists in {source}; choose a distinct external problem number."
-                )
-                continue
-            found = matches[0]
-            if found.round == EXTERNAL_PROBLEM_ROUND:
-                skipped_duplicates.append({
-                    "problem_number": str(number),
-                    "title": found.title,
-                    "reason": f"External problem #{number} already exists; the stored record was not overwritten.",
-                })
-
-        if conflicts:
-            raise HTTPException(status_code=409, detail=conflicts)
-
-        created: list[ProblemStatement] = []
-        try:
-            for number, title, description in pending:
-                problem = ProblemStatement(
-                    ps_number=f"EX-{number}",
-                    title=title,
-                    description=description,
-                    round=EXTERNAL_PROBLEM_ROUND,
-                    status="available",
-                )
-                db.add(problem)
-                created.append(problem)
-            db.flush()
-            db.commit()
-        except IntegrityError as exc:
-            db.rollback()
-            raise HTTPException(
-                status_code=409,
-                detail="An external problem with the same number was imported concurrently. Refresh and retry.",
-            ) from exc
-
-    snapshot = round1_assignment_management_payload(db)
-    db.close()
-    await manager.broadcast_event("external_problems_imported", {
-        "created": len(created),
-        "skipped_duplicates": len(skipped_duplicates),
-    })
-    return {
-        "message": (
-            f"Imported {len(created)} external problem{'s' if len(created) != 1 else ''}. "
-            f"Skipped {len(skipped_duplicates)} duplicate{'s' if len(skipped_duplicates) != 1 else ''}."
-        ),
-        "imported": len(created),
-        "skipped_duplicate_count": len(skipped_duplicates),
-        "skipped_duplicates": skipped_duplicates,
-        **snapshot,
-    }
-
-
-@router.get("/admin/rounds/round-1/assignments/external-problems/sample.csv")
-def external_problem_sample(current_user=Depends(get_current_active_admin)):
-    del current_user
-    sample = (
-        "Problem Number,Title,Description\r\n"
-        "21,\"Smart Parking Optimization\",\"Design a system that optimizes parking availability and routing.\"\r\n"
-        "22,\"Disaster Communication System\",\"Build a resilient communication platform for disaster response.\"\r\n"
-    )
-    return Response(
-        sample,
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=external-problems-sample.csv"},
-    )
-
-
 @router.put("/admin/rounds/round-1/assignments/{team_id}")
 async def change_round_one_assignment(
     team_id: int,
@@ -608,7 +510,7 @@ async def change_round_one_assignment(
         db.rollback()
         raise HTTPException(
             status_code=409,
-            detail="Another Admin changed Round 1 assignments at the same time. Refresh and retry.",
+            detail="Another Admin changed problem assignments at the same time. Refresh and retry.",
         ) from exc
 
     if not result["idempotent"]:
@@ -626,7 +528,7 @@ async def change_round_one_assignment(
         else (
             f"Problem assigned and balance set to {result['change']['coins']:,} coins."
             if result["change"]["balance_changed"]
-            else "Round 1 problem assignment changed. No balance change."
+            else "Current problem assignment changed. No balance change."
         ),
         **result,
     }

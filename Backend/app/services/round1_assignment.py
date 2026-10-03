@@ -52,8 +52,9 @@ def current_problem_teams(teams: list[Team]) -> dict[int, list[Team]]:
 
 
 def _management_problem_payload(problem: ProblemStatement, assigned_count: int) -> dict:
-    source = "EXTERNAL" if problem.round == EXTERNAL_PROBLEM_ROUND else "ROUND1"
-    auction_capacity_remaining = problem_capacity_remaining(assigned_count)
+    source, source_label = {1: ("ROUND1", "Round 1"), 2: ("WILDCARD", "Wildcard")}.get(
+        problem.round, ("EXTERNAL", "External")
+    )
     return {
         "id": problem.id,
         "problem_number": _display_number(problem),
@@ -61,29 +62,23 @@ def _management_problem_payload(problem: ProblemStatement, assigned_count: int) 
         "description": problem.description or "",
         "status": problem.status,
         "source": source,
-        "source_label": "External" if source == "EXTERNAL" else "Round 1",
+        "source_label": source_label,
         "assigned_team_count": assigned_count,
-        "capacity": ROUND1_PROBLEM_CAPACITY,
-        "capacity_remaining": auction_capacity_remaining,
-        "is_full": assigned_count >= ROUND1_PROBLEM_CAPACITY,
-        "auction_capacity": ROUND1_PROBLEM_CAPACITY,
-        "auction_capacity_remaining": auction_capacity_remaining,
-        "auction_full": assigned_count >= ROUND1_PROBLEM_CAPACITY,
     }
 
 
-def round1_assignment_management_payload(db: Session) -> dict:
-    """Return the authoritative current Round 1 assignment correction snapshot."""
+def round1_assignment_management_payload(db: Session, *, problem_rounds=(1, 2)) -> dict:
+    """Current/final correction snapshot; Extra/Grid retains its separate legacy pool."""
     problems = (
         db.query(ProblemStatement)
-        .filter(ProblemStatement.round.in_([1, EXTERNAL_PROBLEM_ROUND]))
+        .filter(ProblemStatement.round.in_(problem_rounds))
         .order_by(ProblemStatement.round.desc(), ProblemStatement.id.asc())
         .all()
     )
     counts = dict(
-        db.query(Team.round1_problem_id, func.count(Team.id))
-        .filter(Team.round1_problem_id.is_not(None))
-        .group_by(Team.round1_problem_id)
+        db.query(Team.ps_id, func.count(Team.id))
+        .filter(Team.ps_id.is_not(None), Team.is_approved.is_(True), Team.is_system_team.is_(False))
+        .group_by(Team.ps_id)
         .all()
     )
     problem_rows = [
@@ -98,6 +93,11 @@ def round1_assignment_management_payload(db: Session) -> dict:
         .order_by(Team.team_name.asc(), Team.id.asc())
         .all()
     )
+    # Historical external records remain readable as current assignments, never
+    # selectable correction targets. A non-null ps_id must not look unassigned.
+    missing_ids = {team.ps_id for team in teams if team.ps_id is not None} - problems_by_id.keys()
+    for problem in db.query(ProblemStatement).filter(ProblemStatement.id.in_(missing_ids)).all() if missing_ids else []:
+        problems_by_id[problem.id] = _management_problem_payload(problem, int(counts.get(problem.id, 0)))
     leader_ids = [team.leader_id for team in teams if team.leader_id is not None]
     leaders = {
         leader.id: leader
@@ -107,26 +107,25 @@ def round1_assignment_management_payload(db: Session) -> dict:
     team_rows = []
     for team in teams:
         leader = leaders.get(team.leader_id)
-        current_problem = problems_by_id.get(team.round1_problem_id)
+        current_problem = problems_by_id.get(team.ps_id)
         team_rows.append({
             "team_id": team.id,
             "team_name": team.team_name,
             "leader_name": leader.name if leader else None,
             "leader_email": leader.email if leader else None,
             "coins": team.coins or 0,
-            "assignment_status": "ASSIGNED" if current_problem else "NOT_ASSIGNED",
+            "assignment_status": "ASSIGNED" if team.ps_id is not None else "NOT_ASSIGNED",
             "assignment_type": team.round1_assignment_type,
             "assignment_cost": team.round1_assignment_cost,
             "current_problem": current_problem,
         })
 
     return {
-        "capacity_per_problem": ROUND1_PROBLEM_CAPACITY,
         "problems": problem_rows,
         "round1_problems": [row for row in problem_rows if row["source"] == "ROUND1"],
-        "external_problems": [row for row in problem_rows if row["source"] == "EXTERNAL"],
+        "wildcard_problems": [row for row in problem_rows if row["source"] == "WILDCARD"],
         "teams": team_rows,
-        "unassigned_teams": [row for row in team_rows if row["current_problem"] is None],
+        "unassigned_teams": [row for row in team_rows if row["assignment_status"] == "NOT_ASSIGNED"],
     }
 
 
@@ -157,7 +156,7 @@ def change_round1_problem_assignment(
                 db.query(ProblemStatement)
                 .filter(
                     ProblemStatement.id == target_problem_id,
-                    ProblemStatement.round.in_([1, EXTERNAL_PROBLEM_ROUND]),
+                    ProblemStatement.round.in_([1, 2]),
                 )
                 .with_for_update()
                 .populate_existing()
@@ -177,13 +176,9 @@ def change_round1_problem_assignment(
             if not team:
                 raise Round1AssignmentError("Team not found.")
             if not team.is_approved or team.is_system_team:
-                raise Round1AssignmentError("Only approved participant teams can receive a Round 1 problem.")
+                raise Round1AssignmentError("Only approved participant teams can receive a current problem.")
 
-            previous_problem_id = team.round1_problem_id
-            previous_problem = (
-                db.query(ProblemStatement).filter(ProblemStatement.id == previous_problem_id).first()
-                if previous_problem_id else None
-            )
+            previous_problem_id = team.ps_id
             if previous_problem_id == target.id:
                 if new_balance is not None and team.coins != new_balance:
                     raise Round1AssignmentError(
@@ -197,7 +192,9 @@ def change_round1_problem_assignment(
                         "team_id": team.id,
                         "team_name": team.team_name,
                         "previous_problem_id": previous_problem_id,
-                        "problem": _management_problem_payload(target, assigned_team_count(db, target.id)),
+                        "problem": _management_problem_payload(target, db.query(Team).filter(
+                            Team.ps_id == target.id, Team.is_approved.is_(True), Team.is_system_team.is_(False)
+                        ).count()),
                         "coins": team.coins or 0,
                         "coins_before": team.coins or 0,
                         "balance_changed": False,
@@ -210,31 +207,23 @@ def change_round1_problem_assignment(
                 raise Round1AssignmentError(
                     "Balance can only be set while assigning a team that does not yet have a problem."
                 )
-            final_problem = (
-                db.query(ProblemStatement).filter(ProblemStatement.id == team.ps_id).first()
-                if team.ps_id else None
-            )
-            team.round1_problem_id = target.id
-            # Round 1 remains the team's final/current problem until a later
-            # Wildcard selection replaces it. Never overwrite that later result.
-            if team.ps_id is None or team.ps_id == previous_problem_id or (final_problem and final_problem.round == 1):
-                team.ps_id = target.id
-            if previous_problem_id is None:
-                team.round1_assignment_type = ROUND1_MANUAL_ASSIGNMENT
-                team.round1_assignment_cost = 0
-                if new_balance is not None:
-                    team.coins = new_balance
+            # Administrative correction is not an auction win/selection.
+            team.ps_id = target.id
+            if previous_problem_id is None and new_balance is not None:
+                team.coins = new_balance
 
             db.flush()
             db.commit()
 
-            target_count = assigned_team_count(db, target.id)
+            target_count = db.query(Team).filter(
+                Team.ps_id == target.id, Team.is_approved.is_(True), Team.is_system_team.is_(False)
+            ).count()
             result = {
                 "idempotent": False,
                 "change": {
                     "team_id": team.id,
                     "team_name": team.team_name,
-                    "previous_problem_id": previous_problem.id if previous_problem else None,
+                    "previous_problem_id": previous_problem_id,
                     "problem": _management_problem_payload(target, target_count),
                     "coins": team.coins or 0,
                     "coins_before": coins_before,

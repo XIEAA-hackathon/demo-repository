@@ -143,11 +143,7 @@ def get_participant_dashboard(db: Session = Depends(get_db), current_user: User 
     final_problem_obj = problems_by_id.get(team.ps_id)
     round1_problem_obj = problems_by_id.get(team.round1_problem_id)
     wildcard_problem_obj = problems_by_id.get(team.wildcard_problem_id)
-    # Compatibility for assignments created before explicit history fields existed.
-    if final_problem_obj and final_problem_obj.round == 1 and not round1_problem_obj:
-        round1_problem_obj = final_problem_obj
-    if final_problem_obj and final_problem_obj.round == 2 and not wildcard_problem_obj:
-        wildcard_problem_obj = final_problem_obj
+    # Current/final corrections must not fabricate historical auction selections.
 
     current_problem = _dashboard_problem(final_problem_obj)
     if not current_problem and config.state.startswith("ROUND1") and round_control:

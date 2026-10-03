@@ -98,11 +98,6 @@ export const changeRoundOneAssignment = (teamId, targetProblemId, newBalance) =>
     ...(newBalance == null ? {} : { new_balance: newBalance }),
   }),
 });
-export const importExternalProblems = (file) => {
-  const body = new FormData(); body.append("file", file);
-  return request("/admin/rounds/round-1/assignments/external-problems/import", { method: "POST", body });
-};
-export const downloadExternalProblemSample = () => request("/admin/rounds/round-1/assignments/external-problems/sample.csv", { responseType: "blob" });
 export const importRoundProblems = (round, file) => {
   const body = new FormData(); body.append("file", file);
   return request(`/admin/rounds/${round}/problems/import`, { method: "POST", body });

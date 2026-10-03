@@ -307,12 +307,12 @@ it('updates both panels after assignment and removes the full selected problem i
   expect(host.querySelectorAll('.round-remaining-actions button')).toHaveLength(2)
 })
 
-it('keeps manual corrections and external import on Change Problem without loading automatic controls', async () => {
+it('keeps current corrections on Change Problem without loading automatic controls', async () => {
   const team = { team_id: 1, team_name: 'Correction Team', coins: 5000, assignment_status: 'NOT_ASSIGNED', current_problem: null }
-  mocks.corrections.mockResolvedValue({ capacity_per_problem: 5, problems: [], external_problems: [], teams: [team], unassigned_teams: [team] })
+  mocks.corrections.mockResolvedValue({ problems: [{ id: 20, source: 'ROUND1', source_label: 'Round 1', problem_number: '1', title: 'Target' }], teams: [team], unassigned_teams: [team] })
   await act(async () => root.render(<ChangeProblemPage />))
-  expect(host.textContent).toContain('Current Round 1 assignments')
-  expect(host.textContent).toContain('Import Problems from Excel')
+  expect(host.textContent).toContain('Current assignments')
+  expect(host.textContent).not.toContain('Import Problems from Excel')
   expect(host.textContent).not.toContain('Automatic Extra')
   expect(host.textContent).not.toContain('AUTO ASSIGN')
   expect(host.querySelector('#extra-assignment-deduction')).toBeNull()

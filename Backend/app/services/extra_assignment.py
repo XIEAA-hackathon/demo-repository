@@ -3,7 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.models import Bid, EventConfig, ProblemStatement, RoundControl, Team, WalletTransaction
-from app.services.round1_assignment import ROUND1_FINALIZATION_LOCK, current_problem_teams, problem_capacity_remaining, round1_assignment_management_payload
+from app.services.round1_assignment import EXTERNAL_PROBLEM_ROUND, ROUND1_PROBLEM_CAPACITY, ROUND1_FINALIZATION_LOCK, current_problem_teams, problem_capacity_remaining, round1_assignment_management_payload
 
 
 class ExtraAssignmentError(ValueError):
@@ -30,7 +30,9 @@ def automatic_assignment_price(db: Session) -> dict:
 
 def extra_assignment_payload(db: Session) -> dict:
     # Reuse the existing grid projection, overlaying final/current assignments.
-    payload = round1_assignment_management_payload(db)
+    payload = round1_assignment_management_payload(db, problem_rounds=(1, EXTERNAL_PROBLEM_ROUND))
+    payload["capacity_per_problem"] = ROUND1_PROBLEM_CAPACITY
+    payload["external_problems"] = [row for row in payload["problems"] if row["source"] == "EXTERNAL"]
     teams = db.query(Team).order_by(Team.id.asc()).all()
     groups = current_problem_teams(teams)
     problems = {row["id"]: row for row in payload["problems"]}
@@ -38,6 +40,9 @@ def extra_assignment_payload(db: Session) -> dict:
         row["assigned_team_count"] = len(groups.get(row["id"], []))
         row["capacity_remaining"] = problem_capacity_remaining(row["assigned_team_count"])
         row["is_full"] = row["capacity_remaining"] == 0
+        row["capacity"] = row["auction_capacity"] = ROUND1_PROBLEM_CAPACITY
+        row["auction_capacity_remaining"] = row["capacity_remaining"]
+        row["auction_full"] = row["is_full"]
     by_id = {team.id: team for team in teams}
     for row in payload["teams"]:
         team = by_id[row["team_id"]]

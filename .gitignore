@@ -43,12 +43,19 @@ frontend-website/src/**/*.test.*
 frontend-website/src/**/*.spec.*
 !frontend-website/src/realtimeRegressions.test.tsx
 !frontend-website/src/leaderboard/LeaderboardDisplay.test.tsx
+!frontend-website/src/admin/pages/ChangeProblemPage.test.jsx
+!frontend-website/src/admin/adminLifecycle.test.tsx
+!Backend/tests/test_current_problem_corrections.py
+!Backend/tests/test_round1_manual_assignment.py
 
 # Generated Graphify data
 /graphify-out/
 
 # Local Codex configuration
 /.codex/
+deploy/
+Agents.md
+.github
 
 # Other development artifacts
 /docs/
