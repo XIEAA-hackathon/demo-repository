@@ -1,126 +1,265 @@
 # Bid to Build
 
-Bid to Build is a FastAPI/SQLAlchemy event backend with one React/Vite umbrella frontend.
+> A real-time hackathon auction and event operations platform built for the Bid2Build Hackathon organized by the XIE Alumni Committee.
 
-| Surface | Active source | Production path |
-|---|---|---|
-| Public website | `frontend-website/src/pages/public` | `/` and `/event` |
-| Participant portal | `frontend-website/src/participant` | `/participant/*` |
-| Admin control center | `frontend-website/src/admin` | `/admin/*` |
-| Lab Admin allocation | `frontend-website/src/lab-admin` | `/lab-admin/*` |
-| Leaderboard display | `frontend-website/src/leaderboard` | `/leaderboard` |
-| FastAPI backend | `Backend` | `/api/` and `/ws/` |
+Bid to Build brings team registration, problem auctions, virtual coin wallets, Wildcard qualification, physical lab allocation, coding submissions and judging into one coordinated system. Event administrators control the workflow while participants and authenticated event displays follow the same server-authoritative state.
 
-`frontend-website` is the only production frontend entrypoint and build. Retired
-split-frontend implementations are preserved on the full-backup `main` branch and
-are intentionally absent from production `main1`.
+## Built for Bid2Build
 
-## Frontend Consolidation
+The platform was developed for the Bid2Build Hackathon organized by the XIE Alumni Committee. Its workflow reflects the operational needs of a live event: simultaneous bids, timed rounds, deterministic winner assignment, second-chance problem selection and clear transitions from auction to coding and results. It is an event operations system, not just a collection of CRUD screens.
 
-Previously, the public website, participant portal, and admin control center were
-three separate Vite applications. Production now uses one entrypoint, one router,
-and one build from `frontend-website`.
+## Key Features
 
-| Route | Destination |
-|---|---|
-| `/` and `/event` | Public website |
-| `/admin/*` | Admin login and control center |
-| `/lab-admin/login` and `/lab-admin/*` | Dedicated Lab Admin login and allocation board |
-| `/participant/*` | Participant login and event workflow |
-| `/leaderboard` | Authenticated event leaderboard display |
-| `/api/*` | FastAPI HTTP API |
-| `/ws/*` | FastAPI WebSocket endpoints |
+- **Registration and access:** team/account management, CSV and Excel registration imports, credential administration, role-based authentication and participant session tracking.
+- **Round 1 auctions:** problem-bank management, preview and bidding phases, configurable timers, wallet-aware bid validation, cooldowns, deterministic ranking and winner assignment.
+- **Wildcard:** applications, slot bidding, persisted qualification ranks, timed problem-selection turns and final choice between Round 1 and Wildcard problems where applicable.
+- **Assignments and labs:** administrative correction of current/final problems without rewriting auction history; capacity-aware automatic lab allocation with one team per effective problem per lab and explicit manual conflict overrides.
+- **Coding and results:** team-leader GitHub repository submissions during coding, submission review, administrative winner selection and explicit result publishing.
+- **Live operations:** WebSocket updates, authoritative HTTP reconciliation, authenticated leaderboard displays, timer controls and recovery/resynchronization tools.
+- **Persistence:** PostgreSQL, SQLAlchemy transactions, wallet transaction records and versioned Alembic migrations.
 
-## Local verification
+## User Surfaces
+
+| Surface | Responsibilities |
+| --- | --- |
+| Event Admin | Event state, teams, credentials, timers, problem banks, Round 1, Wildcard, assignments, submissions, judging and recovery |
+| Participant / Team Leader | Sign in, follow event phases, bid, monitor the wallet, participate in Wildcard, inspect assigned/final problems and submit a repository; write actions require the team leader |
+| Lab Admin | Restricted team details and lab allocation management, including controlled manual moves |
+| Leaderboard Display | Authenticated live standings, finalized round outcomes and published event results |
+
+The public site provides event information and entry points to the portals.
+
+## Event Flow
+
+```text
+Registration
+  → Round 1 preview → bidding → winner assignment
+  → Wildcard applications → slot bidding → ranked problem selection
+  → Final problem choice → lab allocation
+  → Coding → repository submission → judging → published results
+```
+
+Round 1 preview, bidding and assignment repeat for the selected problems. Wildcard uses its own multi-stage control state; teams with both assignments receive a final-choice window. Lab allocation is an operation after final problems are available, not a separate event-state value. Coding opens through an explicit administrative transition.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    subgraph Browser["Browser clients"]
+        Public["Public site"]
+        Participant["Participant portal"]
+        Admin["Admin control center"]
+        Lab["Lab Admin"]
+        Display["Leaderboard display"]
+        Frontend["React + Vite"]
+    end
+    Public --> Frontend
+    Participant --> Frontend
+    Admin --> Frontend
+    Lab --> Frontend
+    Display --> Frontend
+    Frontend <-->|REST + WebSockets| API["FastAPI"]
+    API --> ORM["SQLAlchemy"]
+    ORM --> DB[("PostgreSQL")]
+    Migrations["Alembic migrations"] -.->|Schema versions| DB
+```
+
+One frontend entry point serves all five surfaces. FastAPI owns event transitions and mutations; WebSockets deliver updates, and clients reconcile with persisted state over HTTP.
+
+| Layer | Technology |
+| --- | --- |
+| Frontend | React 18, Vite 5, TypeScript / JavaScript, React Router, Lucide React, Tailwind CSS and scoped CSS |
+| Backend | Python, FastAPI, Uvicorn, SQLAlchemy, Pydantic, JWT authentication and WebSockets |
+| Database | PostgreSQL with the psycopg driver; Alembic for migrations |
+
+## Engineering Details
+
+- **Server-authoritative state:** event phases, deadlines, assignments and results are persisted on the backend. WebSocket delivery is paired with HTTP reconciliation so a missed message does not become the source of truth.
+- **Deterministic bidding:** finalization ranks bids by amount descending, then the earlier timestamp at which the final amount was reached, then team ID. Eligibility and wallet balance are checked before assigning winners.
+- **Transactional wallets:** winning charges and assignment changes share transaction boundaries. Signed wallet ledger records and operation uniqueness support auditability and idempotent settlement.
+- **History versus current assignment:** `round1_problem_id` records the historical Round 1 result, `wildcard_problem_id` records the historical Wildcard result, and `ps_id` is the effective current/final problem. Administrative correction can change the effective assignment while preserving the original results.
+
+See [PRODUCT.md](PRODUCT.md) for the product and engineering case study and [Database](Backend/database/README.md) for the complete schema reference.
+
+## Running Locally
+
+### Prerequisites
+
+- Git
+- Python 3.10+; validation was performed with Python 3.12
+- Node.js and npm; validation was performed with Node.js 24
+- PostgreSQL; the migration snapshot was validated with PostgreSQL 16
+
+**PostgreSQL is required.** The runtime rejects SQLite database URLs. No production database, service or credentials are needed for local development.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/XIEAA-hackathon/demo-repository.git
+cd demo-repository
+git switch main1
+```
+
+### 2. Create a PostgreSQL database
+
+Start PostgreSQL and connect using your local PostgreSQL username and password. In `psql` or a database client, run:
+
+```sql
+CREATE DATABASE bidtobuild;
+```
+
+The account used by the backend must have permission to create and alter objects in this database.
+
+### 3. Set up the backend environment
 
 ```bash
 cd Backend
 python -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/alembic upgrade head
-.venv/bin/python -m compileall -q app scripts migrations
-.venv/bin/python -c "from app.main import app; assert app"
+```
 
-cd ../frontend-website
+Activate it in Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Or on macOS/Linux:
+
+```bash
+source .venv/bin/activate
+```
+
+Then install dependencies:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### 4. Configure local environment variables
+
+From `Backend`, copy the tracked example.
+
+Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+macOS/Linux:
+
+```bash
+cp .env.example .env
+```
+
+Edit `Backend/.env` with your own local values:
+
+```dotenv
+DATABASE_URL=postgresql+psycopg://postgres:YOUR_PASSWORD@localhost:5432/bidtobuild
+SECRET_KEY=replace-with-a-long-local-development-secret
+
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=change-me
+ADMIN_NAME=Event Admin
+
+LAB_ADMIN_EMAIL=labadmin@example.com
+LAB_ADMIN_PASSWORD=change-me-too
+LAB_ADMIN_NAME=Lab Admin
+```
+
+These are placeholders, not shared credentials. Replace the passwords and signing secret; percent-encode special characters in the database URL. Keep `.env` outside Git. The Event Admin and single Lab Admin accounts are provisioned at startup when their password settings are supplied.
+
+Optional demo accounts are configured in the same file using the `DEMO_*` and `LEADERBOARD_DISPLAY_*` settings in [Backend/.env.example](Backend/.env.example). Leave optional passwords blank unless you want demo provisioning. Event Admin can create participant and display accounts through the application.
+
+### 5. Apply database migrations
+
+From `Backend`, with the virtual environment active:
+
+```bash
+python -m alembic upgrade head
+```
+
+This creates or upgrades the PostgreSQL schema. Startup verifies the schema; it does not apply migrations automatically. Use Alembic, not `schema.sql`, to initialize or upgrade the application database.
+
+### 6. Start the backend
+
+```bash
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+- API: [localhost:8000](http://localhost:8000)
+- Swagger documentation: [localhost:8000/docs](http://localhost:8000/docs)
+- Health check: [localhost:8000/health](http://localhost:8000/health)
+
+### 7. Start the frontend
+
+In a new terminal, from the repository root:
+
+```bash
+cd frontend-website
 npm ci
+npm run dev
+```
+
+The development frontend defaults to `http://localhost:8000` for API calls. Optional `VITE_API_URL` and `VITE_WS_URL` overrides belong in `frontend-website/.env`. If you use another browser origin, include it in backend `CORS_ORIGINS`.
+
+| Surface | Local URL |
+| --- | --- |
+| Public site | [localhost:5173](http://localhost:5173/) |
+| Event Admin | [localhost:5173/admin/login](http://localhost:5173/admin/login) |
+| Participant | [localhost:5173/participant/login](http://localhost:5173/participant/login) |
+| Lab Admin | [localhost:5173/lab-admin/login](http://localhost:5173/lab-admin/login) |
+| Leaderboard display | [localhost:5173/leaderboard](http://localhost:5173/leaderboard) |
+
+### Local validation
+
+From `Backend`, with the environment configured:
+
+```bash
+python -m compileall -q app scripts migrations
+python -c "from app.main import app; assert app"
+python -m alembic current
+```
+
+From `frontend-website`:
+
+```bash
 npm run typecheck
 npm run build
 ```
 
-Before running Alembic or starting the backend, copy `Backend/.env.example` to
-`Backend/.env` and set `DATABASE_URL` to an existing development PostgreSQL database.
-Settings load that file regardless of the shell's working directory. An empty
-database requires `alembic upgrade head` before startup. On Windows use
-`.venv\Scripts\python.exe -m pip`, `.venv\Scripts\python.exe -m alembic`, and
-`.venv\Scripts\python.exe -m uvicorn` in place of the Unix environment commands.
-Production frontends use same-origin `/api`; database credentials remain backend-only.
+## Repository Structure
 
-Both bidding rounds accept whole-number increments from 1 to 25. The input previews
-the next bid and remaining wallet balance; the server calculates the accepted price
-from the latest bid and enforces the configured cooldown (five seconds by default).
-Run backend tests with `TEST_DATABASE_URL` pointing to a disposable database and
-`pip install -r requirements-dev.txt`, then `pytest tests`. Frontend checks are
-`npm test`, `npm run typecheck`, and `npm run build`.
-
-## Optional Demo Accounts
-
-Copy [Backend/.env.example](Backend/.env.example) to `Backend/.env`, then edit these backend-only environment variables:
-
-```dotenv
-DEMO_ADMIN_EMAIL=admin.demo@bidtobuild.example.com
-DEMO_ADMIN_PASSWORD=replace-with-a-demo-password
-DEMO_LEADER_EMAIL=leader@demo.example.com
-DEMO_LEADER_PASSWORD=replace-with-a-demo-password
-DEMO_TEAM_NAME=Demo Team
-LEADERBOARD_DISPLAY_EMAIL=leaderboard@bidtobuild.example.com
-LEADERBOARD_DISPLAY_PASSWORD=replace-with-a-display-password
+```text
+demo-repository/
+├── Backend/
+│   ├── app/
+│   │   ├── api/
+│   │   ├── core/
+│   │   ├── models/
+│   │   ├── schemas/
+│   │   └── services/
+│   ├── migrations/versions/
+│   ├── database/
+│   │   ├── README.md
+│   │   └── schema.sql
+│   ├── scripts/
+│   ├── requirements.txt
+│   └── .env.example
+├── frontend-website/
+│   ├── src/
+│   │   ├── admin/
+│   │   ├── participant/
+│   │   ├── lab-admin/
+│   │   ├── labs/
+│   │   ├── leaderboard/
+│   │   └── pages/public/
+│   └── package.json
+├── PRODUCT.md
+├── README.md
+└── LICENSE
 ```
 
-No demo passwords are committed or enabled by default. When all values are supplied,
-startup runs the idempotent provisioning logic in `Backend/app/services/demo_seed.py`.
-The standalone equivalent is `python -m scripts.seed_demo`, run from `Backend`.
+## License
 
-The single Lab Admin account is provisioned or repaired at backend startup from
-`LAB_ADMIN_EMAIL`, `LAB_ADMIN_PASSWORD`, and `LAB_ADMIN_NAME`. The password is
-backend-only and must be supplied in `Backend/.env` locally or the production
-service environment; tracked examples contain placeholders only.
-
-## Automatic AWS Deployment
-
-Pushing `origin/main1` runs the test/build workflow in `.github/workflows/deploy.yml`.
-Its legacy production runner is currently offline; use the existing deployment
-script over SSH with the Ubuntu paths documented in `deploy/aws/README.md`:
-
-```bash
-git add -A
-git commit -m "Describe the production change"
-git push origin main1
-```
-
-The `main1` push starts a disposable PostgreSQL 16 service, applies every Alembic
-migration, validates the FastAPI runtime, type-checks and builds the umbrella frontend,
-then packages the production payload. The repository-scoped `casino-production` runner
-deploys that exact commit, validates the services and Nginx, and verifies public routes.
-
-The PostgreSQL connection and Lab Admin password are supplied only through
-`DATABASE_URL` and `LAB_ADMIN_PASSWORD` in `/etc/casino-hackathon/backend.env`.
-No database credentials or database files are stored in a release.
-
-The deployed main1 SHA is recorded at:
-
-```bash
-cat /home/ec2-user/deploy-state/main1-deployed-sha
-```
-
-If a post-promotion check fails, `deploy/aws/deploy-main1-remote.sh` restores the previous Backend/static snapshot and restarts/reloads the same services. The server retains the latest five rollback snapshots under `/opt/casino_hackathon/main1-backups`; database migrations require an application-specific forward fix or a separately managed PostgreSQL backup restore.
-
-For a deliberate rollback, revert the bad commit and push the revert through the same pipeline:
-
-```bash
-git switch main1
-git pull --ff-only origin main1
-git revert <bad-deployment-commit-sha>
-git push origin main1
-```
-
-See `deploy/aws/README.md` for EC2 verification, failure logs, and recovery details.
+See [LICENSE](LICENSE).

@@ -20,4 +20,5 @@ __pycache__/
 test_credentials.txt
 websocket_test.html
 
-# Regression tests are versioned; their caches remain ignored above.
+# Local test sources are excluded from the public repository.
+tests/

@@ -37,16 +37,11 @@ deploy/*.zip
 
 # Tests / local development
 /tests/
+/test/
 deploy.sh
-Backend/tests/test_*.py
+Backend/tests/
 frontend-website/src/**/*.test.*
 frontend-website/src/**/*.spec.*
-!frontend-website/src/realtimeRegressions.test.tsx
-!frontend-website/src/leaderboard/LeaderboardDisplay.test.tsx
-!frontend-website/src/admin/pages/ChangeProblemPage.test.jsx
-!frontend-website/src/admin/adminLifecycle.test.tsx
-!Backend/tests/test_current_problem_corrections.py
-!Backend/tests/test_round1_manual_assignment.py
 
 # Generated Graphify data
 /graphify-out/
@@ -55,7 +50,7 @@ frontend-website/src/**/*.spec.*
 /.codex/
 deploy/
 Agents.md
-.github
+.github/
 
 # Other development artifacts
 /docs/
@@ -84,8 +79,4 @@ pnpm-debug.log*
 .vscode/
 *.suo
 *.swp
-!frontend-website/src/participant/ParticipantContext.test.tsx
-!frontend-website/src/participant/leaderboardLifecycle.test.tsx
-!frontend-website/src/admin/adminLifecycle.test.tsx
-!frontend-website/src/admin/teamSessionControl.test.tsx
 *.exe
